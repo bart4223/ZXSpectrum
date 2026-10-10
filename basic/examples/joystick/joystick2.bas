@@ -1,0 +1,26 @@
+10 BORDER 0: PAPER 0: INK 7: CLS
+20 PRINT "JOYSTICK-TEST (Interface 2)"
+30 PRINT AT 3,0;"STICK 1  (Tasten 6-0)"
+40 PRINT AT 4,0;"Links Rechts Runter Hoch Feuer"
+50 PRINT AT 9,0;"STICK 2  (Tasten 1-5)"
+60 PRINT AT 10,0;"Links Rechts Runter Hoch Feuer"
+70 PRINT AT 15,0;"Rohwerte:"
+100 LET a=IN 61438: LET b=IN 63486
+110 LET v=a: LET rw=5
+120 LET n=4: LET cl=2: GO SUB 300
+130 LET n=3: LET cl=9: GO SUB 300
+140 LET n=2: LET cl=15: GO SUB 300
+150 LET n=1: LET cl=21: GO SUB 300
+160 LET n=0: LET cl=27: GO SUB 300
+170 LET v=b: LET rw=11
+180 LET n=0: LET cl=2: GO SUB 300
+190 LET n=1: LET cl=9: GO SUB 300
+200 LET n=2: LET cl=15: GO SUB 300
+210 LET n=3: LET cl=21: GO SUB 300
+220 LET n=4: LET cl=27: GO SUB 300
+230 PRINT AT 16,0;"6-0: ";a;"    "
+240 PRINT AT 17,0;"1-5: ";b;"    "
+250 GO TO 100
+300 LET t=1-(INT (v/2^n)-2*INT (v/2^(n+1)))
+310 IF t=1 THEN PRINT AT rw,cl;INK 4;"#": RETURN
+320 PRINT AT rw,cl;INK 2;".": RETURN
