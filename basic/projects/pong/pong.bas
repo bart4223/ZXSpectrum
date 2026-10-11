@@ -1,4 +1,4 @@
-5 LET s0=5
+5 LET s0=8: LET smx=12: LET zr=240+smx: LET zl=14-smx
 10 GO SUB 2000
 20 BORDER 0: PAPER 0: INK 7: CLS: LET ge=0
 30 LET sa=0: LET sb=0: LET sp=s0: LET dx=sp: LET h=0
@@ -21,15 +21,15 @@
 190 IF q<>pb THEN LET px=245: LET py=q: GO SUB 800: LET py=pb: GO SUB 800
 200 PLOT OVER 1;bx,by: DRAW OVER 1;2,0: PLOT OVER 1;bx,by+1: DRAW OVER 1;2,0
 210 LET by=by+dy
-220 IF by<6 OR by>154 THEN LET dy=-dy: LET by=by+dy+dy
+220 IF by<10 OR by>150 THEN LET dy=-dy: LET by=by+dy+dy
 230 LET bx=bx+dx
-240 IF dx<0 AND bx<=13 AND bx>=7 THEN IF by+1>=pa AND by<=pa+23 THEN LET dy=INT ((by-pa-10)/4): LET bx=14: GO SUB 400: LET dx=sp: IF dy=0 THEN LET dy=1
-250 IF dx>0 AND bx>=241 AND bx<=247 THEN IF by+1>=pb AND by<=pb+23 THEN LET dy=INT ((by-pb-10)/4): LET bx=240: GO SUB 400: LET dx=-sp: IF dy=0 THEN LET dy=1
-260 IF bx<=3 THEN LET sb=sb+1: GO SUB 600: GO TO 100
-270 IF bx>=250 THEN LET sa=sa+1: GO SUB 600: GO TO 100
+240 IF dx<0 AND bx<=13 AND bx>=zl THEN IF by+1>=pa AND by<=pa+23 THEN LET dy=INT ((by-pa-10)/3): LET bx=14: GO SUB 400: LET dx=sp: IF dy=0 THEN LET dy=1
+250 IF dx>0 AND bx>=241 AND bx<=zr THEN IF by+1>=pb AND by<=pb+23 THEN LET dy=INT ((by-pb-10)/3): LET bx=240: GO SUB 400: LET dx=-sp: IF dy=0 THEN LET dy=1
+260 IF bx<zl THEN LET sb=sb+1: GO SUB 600: GO TO 100
+270 IF bx>zr THEN LET sa=sa+1: GO SUB 600: GO TO 100
 280 PLOT OVER 1;bx,by: DRAW OVER 1;2,0: PLOT OVER 1;bx,by+1: DRAW OVER 1;2,0
-290 GO TO 100
-400 BEEP .02,24: LET h=h+1: IF h>=3 AND sp<7 THEN LET sp=sp+1: LET h=0
+290 GO TO 110
+400 BEEP .02,24: LET h=h+1: IF h>=3 AND sp<smx THEN LET sp=sp+1: LET h=0
 410 RETURN
 500 PRINT AT 0,13;sa;" : ";sb
 510 LET bx=127: LET by=80
