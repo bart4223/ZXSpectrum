@@ -8,8 +8,9 @@
         ORG 32768
 
 ; ---- Einstellungen (hier kannst du drehen) ----------------
-SPD0    EQU 3           ; Startgeschwindigkeit in Pixel pro Bild (50 Bilder/s)
-SPDMAX  EQU 6           ; Maximalgeschwindigkeit (hoechstens 7!)
+LEVEL0  EQU 3           ; voreingestelltes Tempo (1..5), im Startbild mit Stick aenderbar
+                        ; Startgeschwindigkeit = Tempo Pixel/Bild (50 Bilder/s),
+                        ; Maximum = Start+3 (hoechstens 7)
 WINSC   EQU 5           ; Punkte zum Sieg
 PSTEP   EQU 3           ; Schlaegergeschwindigkeit in Pixel pro Bild
 ; ---- feste Werte ------------------------------------------
@@ -33,10 +34,18 @@ sr      EQU VARS+9      ; Punkte rechts
 serv    EQU VARS+10     ; Aufschlagrichtung: 0 = nach rechts, 1 = nach links
 tmp     EQU VARS+11
 tmp2    EQU VARS+12
+level   EQU VARS+13     ; gewaehltes Tempo 1..5
+spd0v   EQU VARS+14     ; Startgeschwindigkeit
+spdmx   EQU VARS+15     ; Maximalgeschwindigkeit
+selprev EQU VARS+16
+selrow  EQU VARS+17
 
 ; ============================================================
 START:  EI
         CALL SETUP
+        LD A,LEVEL0
+        LD (level),A
+        CALL SETLEVEL
         CALL SPLASH
 
 NEWGAME:
@@ -47,7 +56,7 @@ NEWGAME:
         LD (sr),A
         LD (hits),A
         LD (serv),A
-        LD A,SPD0
+        LD A,(spd0v)
         LD (spd),A
         LD A,92
         LD (pyl),A
@@ -98,7 +107,7 @@ SC3:    LD B,0
         LD A,(sr)
         CP WINSC
         JP Z,GAMEOVER
-        LD A,SPD0
+        LD A,(spd0v)
         LD (spd),A
         XOR A
         LD (hits),A
@@ -122,7 +131,11 @@ GAMEOVER:
 GO1:    CALL PRSTR
         LD HL,MSGFIRE
         CALL PRSTR
-        CALL WAITFIRE
+        LD HL,MSGHINT
+        CALL PRSTR
+        LD A,17
+        LD (selrow),A
+        CALL SELECTLOOP
         JP NEWGAME
 
 ; ============================================================
@@ -234,18 +247,43 @@ PADHIT: LD E,A
         LD A,(by)
         ADD A,2
         SUB E
+        SUB 12                  ; A = Trefferabstand zur Mitte (-13..13)
+        LD D,A
+        BIT 7,A
+        JR Z,PHA
+        NEG
+PHA:    LD B,A                  ; B = |Abstand|
+        LD A,(spd)
+        CP 3
+        JR C,PHK
+        LD A,3                  ; Winkel waechst nur bis Tempo 3 mit
+PHK:    LD E,A
+        XOR A
+PHM:    ADD A,B                 ; A = |Abstand| * Tempo
+        DEC E
+        JR NZ,PHM
+        LD B,0
+PHD:    CP 12                   ; B = A / 12
+        JR C,PHQ
         SUB 12
-        SRA A
-        SRA A
-        JR NZ,PH1
-        LD A,1
+        INC B
+        JR PHD
+PHQ:    LD A,B
+        OR A
+        JR NZ,PHS
+        INC A                   ; mindestens 1
+PHS:    BIT 7,D
+        JR Z,PH1
+        NEG                     ; ueber der Mitte -> Ball nach oben
 PH1:    LD (dyv),A
         LD A,(hits)
         INC A
         CP 3
         JR C,PH2
+        LD A,(spdmx)
+        LD B,A
         LD A,(spd)
-        CP SPDMAX
+        CP B
         JR NC,PH3
         INC A
         LD (spd),A
@@ -442,11 +480,18 @@ SERVE:  LD A,126
         LD (bx),A
         LD A,100
         LD (by),A
+        LD A,(spd)
+        INC A
+        SRL A                   ; (Tempo+1)/2
+        CP 3
+        JR C,SVK
+        LD A,2                  ; hoechstens 2
+SVK:    LD B,A
         LD A,R
         RRA
-        LD A,2
+        LD A,B
         JR NC,SV1
-        LD A,256-2
+        NEG
 SV1:    LD (dyv),A
         LD A,(spd)
         LD B,A
@@ -506,7 +551,11 @@ SPN:    LD A,(tmp)
         JR NZ,SPR
         LD HL,MSG1
         CALL PRSTR
-        CALL WAITFIRE
+        LD HL,MSGHINT
+        CALL PRSTR
+        LD A,16
+        LD (selrow),A
+        CALL SELECTLOOP
         RET
 
 ; Text ausgeben (HL), Ende = 255
@@ -540,6 +589,90 @@ PRSCORE:LD A,B
         LD A,(sr)
         ADD A,'0'
         RST 16
+        RET
+
+; Tempo aus Level berechnen
+SETLEVEL:
+        LD A,(level)
+        LD (spd0v),A
+        ADD A,3
+        CP 8
+        JR C,SLV1
+        LD A,7
+SLV1:   LD (spdmx),A
+        RET
+
+; Zeile "Tempo:  < n >" in Zeile (selrow) ausgeben
+PRTEMPO:LD A,22
+        RST 16
+        LD A,(selrow)
+        RST 16
+        LD A,9
+        RST 16
+        LD HL,MSGTEMPO
+        CALL PRSTR
+        LD A,(level)
+        ADD A,'0'
+        RST 16
+        LD HL,MSGTEMPO2
+        CALL PRSTR
+        RET
+
+; Stick hoch/runter lesen: A = 0 nichts, 1 hoch, 2 runter
+READSEL:LD BC,0xEFFE
+        IN A,(C)
+        LD E,A
+        LD BC,0xF7FE
+        IN A,(C)
+        LD D,A
+        BIT 1,E
+        JR Z,RS_UP
+        BIT 3,D
+        JR Z,RS_UP
+        BIT 2,E
+        JR Z,RS_DN
+        BIT 2,D
+        JR Z,RS_DN
+        XOR A
+        RET
+RS_UP:  LD A,1
+        RET
+RS_DN:  LD A,2
+        RET
+
+; Tempo mit Stick hoch/runter waehlen, mit Feuer bestaetigen
+SELECTLOOP:
+        XOR A
+        LD (selprev),A
+        CALL PRTEMPO
+        LD B,25
+SL0:    HALT
+        DJNZ SL0
+SL1:    HALT
+        CALL READSEL
+        LD B,A
+        LD A,(selprev)
+        CP B
+        LD A,B
+        LD (selprev),A
+        JR Z,SL2                ; Zustand unveraendert
+        OR A
+        JR Z,SL2                ; losgelassen
+        CP 1
+        LD A,(level)
+        JR NZ,SLDN
+        CP 5
+        JR NC,SL2
+        INC A
+        JR SL4
+SLDN:   CP 2
+        JR C,SL2
+        DEC A
+SL4:    LD (level),A
+        CALL SETLEVEL
+        CALL PRTEMPO
+SL2:    CALL READFIRE
+        JR NC,SL1
         RET
 
 ; Auf Feuer warten (Taste 0, Taste 5 oder Leertaste)
@@ -608,6 +741,9 @@ MSG1:   DEFB 22,9,5,"Pong fuer zwei Spieler"
         DEFB 22,12,8,"Stick 2: links"
         DEFB 22,14,6,"Erster mit 5 Punkten"
         DEFB 22,18,9,18,1,"FEUER = Start",18,0,255
+MSGTEMPO:DEFB "Tempo:  < ",255
+MSGTEMPO2:DEFB " >",255
+MSGHINT:DEFB 22,20,4,"Stick hoch/runter = Tempo",255
 MSGOVER:DEFB 22,5,11,"SPIELENDE",255
 MSGL:   DEFB 22,11,9,"LINKS gewinnt",255
 MSGR:   DEFB 22,11,8,"RECHTS gewinnt",255
