@@ -39,10 +39,18 @@ spd0v   EQU VARS+14     ; Startgeschwindigkeit
 spdmx   EQU VARS+15     ; Maximalgeschwindigkeit
 selprev EQU VARS+16
 selrow  EQU VARS+17
+bcol    EQU VARS+18     ; Ball-Attribut (BRIGHT + INK)
+bidx    EQU VARS+19     ; Index in COLTAB
+firep   EQU VARS+20     ; Feuerknopf im letzten Bild gedrueckt?
+gptr    EQU VARS+21     ; (2 Bytes) Zeiger auf Zeichenbild
 
 ; ============================================================
 START:  EI
         CALL SETUP
+        XOR A
+        LD (bidx),A
+        LD A,0x47
+        LD (bcol),A
         LD A,LEVEL0
         LD (level),A
         CALL SETLEVEL
@@ -66,19 +74,21 @@ NEWGAME:
         LD A,92
         LD C,30
         CALL DRAWPAD
-        LD B,0
-        LD C,13
-        CALL PRSCORE
+        LD A,1
+        LD (firep),A
+        LD A,4
+        CALL PRBIG
         CALL SERVE
 
 ; ---- Hauptschleife: genau ein Durchlauf pro Bild (50 Hz) ----
 MAIN:   HALT
-        CALL DRAWBALL           ; Ball loeschen (XOR)
+        CALL ERASEBALL          ; Ball loeschen (XOR, Farbe zuruecksetzen)
+        CALL FIRECOL            ; Feuerknopf = naechste Ballfarbe
         CALL MOVEPADS
         CALL MOVEBALL
         OR A
         JR NZ,SCORED
-        CALL DRAWBALL           ; Ball neu zeichnen
+        CALL SHOWBALL           ; Ball neu zeichnen und faerben
         JR MAIN
 
 ; ---- Punkt gefallen: A=1 links punktet, A=2 rechts punktet ----
@@ -95,9 +105,8 @@ SC2:    LD A,(sr)
         LD (sr),A
         LD A,1
         LD (serv),A
-SC3:    LD B,0
-        LD C,13
-        CALL PRSCORE
+SC3:    LD A,4
+        CALL PRBIG
         LD B,200
         LD C,70
         CALL BEEP
@@ -120,9 +129,8 @@ GAMEOVER:
         CALL 0x0DAF
         LD HL,MSGOVER
         CALL PRSTR
-        LD B,8
-        LD C,13
-        CALL PRSCORE
+        LD A,64
+        CALL PRBIG
         LD A,(sl)
         CP WINSC
         LD HL,MSGL
@@ -438,6 +446,8 @@ DB1:    LD A,(HL)
         DJNZ DB1
         RET
 
+COLTAB: DEFB 0x47,0x46,0x44,0x45,0x43,0x42     ; weiss, gelb, gruen, cyan, magenta, rot
+EXP4:   DEFB 0x00,0x03,0x0C,0x0F,0x30,0x33,0x3C,0x3F,0xC0,0xC3,0xCC,0xCF,0xF0,0xF3,0xFC,0xFF
 TAB1:   DEFB 0xF0,0x78,0x3C,0x1E,0x0F,0x07,0x03,0x01
 TAB2:   DEFB 0x00,0x00,0x00,0x00,0x00,0x80,0xC0,0xE0
 
@@ -501,7 +511,7 @@ SV1:    LD (dyv),A
         JR Z,SV2
         NEG
 SV2:    LD (dxv),A
-        CALL DRAWBALL
+        CALL SHOWBALL
         LD B,40
 SV3:    HALT
         DJNZ SV3
@@ -566,29 +576,196 @@ PRSTR:  LD A,(HL)
         INC HL
         JR PRSTR
 
-; Spielstand "links : rechts" an Zeile B, Spalte C
-PRSCORE:LD A,B
-        LD (tmp),A
-        LD A,C
-        LD (tmp2),A
-        LD A,22
-        RST 16
+; ============================================================
+;  Ballfarbe: Attribute der vom Ball beruehrten Zellen setzen
+; ============================================================
+ERASEBALL:
+        CALL DRAWBALL
+        LD A,7                  ; Standard: weiss auf schwarz
+        JR BALLATTR
+SHOWBALL:
+        CALL DRAWBALL
+        LD A,(bcol)
+
+; A = Attributwert fuer alle Zellen, die der Ball bei (bx,by) beruehrt
+BALLATTR:
+        LD E,A
+        LD A,(by)
+        RRCA
+        RRCA
+        RRCA
+        AND 0x1F
+        LD (tmp),A              ; Zeile oben
+        LD A,(by)
+        ADD A,3
+        RRCA
+        RRCA
+        RRCA
+        AND 0x1F
+        LD (tmp2),A             ; Zeile unten
+        LD A,(bx)
+        RRCA
+        RRCA
+        RRCA
+        AND 0x1F
+        LD C,A                  ; Spalte links
+        LD A,(bx)
+        ADD A,3
+        RRCA
+        RRCA
+        RRCA
+        AND 0x1F
+        LD D,A                  ; Spalte rechts
         LD A,(tmp)
-        RST 16
+        CALL SETCELL
         LD A,(tmp2)
-        RST 16
+        CALL SETCELL
+        LD C,D
+        LD A,(tmp)
+        CALL SETCELL
+        LD A,(tmp2)
+        CALL SETCELL
+        RET
+
+SETCELL:CALL ATTRADDR
+        LD (HL),E
+        RET
+
+; A = Zeile (0..23), C = Spalte  ->  HL = Attributadresse
+ATTRADDR:
+        RRCA
+        RRCA
+        RRCA
+        LD L,A
+        AND 3
+        ADD A,0x58
+        LD H,A
+        LD A,L
+        AND 0xE0
+        OR C
+        LD L,A
+        RET
+
+; Feuerknopf (Taste 0, Taste 5, Leertaste): bei neuem Druck naechste Farbe
+FIRECOL:CALL READFIRE
+        LD A,0
+        RLA                     ; Carry -> A = 1 wenn Feuer
+        LD B,A
+        LD A,(firep)
+        CP B
+        LD A,B
+        LD (firep),A
+        RET Z                   ; unveraendert
+        OR A
+        RET Z                   ; losgelassen
+        LD A,(bidx)
+        INC A
+        CP 6
+        JR C,FC2
+        XOR A
+FC2:    LD (bidx),A
+        LD E,A
+        LD D,0
+        LD HL,COLTAB
+        ADD HL,DE
+        LD A,(HL)
+        LD (bcol),A
+        RET
+
+; ============================================================
+;  Spielstand in doppelter Groesse (16x16 Pixel, ROM-Zeichensatz)
+;  A = obere Pixelzeile
+; ============================================================
+PRBIG:  LD (tmp),A
+        LD (tmp2),A
+        LD C,12
+        LD B,16
+PBC:    PUSH BC
+        LD A,(tmp2)
+        CALL ROWADDR
+        LD B,8
+        XOR A
+PBC2:   LD (HL),A
+        INC HL
+        DJNZ PBC2
+        LD A,(tmp2)
+        INC A
+        LD (tmp2),A
+        POP BC
+        DJNZ PBC
         LD A,(sl)
         ADD A,'0'
-        RST 16
-        LD A,32
-        RST 16
+        LD C,12
+        CALL DRAWBIG
         LD A,':'
-        RST 16
-        LD A,32
-        RST 16
+        LD C,15
+        CALL DRAWBIG
         LD A,(sr)
         ADD A,'0'
-        RST 16
+        LD C,18
+        CALL DRAWBIG
+        RET
+
+; A = Zeichencode, C = linke Spalte, (tmp) = obere Pixelzeile
+DRAWBIG:SUB 32
+        LD L,A
+        LD H,0
+        ADD HL,HL
+        ADD HL,HL
+        ADD HL,HL
+        LD DE,0x3D00
+        ADD HL,DE
+        LD (gptr),HL
+        LD A,(tmp)
+        LD (tmp2),A
+        LD B,8
+DG1:    PUSH BC
+        LD HL,(gptr)
+        LD A,(HL)
+        INC HL
+        LD (gptr),HL
+        CALL EXPAND
+        LD A,(tmp2)
+        CALL ROWADDR
+        LD (HL),D
+        INC HL
+        LD (HL),E
+        LD A,(tmp2)
+        INC A
+        LD (tmp2),A
+        CALL ROWADDR
+        LD (HL),D
+        INC HL
+        LD (HL),E
+        LD A,(tmp2)
+        INC A
+        LD (tmp2),A
+        POP BC
+        DJNZ DG1
+        RET
+
+; A = Byte -> D:E = 16 Bit, jedes Bit verdoppelt
+EXPAND: LD B,A
+        RRCA
+        RRCA
+        RRCA
+        RRCA
+        AND 0x0F
+        LD E,A
+        LD D,0
+        LD HL,EXP4
+        ADD HL,DE
+        LD A,(HL)
+        PUSH AF
+        LD A,B
+        AND 0x0F
+        LD E,A
+        LD D,0
+        LD HL,EXP4
+        ADD HL,DE
+        LD E,(HL)
+        POP AF
+        LD D,A
         RET
 
 ; Tempo aus Level berechnen
@@ -743,7 +920,8 @@ MSG1:   DEFB 22,9,5,"Pong fuer zwei Spieler"
         DEFB 22,18,9,18,1,"FEUER = Start",18,0,255
 MSGTEMPO:DEFB "Tempo:  < ",255
 MSGTEMPO2:DEFB " >",255
-MSGHINT:DEFB 22,20,4,"Stick hoch/runter = Tempo",255
+MSGHINT:DEFB 22,20,4,"Stick hoch/runter = Tempo"
+        DEFB 22,21,4,"Feuer im Spiel = Ballfarbe",255
 MSGOVER:DEFB 22,5,11,"SPIELENDE",255
 MSGL:   DEFB 22,11,9,"LINKS gewinnt",255
 MSGR:   DEFB 22,11,8,"RECHTS gewinnt",255
