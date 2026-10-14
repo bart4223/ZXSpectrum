@@ -43,10 +43,13 @@ bcol    EQU VARS+18     ; Ball-Attribut (BRIGHT + INK)
 bidx    EQU VARS+19     ; Index in COLTAB
 firep   EQU VARS+20     ; Feuerknopf im letzten Bild gedrueckt?
 gptr    EQU VARS+21     ; (2 Bytes) Zeiger auf Zeichenbild
+vol     EQU VARS+23     ; Lautstaerke 0 (aus) .. 5 (voll)
 
 ; ============================================================
 START:  EI
         CALL SETUP
+        LD A,5
+        LD (vol),A
         XOR A
         LD (bidx),A
         LD A,0x47
@@ -563,7 +566,7 @@ SPN:    LD A,(tmp)
         CALL PRSTR
         LD HL,MSGHINT
         CALL PRSTR
-        LD A,16
+        LD A,15
         LD (selrow),A
         CALL SELECTLOOP
         RET
@@ -784,44 +787,79 @@ PRTEMPO:LD A,22
         RST 16
         LD A,(selrow)
         RST 16
-        LD A,9
+        LD A,6
         RST 16
         LD HL,MSGTEMPO
         CALL PRSTR
         LD A,(level)
         ADD A,'0'
         RST 16
-        LD HL,MSGTEMPO2
+        LD HL,MSGEND
         CALL PRSTR
         RET
 
-; Stick hoch/runter lesen: A = 0 nichts, 1 hoch, 2 runter
+; Zeile "Lautstaerke: < n >" in Zeile (selrow)+1 ausgeben (0 = "aus")
+PRVOL:  LD A,22
+        RST 16
+        LD A,(selrow)
+        INC A
+        RST 16
+        LD A,6
+        RST 16
+        LD HL,MSGVOL
+        CALL PRSTR
+        LD A,(vol)
+        OR A
+        JR NZ,PV1
+        LD HL,MSGAUS
+        CALL PRSTR
+        JR PV2
+PV1:    ADD A,'0'
+        RST 16
+PV2:    LD HL,MSGEND
+        CALL PRSTR
+        RET
+
+; Stick lesen: A = 0 nichts, 1 hoch, 2 runter, 3 links, 4 rechts
 READSEL:LD BC,0xEFFE
         IN A,(C)
         LD E,A
         LD BC,0xF7FE
         IN A,(C)
         LD D,A
-        BIT 1,E
+        BIT 1,E                 ; Stick 1 hoch (Taste 9)
         JR Z,RS_UP
-        BIT 3,D
+        BIT 3,D                 ; Stick 2 hoch (Taste 4)
         JR Z,RS_UP
-        BIT 2,E
+        BIT 2,E                 ; runter (Taste 8)
         JR Z,RS_DN
-        BIT 2,D
+        BIT 2,D                 ; runter (Taste 3)
         JR Z,RS_DN
+        BIT 4,E                 ; Stick 1 links (Taste 6)
+        JR Z,RS_LF
+        BIT 0,D                 ; Stick 2 links (Taste 1)
+        JR Z,RS_LF
+        BIT 3,E                 ; Stick 1 rechts (Taste 7)
+        JR Z,RS_RT
+        BIT 1,D                 ; Stick 2 rechts (Taste 2)
+        JR Z,RS_RT
         XOR A
         RET
 RS_UP:  LD A,1
         RET
 RS_DN:  LD A,2
         RET
+RS_LF:  LD A,3
+        RET
+RS_RT:  LD A,4
+        RET
 
-; Tempo mit Stick hoch/runter waehlen, mit Feuer bestaetigen
+; Tempo (hoch/runter) und Lautstaerke (links/rechts) waehlen, Feuer = weiter
 SELECTLOOP:
         XOR A
         LD (selprev),A
         CALL PRTEMPO
+        CALL PRVOL
         LD B,25
 SL0:    HALT
         DJNZ SL0
@@ -836,13 +874,33 @@ SL1:    HALT
         OR A
         JR Z,SL2                ; losgelassen
         CP 1
-        LD A,(level)
-        JR NZ,SLDN
+        JR Z,SLUP
+        CP 2
+        JR Z,SLDN
+        CP 3
+        JR Z,SLVD
+        LD A,(vol)              ; rechts: lauter
+        CP 5
+        JR NC,SL2
+        INC A
+        JR SLV
+SLVD:   LD A,(vol)              ; links: leiser
+        OR A
+        JR Z,SL2
+        DEC A
+SLV:    LD (vol),A
+        CALL PRVOL
+        LD B,110                ; Testton in neuer Lautstaerke
+        LD C,30
+        CALL BEEP
+        JR SL2
+SLUP:   LD A,(level)
         CP 5
         JR NC,SL2
         INC A
         JR SL4
-SLDN:   CP 2
+SLDN:   LD A,(level)
+        CP 2
         JR C,SL2
         DEC A
 SL4:    LD (level),A
@@ -879,15 +937,45 @@ READFIRE:
 RF_YES: SCF
         RET
 
-; Ton: B = Laenge der Halbperiode (hoeher = tiefer), C = Anzahl Wechsel
-BEEP:   XOR A
-BP1:    XOR 0x10
+; Ton: B = halbe Periode (hoeher = tiefer), C = Anzahl Halbperioden.
+; Lautstaerke (vol 0..5) ueber das Tastverhaeltnis: Einphase = B >> (5-vol),
+; die Periode (2*B) und damit die Tonhoehe bleiben gleich. vol 5 = 50 % (wie bisher).
+BEEP:   LD A,(vol)
+        OR A
+        RET Z                   ; aus
+        LD D,B                  ; D = Einphase
+        LD E,A
+        LD A,5
+        SUB E
+        JR Z,BPH0
+BPSH:   SRL D
+        DEC A
+        JR NZ,BPSH
+BPH0:   LD A,D
+        OR A
+        JR NZ,BPH1
+        INC D                   ; mindestens 1
+BPH1:   LD A,B
+        SUB D
+        LD E,A                  ; E = Rest der ersten Auszeit (B - Einphase)
+        SRL C                   ; C = Anzahl Perioden
+BPL:    LD A,0x10
         OUT (254),A
-        LD D,B
-BP2:    DEC D
-        JR NZ,BP2
-        DEC C
-        JR NZ,BP1
+        LD A,D
+BPA:    DEC A
+        JR NZ,BPA               ; Einphase
+        XOR A
+        OUT (254),A
+        LD A,B
+BPB:    DEC A
+        JR NZ,BPB               ; erste Haelfte der Auszeit
+        LD A,E
+        OR A
+        JR Z,BPC
+BPD:    DEC A
+        JR NZ,BPD               ; Rest der Auszeit
+BPC:    DEC C
+        JR NZ,BPL
         XOR A
         OUT (254),A
         RET
@@ -916,11 +1004,14 @@ LETTERS:
 MSG1:   DEFB 22,9,5,"Pong fuer zwei Spieler"
         DEFB 22,11,8,"Stick 1: rechts"
         DEFB 22,12,8,"Stick 2: links"
-        DEFB 22,14,6,"Erster mit 5 Punkten"
+        DEFB 22,13,6,"Erster mit 5 Punkten"
         DEFB 22,18,9,18,1,"FEUER = Start",18,0,255
-MSGTEMPO:DEFB "Tempo:  < ",255
-MSGTEMPO2:DEFB " >",255
-MSGHINT:DEFB 22,20,4,"Stick hoch/runter = Tempo"
+MSGTEMPO:DEFB "Tempo:       < ",255
+MSGVOL: DEFB "Lautstaerke: < ",255
+MSGAUS: DEFB "aus",255
+MSGEND: DEFB " >   ",255
+MSGHINT:DEFB 22,19,4,"hoch/runter = Tempo"
+        DEFB 22,20,4,"links/rechts = Lautstaerke"
         DEFB 22,21,4,"Feuer im Spiel = Ballfarbe",255
 MSGOVER:DEFB 22,5,11,"SPIELENDE",255
 MSGL:   DEFB 22,11,9,"LINKS gewinnt",255
