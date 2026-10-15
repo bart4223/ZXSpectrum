@@ -12,10 +12,14 @@ LEVEL0  EQU 3           ; voreingestelltes Tempo (1..5), im Startbild mit Stick 
                         ; Startgeschwindigkeit = Tempo Pixel/Bild (50 Bilder/s),
                         ; Maximum = Start+3 (hoechstens 7)
 WINSC   EQU 5           ; Punkte zum Sieg
-PSTEP   EQU 3           ; Schlaegergeschwindigkeit in Pixel pro Bild
+PSTEP   EQU 3           ; Schlaeger senkrecht: Pixel pro Bild
+HSTEP   EQU 2           ; Schlaeger seitlich: Pixel pro Bild
 ; ---- feste Werte ------------------------------------------
 PADH    EQU 24          ; Schlaegerhoehe
-PADPAT  EQU 0x3C        ; Schlaegerbild (4 Pixel breit)
+PXL0    EQU 10          ; linker Schlaeger: Grundstellung (linke Kante)
+PXLMAX  EQU 62          ; ... weitester Vorstoss (Mitte der linken Haelfte)
+PXR0    EQU 242         ; rechter Schlaeger: Grundstellung
+PXRMIN  EQU 190         ; ... weitester Vorstoss (Mitte der rechten Haelfte)
 TOPLIM  EQU 26          ; oberste y-Position (Schlaeger/Ball)
 PADMAX  EQU 158         ; unterste y-Position des Schlaegers
 
@@ -44,6 +48,15 @@ bidx    EQU VARS+19     ; Index in COLTAB
 firep   EQU VARS+20     ; Feuerknopf im letzten Bild gedrueckt?
 gptr    EQU VARS+21     ; (2 Bytes) Zeiger auf Zeichenbild
 vol     EQU VARS+23     ; Lautstaerke 0 (aus) .. 5 (voll)
+pxl     EQU VARS+24     ; x linker Schlaeger (muss pyl+24 sein!)
+pxr     EQU VARS+25     ; x rechter Schlaeger (muss pyr+24 sein!)
+oy      EQU VARS+26
+ny      EQU VARS+27
+ox      EQU VARS+28
+nx      EQU VARS+29
+lmin    EQU VARS+30
+lmax    EQU VARS+31
+beepf   EQU VARS+32     ; Treffer-Ton vormerken (wird nach dem Zeichnen gespielt)
 
 ; ============================================================
 START:  EI
@@ -72,13 +85,15 @@ NEWGAME:
         LD A,92
         LD (pyl),A
         LD (pyr),A
-        LD C,1
-        CALL DRAWPAD
-        LD A,92
-        LD C,30
-        CALL DRAWPAD
+        LD A,PXL0
+        LD (pxl),A
+        LD A,PXR0
+        LD (pxr),A
+        CALL DRAWPADS
         LD A,1
         LD (firep),A
+        XOR A
+        LD (beepf),A
         LD A,4
         CALL PRBIG
         CALL SERVE
@@ -92,6 +107,14 @@ MAIN:   HALT
         OR A
         JR NZ,SCORED
         CALL SHOWBALL           ; Ball neu zeichnen und faerben
+        LD A,(beepf)
+        OR A
+        JR Z,MAIN
+        XOR A
+        LD (beepf),A
+        LD B,110                ; Treffer-Ton
+        LD C,30
+        CALL BEEP
         JR MAIN
 
 ; ---- Punkt gefallen: A=1 links punktet, A=2 rechts punktet ----
@@ -176,23 +199,31 @@ MBV2:   LD (by),A
         LD A,(dxv)
         LD C,A                  ; C = dx
         LD A,(bx)
-        LD B,A                  ; B = altes bx
         ADD A,C
         LD D,A                  ; D = neues bx
         BIT 7,C
         JR NZ,MBLEFT
-        ; --- Ball fliegt nach rechts ---
-        LD A,B
-        CP 239
-        JR NC,MBR_NC            ; schon hinter der Schlaegerebene
+        ; --- Ball fliegt nach rechts: Trefferzone am rechten Schlaeger
+        ;     bx in [pxr-4, pxr+4]  (Schlaegerbreite 4 + Ballbreite 4 + Spielraum)
+        LD A,(pxr)
+        SUB 4
+        LD E,A
         LD A,D
-        CP 239
-        JR C,MBR_NC             ; Ebene noch nicht erreicht
-        LD A,(pyr)
+        CP E
+        JR C,MBR_NC             ; noch vor der Zone
+        LD A,(pxr)
+        ADD A,4
+        LD E,A
+        LD A,D
+        CP E
+        JR C,MBR_Z
+        JR NZ,MBR_NC            ; schon hinter der Zone
+MBR_Z:  LD A,(pyr)
         CALL HITTEST
         JR NC,MBR_NC
-        LD A,238
-        LD (bx),A
+        LD A,(pxr)
+        SUB 5
+        LD (bx),A               ; Ball sitzt direkt vor dem Schlaeger
         LD A,(pyr)
         CALL PADHIT
         LD A,(spd)
@@ -208,17 +239,25 @@ MBR_NC: LD A,D
         RET
 MBR_OUT:LD A,1
         RET
-        ; --- Ball fliegt nach links ---
-MBLEFT: LD A,B
-        CP 14
-        JR C,MBL_NC
+        ; --- Ball fliegt nach links: Trefferzone am linken Schlaeger
+MBLEFT: LD A,(pxl)
+        SUB 4
+        LD E,A
         LD A,D
-        CP 14
-        JR NC,MBL_NC
-        LD A,(pyl)
+        CP E
+        JR C,MBL_NC
+        LD A,(pxl)
+        ADD A,4
+        LD E,A
+        LD A,D
+        CP E
+        JR C,MBL_Z
+        JR NZ,MBL_NC
+MBL_Z:  LD A,(pyl)
         CALL HITTEST
         JR NC,MBL_NC
-        LD A,14
+        LD A,(pxl)
+        ADD A,5
         LD (bx),A
         LD A,(pyl)
         CALL PADHIT
@@ -300,50 +339,69 @@ PH1:    LD (dyv),A
         LD (spd),A
 PH3:    XOR A
 PH2:    LD (hits),A
-        LD B,110
-        LD C,30
-        CALL BEEP
+        LD A,1
+        LD (beepf),A            ; Ton erst nach dem Zeichnen des Balls spielen
         RET
 
 ; ============================================================
 ;  Schlaeger steuern
 ; ============================================================
 MOVEPADS:
-        ; links = Stick 2 (Tasten 1-5): hoch = 4 (Bit 3), runter = 3 (Bit 2)
+        ; links = Stick 2 (Tasten 1-5): hoch 4 (Bit 3), runter 3 (Bit 2), links 1 (Bit 0), rechts 2 (Bit 1)
         LD BC,0xF7FE
         IN A,(C)
         LD E,A
-        LD B,0
+        LD B,0                  ; B = Schritt senkrecht
+        LD C,0                  ; C = Schritt seitlich
         BIT 3,E
         JR NZ,MP1
         LD B,256-PSTEP
 MP1:    BIT 2,E
         JR NZ,MP2
         LD B,PSTEP
-MP2:    LD C,1
+MP2:    BIT 0,E
+        JR NZ,MP3
+        LD C,256-HSTEP
+MP3:    BIT 1,E
+        JR NZ,MP4
+        LD C,HSTEP
+MP4:    LD A,PXL0
+        LD (lmin),A
+        LD A,PXLMAX
+        LD (lmax),A
         LD HL,pyl
         CALL STEER
-        ; rechts = Stick 1 (Tasten 6-0): hoch = 9 (Bit 1), runter = 8 (Bit 2)
+        ; rechts = Stick 1 (Tasten 6-0): hoch 9 (Bit 1), runter 8 (Bit 2), links 6 (Bit 4), rechts 7 (Bit 3)
         LD BC,0xEFFE
         IN A,(C)
         LD E,A
         LD B,0
+        LD C,0
         BIT 1,E
-        JR NZ,MP3
+        JR NZ,MP5
         LD B,256-PSTEP
-MP3:    BIT 2,E
-        JR NZ,MP4
+MP5:    BIT 2,E
+        JR NZ,MP6
         LD B,PSTEP
-MP4:    LD C,30
+MP6:    BIT 4,E
+        JR NZ,MP7
+        LD C,256-HSTEP
+MP7:    BIT 3,E
+        JR NZ,MP8
+        LD C,HSTEP
+MP8:    LD A,PXRMIN
+        LD (lmin),A
+        LD A,PXR0
+        LD (lmax),A
         LD HL,pyr
         CALL STEER
         RET
 
-; HL = Adresse von py, C = Spalte, B = Schritt (vorzeichenbehaftet)
-STEER:  LD A,B
-        OR A
-        RET Z
+; Schlaeger bewegen. HL = Adresse von py (px liegt 24 Bytes dahinter),
+; B = Schritt senkrecht, C = Schritt seitlich, (lmin)/(lmax) = Grenzen fuer px
+STEER:  PUSH HL
         LD A,(HL)
+        LD (oy),A
         ADD A,B
         CP TOPLIM
         JR NC,ST1
@@ -351,17 +409,52 @@ STEER:  LD A,B
 ST1:    CP PADMAX+1
         JR C,ST2
         LD A,PADMAX
-ST2:    LD D,A
+ST2:    LD (ny),A
+        LD DE,24
+        ADD HL,DE               ; HL = Adresse von px
         LD A,(HL)
-        CP D
-        RET Z
-        PUSH HL
-        CALL DRAWPAD            ; alte Position loeschen
-        POP HL
-        LD A,D
-        LD (HL),A
-        CALL DRAWPAD            ; neue Position zeichnen
+        LD (ox),A
+        ADD A,C
+        LD E,A                  ; E = Kandidat fuer neues px
+        LD A,(lmin)
+        CP E
+        JR C,ST3                ; lmin < Kandidat
+        JR Z,ST3
+        LD E,A                  ; Kandidat < lmin -> auf lmin
+ST3:    LD A,(lmax)
+        CP E
+        JR NC,ST4               ; lmax >= Kandidat
+        LD E,A                  ; Kandidat > lmax -> auf lmax
+ST4:    LD A,E
+        LD (nx),A
+        LD A,(ox)
+        LD B,A
+        LD A,(nx)
+        CP B
+        JR NZ,ST5
+        LD A,(oy)
+        LD B,A
+        LD A,(ny)
+        CP B
+        JR NZ,ST5
+        POP HL                  ; nichts geaendert
         RET
+ST5:    LD A,(ox)
+        LD C,A
+        LD A,(oy)
+        LD B,PADH
+        CALL DRAWSPR            ; alte Position loeschen
+        POP HL
+        LD A,(ny)
+        LD (HL),A
+        LD DE,24
+        ADD HL,DE
+        LD A,(nx)
+        LD (HL),A
+        LD C,A
+        LD A,(ny)
+        LD B,PADH
+        JP DRAWSPR              ; neue Position zeichnen
 
 ; ============================================================
 ;  Grafik
@@ -401,20 +494,30 @@ DOWNHL: INC H
         LD H,A
         RET
 
-; Schlaeger (XOR) zeichnen/loeschen: A = y, C = Spalte
-DRAWPAD:CALL ROWADDR
+; Beide Schlaeger an ihren gespeicherten Positionen zeichnen
+DRAWPADS:
+        LD A,(pxl)
+        LD C,A
+        LD A,(pyl)
         LD B,PADH
-DP1:    LD A,(HL)
-        XOR PADPAT
-        LD (HL),A
-        CALL DOWNHL
-        DJNZ DP1
-        RET
+        CALL DRAWSPR
+        LD A,(pxr)
+        LD C,A
+        LD A,(pyr)
+        LD B,PADH
+        JP DRAWSPR
 
-; Ball (4x4, XOR) zeichnen/loeschen an (bx,by)
+; Ball (4x4) an (bx,by) zeichnen/loeschen (XOR)
 DRAWBALL:
         LD A,(bx)
         LD C,A
+        LD A,(by)
+        LD B,4
+        ; weiter mit DRAWSPR
+
+; Sprite 4 Pixel breit, pixelgenau (XOR): A = y, C = x (linke Kante), B = Zeilen
+DRAWSPR:LD (tmp),A
+        LD A,C
         AND 7
         LD E,A
         LD D,0
@@ -434,10 +537,9 @@ DRAWBALL:
         RRCA
         AND 0x1F
         LD C,A                  ; C = Spalte
-        LD A,(by)
+        LD A,(tmp)
         CALL ROWADDR
-        LD B,4
-DB1:    LD A,(HL)
+DS1:    LD A,(HL)
         XOR D
         LD (HL),A
         INC HL
@@ -446,7 +548,7 @@ DB1:    LD A,(HL)
         LD (HL),A
         DEC HL
         CALL DOWNHL
-        DJNZ DB1
+        DJNZ DS1
         RET
 
 COLTAB: DEFB 0x47,0x46,0x44,0x45,0x43,0x42     ; weiss, gelb, gruen, cyan, magenta, rot
@@ -1001,9 +1103,10 @@ LETTERS:
         DEFB "1.....1...1.1..11.1...1"
         DEFB "1......111..1...1..111."
 
-MSG1:   DEFB 22,9,5,"Pong fuer zwei Spieler"
-        DEFB 22,11,8,"Stick 1: rechts"
-        DEFB 22,12,8,"Stick 2: links"
+MSG1:   DEFB 22,8,5,"Pong fuer zwei Spieler"
+        DEFB 22,10,5,"Stick 1: rechter Schlaeger"
+        DEFB 22,11,5,"Stick 2: linker Schlaeger"
+        DEFB 22,12,5,"Schlaeger in 4 Richtungen"
         DEFB 22,13,6,"Erster mit 5 Punkten"
         DEFB 22,18,9,18,1,"FEUER = Start",18,0,255
 MSGTEMPO:DEFB "Tempo:       < ",255
