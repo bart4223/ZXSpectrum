@@ -3,7 +3,7 @@
 ;  Zwei Spieler, Sinclair-Interface-2-Joysticks
 ;    Stick 1 (Tasten 6-0): rechter Schlaeger, Feuer = Taste 0
 ;    Stick 2 (Tasten 1-5): linker Schlaeger,  Feuer = Taste 5
-;  Assembliert mit pasmo:  pasmo --tapbas pongmc.asm pongmc.tap
+;  Assembliert mit pasmo:  pasmo --tapbas pong.asm pong.tap
 ; ============================================================
         ORG 32768
 
@@ -1035,15 +1035,6 @@ SL4:    LD (level),A
         CALL PRTEMPO
 SL2:    CALL READFIRE
         JR NC,SL1
-        RET
-
-; Auf Feuer warten (Taste 0, Taste 5 oder Leertaste)
-WAITFIRE:
-        LD B,25
-WF0:    HALT
-        DJNZ WF0
-WF1:    CALL READFIRE
-        JR NC,WF1
         RET
 
 READFIRE:
