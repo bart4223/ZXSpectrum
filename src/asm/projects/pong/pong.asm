@@ -151,12 +151,12 @@ SC3:    LD A,4
 
 ; ---- Spielende ----------------------------------------------
 GAMEOVER:
-        CALL SNDWIN
         CALL 0x0DAF
         LD HL,MSGOVER
         CALL PRSTR
         LD A,64
         CALL PRBIG
+        CALL FINCOLORS
         LD A,(sl)
         CP WINSC
         LD HL,MSGL
@@ -169,6 +169,9 @@ GO1:    CALL PRSTR
         CALL PRSTR
         LD A,17
         LD (selrow),A
+        CALL PRTEMPO
+        CALL PRVOL
+        CALL SNDWIN             ; Fanfare, waehrend der Siegerbildschirm schon steht
         CALL SELECTLOOP
         JP NEWGAME
 
@@ -551,6 +554,24 @@ DS1:    LD A,(HL)
         DJNZ DS1
         RET
 
+BANDTAB:
+        DEFB 0x50,0x50,0x70,0x70,0x60,0x60,0x68,0x68
+        DEFB 0x58,0x58,0x50,0x50,0x70,0x70,0x60,0x60
+        DEFB 0x68,0x68,0x58,0x58,0x50,0x50,0x70,0x70
+        DEFB 0x60,0x60,0x68,0x68,0x58,0x58,0x50,0x50
+MELODY:
+        DEFB 207,94
+        DEFB 164,118
+        DEFB 138,140
+        DEFB 103,250
+        DEFB 103,106
+        DEFB 0,3
+        DEFB 138,124
+        DEFB 103,250
+        DEFB 103,250
+        DEFB 103,250
+        DEFB 103,128
+        DEFB 0,0
 COLTAB: DEFB 0x47,0x46,0x44,0x45,0x43,0x42     ; weiss, gelb, gruen, cyan, magenta, rot
 EXP4:   DEFB 0x00,0x03,0x0C,0x0F,0x30,0x33,0x3C,0x3F,0xC0,0xC3,0xCC,0xCF,0xF0,0xF3,0xFC,0xFF
 TAB1:   DEFB 0xF0,0x78,0x3C,0x1E,0x0F,0x07,0x03,0x01
@@ -670,6 +691,10 @@ SPN:    LD A,(tmp)
         CALL PRSTR
         LD A,15
         LD (selrow),A
+        CALL PRTEMPO            ; Auswahlzeilen sofort zeigen ...
+        CALL PRVOL
+        LD HL,MELODY            ; ... dann die kleine Startmelodie
+        CALL PLAYMEL
         CALL SELECTLOOP
         RET
 
@@ -1082,6 +1107,67 @@ BPC:    DEC C
         OUT (254),A
         RET
 
+; Siegerbildschirm einfaerben: Farbbaender oben (Zeile 1) und unten (Zeile 22),
+; Endstand: Sieger gruen, Verlierer rot, Doppelpunkt weiss
+FINCOLORS:
+        LD HL,BANDTAB
+        LD DE,0x5820
+        LD BC,32
+        LDIR
+        LD HL,BANDTAB
+        LD DE,0x5AC0
+        LD BC,32
+        LDIR
+        LD A,(sl)
+        CP WINSC
+        LD B,0x44               ; links gruen (hell)
+        LD C,0x42               ; rechts rot (hell)
+        JR Z,FCO1
+        LD B,0x42
+        LD C,0x44
+FCO1:   LD A,B
+        LD HL,0x590C            ; linke Ziffer: Zeilen 8/9, Spalten 12-13
+        CALL FILL2
+        LD A,0x47
+        LD HL,0x590F            ; Doppelpunkt: Spalten 15-16
+        CALL FILL2
+        LD A,C
+        LD HL,0x5912            ; rechte Ziffer: Spalten 18-19
+        CALL FILL2
+        RET
+
+; A = Attribut, HL = Attributadresse: 2x2 Zellen setzen
+FILL2:  LD (HL),A
+        INC HL
+        LD (HL),A
+        LD DE,31
+        ADD HL,DE
+        LD (HL),A
+        INC HL
+        LD (HL),A
+        RET
+
+; Melodie abspielen: HL -> Paare (B,C); B=0: Pause von C Bildern; (0,0) = Ende
+PLAYMEL:LD A,(HL)
+        LD B,A
+        INC HL
+        LD A,(HL)
+        LD C,A
+        INC HL
+        OR B
+        RET Z
+        LD A,B
+        OR A
+        JR Z,PM1
+        PUSH HL
+        CALL BEEP
+        POP HL
+        JR PLAYMEL
+PM1:    HALT
+        DEC C
+        JR NZ,PM1
+        JR PLAYMEL
+
 SNDWIN: LD B,140
         LD C,50
         CALL BEEP
@@ -1116,9 +1202,9 @@ MSGEND: DEFB " >   ",255
 MSGHINT:DEFB 22,19,4,"hoch/runter = Tempo"
         DEFB 22,20,4,"links/rechts = Lautstaerke"
         DEFB 22,21,4,"Feuer im Spiel = Ballfarbe",255
-MSGOVER:DEFB 22,5,11,"SPIELENDE",255
-MSGL:   DEFB 22,11,9,"LINKS gewinnt",255
-MSGR:   DEFB 22,11,8,"RECHTS gewinnt",255
-MSGFIRE:DEFB 22,15,6,18,1,"FEUER = neues Spiel",18,0,255
+MSGOVER:DEFB 22,5,11,19,1,16,6,"SPIELENDE",16,7,19,0,255
+MSGL:   DEFB 22,11,9,18,1,19,1,16,4,"LINKS gewinnt",18,0,16,7,19,0,255
+MSGR:   DEFB 22,11,8,18,1,19,1,16,4,"RECHTS gewinnt",18,0,16,7,19,0,255
+MSGFIRE:DEFB 22,15,6,18,1,16,5,"FEUER = neues Spiel",18,0,16,7,255
 
         END START
