@@ -1,7 +1,7 @@
 ; ==========================================================================
-;  TETRIS fuer den ZX Spectrum - Schritt 1+2
-;  Spielfeld (eigene Datenstruktur), Blockgrafik, eine Figur mit
-;  Rotationstabelle per Tastatur/Joystick bewegen.
+;  TETRIS fuer den ZX Spectrum - Schritt 1-3
+;  Spielfeld (eigene Datenstruktur), Blockgrafik, Figuren mit
+;  Rotationstabelle, Kollision, Schwerkraft und Ablegen ins Spielfeld.
 ;
 ;  Assemblieren:  pasmo --tapbas tetris.asm tetris.tap
 ;
@@ -27,6 +27,7 @@ SPAWN_COL   equ 4           ; Ankerspalte beim Erscheinen
 DAS_DELAY   equ 10          ; Frames bis Auto-Repeat links/rechts
 DAS_RATE    equ 3           ; Frames zwischen Wiederholungen
 DROP_RATE   equ 3           ; Frames zwischen Schritten beim Runterdruecken
+FALL_START  equ 48          ; Frames pro Zeile Schwerkraft (Level 0)
 
 ATTR_TEXT   equ $47         ; BRIGHT, PAPER 0, INK 7
 ATTR_TITLE  equ $46         ; BRIGHT, PAPER 0, INK 6
@@ -55,17 +56,20 @@ st_ttl: ld (hl),ATTR_TITLE
         djnz st_ttl
 
         xor a
-        ld (piece_type),a
         ld (keys),a
         ld (das_cnt),a
         ld (drop_cnt),a
-        call spawn
-        call draw_piece
+        ld a,FALL_START
+        ld (fall_delay),a
+        ld a,6                  ; new_piece zaehlt weiter -> erste Figur I
+        ld (piece_type),a
+        call new_piece
 
 main_loop:
         halt                    ; 50 Hz (IM 1, ROM-Interrupt)
         call read_input
         call handle_input
+        call gravity
         jr main_loop
 
 ; ==========================================================================
@@ -545,8 +549,12 @@ hi_down:
         jr nz,hd_held
         xor a
         ld (drop_cnt),a
+        ld (down_lock),a        ; losgelassen -> Sperre aufheben
         ret
 hd_held:
+        ld a,(down_lock)        ; nach neuer Figur erst loslassen
+        or a
+        ret nz
         ld a,(drop_cnt)
         or a
         jr z,hd_go
@@ -555,13 +563,9 @@ hd_held:
         ret
 hd_go:  ld a,DROP_RATE-1
         ld (drop_cnt),a
-        ld a,(piece_row)
-        inc a
-        ld b,a
-        ld a,(piece_col)
-        ld c,a
-        ld a,(piece_rot)
-        jp try_move
+        ld a,(fall_delay)       ; Schwerkraft-Takt neu starten
+        ld (fall_cnt),a
+        jp step_down
 
 do_rotate:
         ld a,(piece_row)
@@ -573,17 +577,101 @@ do_rotate:
         and 3
         jp try_move
 
-; Testfunktion: naechste Figur oben neu einsetzen
+; Testfunktion: aktuelle Figur verwerfen, naechste einsetzen
 do_next:
         call erase_piece
+        jp new_piece
+
+; ==========================================================================
+;  Schwerkraft, Ablegen, neue Figur
+; ==========================================================================
+
+; Jeden Frame aufrufen: nach fall_delay Frames eine Zeile fallen
+gravity:
+        ld hl,fall_cnt
+        dec (hl)
+        ret nz
+        ld a,(fall_delay)
+        ld (hl),a
+        ; weiter in step_down
+
+; Eine Zeile nach unten; geht das nicht, Figur ablegen + neue Figur
+step_down:
+        ld a,(piece_row)
+        inc a
+        ld b,a
+        ld a,(piece_col)
+        ld c,a
+        ld a,(piece_rot)
+        call try_move
+        ret z
+        call lock_piece
+        jp new_piece
+
+; Aktive Figur ins Spielfeld-Array schreiben (Wert = Typ+1).
+; Auf dem Bildschirm steht sie schon in der richtigen Farbe.
+lock_piece:
+        ld a,(piece_type)
+        inc a
+        ld (lock_val),a
+        ld a,(piece_rot)
+        call cells_ptr
+        ld a,(piece_row)
+        ld b,a
+        ld a,(piece_col)
+        ld c,a
+        ld a,4
+lk_lp:  push af
+        push bc
+        ld a,(de)
+        and $0f
+        add a,c
+        ld c,a
+        ld a,(de)
+        rrca
+        rrca
+        rrca
+        rrca
+        and $0f
+        add a,b
+        ld b,a
+        call board_addr
+        ld a,(lock_val)
+        ld (hl),a
+        pop bc
+        pop af
+        inc de
+        dec a
+        jr nz,lk_lp
+        ret
+
+; Naechste Figur oben einsetzen (vorerst der Reihe nach, Zufall in Schritt 4).
+; Passt sie nicht mehr: Game Over -> vorlaeufig kurz warten, Feld leeren.
+new_piece:
         ld a,(piece_type)
         inc a
         cp 7
-        jr c,dn_set
+        jr c,np_set
         xor a
-dn_set: ld (piece_type),a
+np_set: ld (piece_type),a
         call spawn
-        jp draw_piece
+        ld a,(fall_delay)
+        ld (fall_cnt),a
+        ld a,1
+        ld (down_lock),a
+        xor a
+        call cells_ptr
+        ld b,0
+        ld c,SPAWN_COL
+        call fits
+        jr z,np_ok
+        call draw_piece         ; ueberlappende Figur zeigen
+        ld b,100                ; 2 Sekunden
+np_wt:  halt
+        djnz np_wt
+        call init_board
+        call render_board
+np_ok:  jp draw_piece
 
 ; ==========================================================================
 ;  Daten
@@ -677,5 +765,9 @@ keys:       db 0
 pressed:    db 0
 das_cnt:    db 0
 drop_cnt:   db 0
+fall_delay: db 0                ; Frames pro Zeile
+fall_cnt:   db 0
+down_lock:  db 0                ; 1 = Runter erst nach Loslassen
+lock_val:   db 0
 
         end start
