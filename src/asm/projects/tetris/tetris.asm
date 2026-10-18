@@ -28,8 +28,8 @@ SPAWN_COL   equ 4           ; Ankerspalte beim Erscheinen
 DAS_DELAY   equ 10          ; Frames bis Auto-Repeat links/rechts
 DAS_RATE    equ 3           ; Frames zwischen Wiederholungen
 DROP_RATE   equ 3           ; Frames zwischen Schritten beim Runterdruecken
-PREV_ROW    equ 5           ; Vorschau: 4x2 Zellen ab Zeile 5, Spalte 24
-PREV_COL    equ 24
+PREV_ROW    equ 6           ; Vorschau: 4x2 Zellen ab Zeile 6, Spalte 25
+PREV_COL    equ 25
 LINES_PER_LEVEL equ 10
 MAX_LEVEL_SPEED equ 29      ; ab hier bleibt die Geschwindigkeit gleich
 
@@ -37,6 +37,7 @@ ATTR_TEXT   equ $47         ; BRIGHT, PAPER 0, INK 7
 ATTR_TITLE  equ $46         ; BRIGHT, PAPER 0, INK 6
 ATTR_EMPTY  equ $01         ; leere Zelle: PAPER 0, INK 1
 ATTR_FLASH  equ $78         ; volle Zeile beim Blinken: BRIGHT, PAPER 7
+ATTR_OVER   equ $42         ; GAME OVER: BRIGHT, PAPER 0, INK 2 (rot)
 
 ; Eingabebits (aktiv high) in keys / pressed
 K_LEFT      equ 0
@@ -54,12 +55,13 @@ start:
         call draw_patterns
         call render_board
         call draw_texts
-        ld hl,$5800+2*32+23     ; Titel gelb
+        ld hl,$5800+2*32+24     ; Titel gelb
         ld b,6
 st_ttl: ld (hl),ATTR_TITLE
         inc hl
         djnz st_ttl
         call draw_prev_pattern
+        call clear_next         ; Vorschau leer, bis die erste Figur gezogen ist
 
         xor a
         ld (keys),a
@@ -684,15 +686,28 @@ new_piece:
         call update_best
         ld hl,msg_over
         call draw_list
+        ld a,ATTR_OVER          ; GAME OVER rot
+        call color_over
         ld b,50                 ; 1 s Pause, damit niemand versehentlich weiterdrueckt
         call wait_frames
         call wait_key
         ld hl,msg_clear
         call draw_list
+        ld a,ATTR_TEXT          ; Zeile wieder normal faerben
+        call color_over
         call init_board
         call render_board
         call reset_game
 np_ok:  jp draw_piece
+
+; A = Attribut fuer die GAME-OVER-Zeile (Zeile 17, Spalten 23-31)
+color_over:
+        ld hl,$5800+17*32+23
+        ld b,9
+co_lp:  ld (hl),a
+        inc hl
+        djnz co_lp
+        ret
 
 ; ==========================================================================
 ;  Punkte, Level, Anzeige
@@ -710,6 +725,8 @@ reset_game:
         ld a,LINES_PER_LEVEL
         ld (level_left),a
         call set_speed
+        ld a,(fall_delay)       ; Schwerkraft-Takt passend zum neuen Tempo
+        ld (fall_cnt),a
         jp draw_stats
 
 ; fall_delay aus der Tabelle fuer das aktuelle Level
@@ -840,19 +857,19 @@ ub_copy:
 draw_stats:
         ld hl,score+2
         ld d,3
-        ld bc,3*256+1           ; Zeile 3, Spalte 1
+        ld bc,3*256+2           ; Zeile 3, Spalte 2
         call print_bcd
         ld hl,level_bcd
         ld d,1
-        ld bc,7*256+1
+        ld bc,7*256+2
         call print_bcd
         ld hl,lines+1
         ld d,2
-        ld bc,11*256+1
+        ld bc,11*256+2
         call print_bcd
         ld hl,best+2
         ld d,3
-        ld bc,19*256+1
+        ld bc,19*256+2
         ; weiter in print_bcd
 
 ; HL = hoechstwertiges BCD-Byte, D = Anzahl Bytes, B/C = Position
@@ -906,8 +923,8 @@ dpp_l:  ld a,(de)
         jr nz,dpp_r
         ret
 
-; next_type in Grundstellung ins Vorschaufeld malen
-draw_next:
+; Vorschaufeld: 4x2 Zellen schwarz (Attribut 0)
+clear_next:
         ld b,PREV_ROW           ; erst 4x2 Zellen schwarz
 dn_r:   ld c,PREV_COL
         call cell_attr
@@ -922,6 +939,11 @@ dn_r:   ld c,PREV_COL
         ld a,b
         cp PREV_ROW+2
         jr nz,dn_r
+        ret
+
+; next_type in Grundstellung ins Vorschaufeld malen
+draw_next:
+        call clear_next
         ld a,(next_type)
         inc a
         call color_of
@@ -1176,7 +1198,6 @@ wait_key:
 wk_lp:  ld hl,(seed)
         inc hl
         ld (seed),hl
-wk_halt:
         halt
         xor a
         in a,($fe)
@@ -1266,17 +1287,17 @@ pieces:
 
 ; Texte: Zeile, Spalte, String, 0 ... $ff = Ende
 texts:
-        db 2,23,"TETRIS",0
-        db 4,23,"NEXT",0
-        db 9,23,"O P  <  >",0
-        db 10,23,"Q  DREHEN",0
-        db 11,23,"A  RUNTER",0
+        db 2,24,"TETRIS",0
+        db 4,25,"NEXT",0
+        db 9,23,"O P <  >",0
+        db 10,23,"Q DREHEN",0
+        db 11,23,"A RUNTER",0
         db 13,23,"JOYSTICK",0
         db 14,23,"IF2 1+2",0
-        db 2,1,"PUNKTE",0
-        db 6,1,"LEVEL",0
-        db 10,1,"REIHEN",0
-        db 18,1,"BESTER",0
+        db 2,2,"PUNKTE",0
+        db 6,2,"LEVEL",0
+        db 10,2,"REIHEN",0
+        db 18,2,"REKORD",0
         db $ff
 
 ; Frames pro Zeile je Level (50 Hz), angelehnt an NES-Tetris (PAL)
@@ -1293,16 +1314,16 @@ pts_lines:  db $40,$00,$00      ;   40  Single
             db $00,$12,$00      ; 1200  Tetris
 
 msg_start:
-        db 19,23,"TASTE",0
+        db 19,24,"TASTE",0
         db 20,23,"DRUECKEN",0
         db $ff
 msg_over:
-        db 18,23,"GAME OVER",0
-        db 19,23,"TASTE",0
+        db 17,23,"GAME OVER",0
+        db 19,24,"TASTE",0
         db 20,23,"DRUECKEN",0
         db $ff
 msg_clear:
-        db 18,23,"         ",0
+        db 17,23,"         ",0
         db 19,23,"         ",0
         db 20,23,"         ",0
         db $ff
