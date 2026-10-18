@@ -56,12 +56,17 @@ start:
         ld hl,0
         ld (best),hl
         ld (best+1),hl
-        ld a,2                  ; Standard: Lautstaerke MITTEL, Ghost AN
+        ld a,2                  ; Standard: Lautstaerke MITTEL, Ghost AUS, Hoch AUS
         ld (opt_vol),a
-        ld a,1
+        xor a
         ld (opt_ghost),a
+        ld (opt_up),a
         ld a,$ff
         ld (keys),a             ; gehaltene Taste zaehlt nicht als Druck
+        call cls
+        ld hl,msg_load
+        call draw_list
+        call load_best          ; gesicherten Rekord laden (falls vorhanden)
 
 new_game:                       ; auch nach Game Over: wieder zum Splash
         ld sp,(sp_save)
@@ -556,6 +561,9 @@ ri_8:   bit 0,b
         set K_ROT,c             ; Feuer (Taste 0)
 ri_8b:  bit 1,b
         jr z,ri_9
+        ld a,(opt_up)           ; Option "HOCH" aus -> Stick hoch ohne Wirkung
+        or a
+        jr z,ri_9
         set K_HARD,c            ; hoch (Taste 9)
 ri_9:
         ; Sinclair-Joystick 2: 1=links 2=rechts 3=runter 4=hoch 5=Feuer
@@ -576,6 +584,9 @@ ri_12:  bit 4,b
         jr z,ri_12b
         set K_ROT,c             ; Feuer (Taste 5)
 ri_12b: bit 3,b
+        jr z,ri_13
+        ld a,(opt_up)
+        or a
         jr z,ri_13
         set K_HARD,c            ; hoch (Taste 4)
 ri_13:
@@ -809,6 +820,7 @@ new_piece:
         call color_over
         ld b,50                 ; 1 s Pause, damit niemand versehentlich weiterdrueckt
         call wait_frames
+        call save_best          ; neuer Rekord -> als TAP sichern
         call wait_key
         jp new_game             ; zurueck zum Splash (Einstellungen aendern)
 np_ok:  jp draw_piece
@@ -975,6 +987,79 @@ ub_copy:
         ld bc,3
         ldir
         jp draw_stats
+
+; Neuer Rekord seit dem letzten Sichern?  Dann ueber die ROM-Routine
+; SA-BYTES ($04C2) als Kopfblock + Datenblock auf "Band" (TAP) schreiben.
+save_best:
+        ld hl,best
+        ld de,best_sv
+        ld b,3
+sb_cmp: ld a,(de)
+        cp (hl)
+        jr nz,sb_do
+        inc hl
+        inc de
+        djnz sb_cmp
+        ret                     ; Rekord unveraendert
+sb_do:  ld hl,best
+        ld de,best_sv
+        ld bc,3
+        ldir
+        ld hl,msg_save
+        call draw_list
+        ld ix,hdr_best          ; Kopfblock (17 Bytes, Flag 0)
+        ld de,17
+        xor a
+        call $04c2
+        ld b,10                 ; kurze Pause zwischen den Bloecken
+        call wait_frames
+        ld ix,best              ; Datenblock (3 Bytes, Flag $FF)
+        ld de,3
+        ld a,$ff
+        call $04c2
+        xor a
+        out ($fe),a             ; Rand wieder schwarz
+        ei
+        ld hl,msg_clr
+        jp draw_list
+
+; Rekord vom "Band" lesen (ROM LD-BYTES $0556): erst der Kopfblock, dessen
+; Name "tetris_hi" sein muss, dann die 3 Datenbytes.  Bei Fehler bleibt best = 0.
+load_best:
+        ld ix,hdr_in
+        ld de,17
+        xor a                   ; Flag 0 = Kopfblock
+        scf                     ; Carry = laden
+        call $0556
+        jr nc,lb_fail
+        ld hl,hdr_in            ; Typ + Name pruefen
+        ld de,hdr_best
+        ld b,11
+lb_cmp: ld a,(de)
+        cp (hl)
+        jr nz,lb_fail
+        inc hl
+        inc de
+        djnz lb_cmp
+        ld ix,best
+        ld de,3
+        ld a,$ff                ; Flag $FF = Datenblock
+        scf
+        call $0556
+        jr nc,lb_fail
+        ld hl,best              ; als gesichert merken -> kein sofortiges Neu-Sichern
+        ld de,best_sv
+        ld bc,3
+        ldir
+        jr lb_end
+lb_fail:
+        ld hl,0
+        ld (best),hl
+        ld (best+1),hl
+lb_end: xor a
+        out ($fe),a
+        ei
+        ret
 
 ; Punkte, Zeilen, Level, Bestwert anzeigen
 draw_stats:
@@ -1383,6 +1468,7 @@ so_lp:  ld b,30
 
 SPL_ROW_VOL equ 11              ; Zeile der Lautstaerke-Einstellung
 SPL_ROW_GHO equ 13              ; Zeile der Ghost-Einstellung
+SPL_ROW_UP  equ 15              ; Zeile Joystick-hoch (Hard Drop)
 SPL_SEL     equ $46             ; gewaehlte Zeile: BRIGHT, INK 6 (gelb)
 SPL_DIM     equ $07             ; andere Zeile: normal weiss
 
@@ -1418,9 +1504,12 @@ spl_lp: halt
         ld a,(pressed)
         bit K_DOWN,a
         jr z,spl_lr
-        ld a,(spl_sel)          ; Zeile wechseln
-        xor 1
-        ld (spl_sel),a
+        ld a,(spl_sel)          ; Zeile wechseln (0,1,2 im Kreis)
+        inc a
+        cp 3
+        jr c,spl_sv
+        xor a
+spl_sv: ld (spl_sel),a
         call spl_refresh
 spl_lr: ld a,(pressed)
         and M_LR
@@ -1446,7 +1535,7 @@ sg_ok:  ld (seed),hl
 spl_change:
         ld a,(spl_sel)
         or a
-        jr nz,sc_gh
+        jr nz,sc_o
         ld a,(opt_vol)
         ld b,a
         ld a,(pressed)
@@ -1464,9 +1553,15 @@ sc_r:   ld a,b                  ; lauter (bei 3 stehen bleiben)
 sc_st:  ld (opt_vol),a
         ld bc,20*256+60         ; Hoerprobe in der neuen Lautstaerke
         jp tone
-sc_gh:  ld a,(opt_ghost)
+sc_o:   dec a
+        jr nz,sc_up
+        ld a,(opt_ghost)
         xor 1
         ld (opt_ghost),a
+        ret
+sc_up:  ld a,(opt_up)
+        xor 1
+        ld (opt_up),a
         ret
 
 ; Werte als Text ausgeben und die gewaehlte Zeile gelb markieren
@@ -1497,18 +1592,36 @@ spl_refresh:
         ld b,SPL_ROW_GHO
         ld c,16
         call print_at
-        ld a,(spl_sel)
-        or a
-        ld b,SPL_SEL
-        ld c,SPL_DIM
-        jr z,sr_s               ; Zeile 0 gewaehlt
-        ld b,SPL_DIM
-        ld c,SPL_SEL
-sr_s:   ld a,b
+        ld a,(opt_up)
+        ld e,a
+        add a,a
+        add a,a
+        add a,a
+        add a,e
+        ld e,a
+        ld d,0
+        ld hl,ghost_txt
+        add hl,de
+        ld b,SPL_ROW_UP
+        ld c,16
+        call print_at
         ld hl,$5800+SPL_ROW_VOL*32+6
+        ld b,0                  ; Zeilen 0..2: gewaehlte gelb, andere weiss
+sr_lp3: ld a,(spl_sel)
+        cp b
+        ld a,SPL_DIM
+        jr nz,sr_c
+        ld a,SPL_SEL
+sr_c:   push bc
         call spl_row
-        ld a,c
-        ld hl,$5800+SPL_ROW_GHO*32+6
+        pop bc
+        ld de,45                ; naechste Einstellungszeile (2 Zeilen weiter)
+        add hl,de
+        inc b
+        ld a,b
+        cp 3
+        jr nz,sr_lp3
+        ret
 spl_row:
         ld b,19                 ; Spalten 6-24
 sr_lp:  ld (hl),a
@@ -1740,6 +1853,18 @@ pts_lines:  db $40,$00,$00      ;   40  Single
             db $00,$03,$00      ;  300  Triple
             db $00,$12,$00      ; 1200  Tetris
 
+msg_load:
+        db 11,10,"LADE REKORD",0
+        db $ff
+msg_save:
+        db 22,23,"SICHERE",0
+        db 23,23,"REKORD",0
+        db $ff
+msg_clr:
+        db 22,22,"       ",0
+        db 23,22,"      ",0
+        db $ff
+
 msg_over:
         db 17,23,"GAME OVER",0
         db 19,24,"TASTE",0
@@ -1754,6 +1879,9 @@ splash_texts:
         db 13,6,"GHOST",0
         db 13,14,"<",0
         db 13,24,">",0
+        db 15,6,"HOCH",0
+        db 15,14,"<",0
+        db 15,24,">",0
         db 17,3,"STICK LINKS RECHTS = WERT",0
         db 18,3,"STICK RUNTER = ZEILE",0
         db 20,9,"FEUER = START",0
@@ -1790,7 +1918,8 @@ ghost_row:  db 0
 rot_try:    db 0
 sp_save:    dw 0                ; Stack beim Programmstart
 opt_vol:    db 2                ; Lautstaerke 0 aus .. 3 laut
-opt_ghost:  db 1                ; Ghost 0 aus, 1 an
+opt_ghost:  db 0                ; Ghost 0 aus, 1 an
+opt_up:     db 0                ; Stick hoch = Hard Drop: 0 aus, 1 an
 spl_sel:    db 0                ; Splash: gewaehlte Zeile
 menu_mode:  db 0                ; 1 = Splash aktiv (Tastatur nur Start)
 tt_pos:     db 0                ; Titel-Zeichenroutine
@@ -1815,6 +1944,10 @@ full_cnt:   db 0
 lines:      dw 0                ; BCD, 4 Stellen
 score:      ds 3                ; BCD, 6 Stellen, niederwertig zuerst
 best:       ds 3
+best_sv:    ds 3                ; zuletzt gesicherter Rekord
+hdr_in:     ds 17               ; gelesener Kopfblock
+hdr_best:   db 3,"tetris_hi ",3,0   ; Typ CODE, Name (10), Laenge 3
+            dw best,32768           ; Startadresse, Parameter
 level:      db 0                ; binaer (fuer Tabelle/Multiplikator)
 level_bcd:  db 0                ; BCD (fuer Anzeige)
 level_left: db 0                ; Zeilen bis zum naechsten Level
