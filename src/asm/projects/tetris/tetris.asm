@@ -3,7 +3,8 @@
 ;  Spielfeld (eigene Datenstruktur), Blockgrafik, Figuren mit
 ;  Rotationstabelle, Kollision, Schwerkraft, Ablegen, Zeilen loeschen,
 ;  Zufallsfiguren (Xorshift + 7-Bag), Punkte, Level, Vorschau, Bestwert,
-;  Beeper-Sound, Wall Kicks, Ghost-Figur, Hard Drop.
+;  Beeper-Sound, Wall Kicks, Ghost-Figur, Hard Drop,
+;  Splash-Screen mit Einstellungen (Lautstaerke, Ghost an/aus).
 ;
 ;  Assemblieren:  pasmo --tapbas tetris.asm tetris.tap
 ;
@@ -47,11 +48,27 @@ K_DOWN      equ 2
 K_ROT       equ 3
 K_HARD      equ 4
 M_LR        equ %00000011   ; Maske links|rechts
+M_FIRE      equ %00001000   ; Maske Feuer = K_ROT (startet im Splash)
 
 ; ==========================================================================
 start:
+        ld (sp_save),sp         ; Stack fuer spaetere Neustarts merken
+        ld hl,0
+        ld (best),hl
+        ld (best+1),hl
+        ld a,2                  ; Standard: Lautstaerke MITTEL, Ghost AN
+        ld (opt_vol),a
+        ld a,1
+        ld (opt_ghost),a
+        ld a,$ff
+        ld (keys),a             ; gehaltene Taste zaehlt nicht als Druck
+
+new_game:                       ; auch nach Game Over: wieder zum Splash
+        ld sp,(sp_save)
         xor a
         out ($fe),a             ; Rand schwarz
+        call cls
+        call splash             ; Einstellungen, liefert auch den Zufallsstartwert
         call cls
         call init_board
         call draw_patterns
@@ -66,19 +83,9 @@ st_ttl: ld (hl),ATTR_TITLE
         call clear_next         ; Vorschau leer, bis die erste Figur gezogen ist
 
         xor a
-        ld (keys),a
         ld (das_cnt),a
         ld (drop_cnt),a
-        ld hl,0
-        ld (best),hl
-        ld (best+1),hl
         call reset_game
-        ; Startmeldung; die Wartezeit bis zum Tastendruck liefert den Zufall
-        ld hl,msg_start
-        call draw_list
-        call wait_key
-        ld hl,msg_clear
-        call draw_list
 
         ld a,7                  ; Beutel leer -> wird beim ersten Ziehen gefuellt
         ld (bag_pos),a
@@ -373,10 +380,14 @@ ft_hit: pop bc
 
 ; Figur und Ghost loeschen (Zellen aus dem Brett wiederherstellen)
 erase_piece:
+        ld a,(opt_ghost)
+        or a
+        jr z,ep_piece           ; Ghost aus -> nichts zu loeschen
         ld a,(ghost_row)
         ld (paint_row),a
         xor a
         call paint
+ep_piece:
         ld a,(piece_row)
         ld (paint_row),a
         xor a
@@ -384,6 +395,9 @@ erase_piece:
 
 ; Ghost (Landeposition) und Figur zeichnen
 draw_piece:
+        ld a,(opt_ghost)
+        or a
+        jr z,draw_only          ; Ghost aus
         call calc_ghost
         ld a,(ghost_row)
         ld (paint_row),a
@@ -518,7 +532,11 @@ ri_4:   ld a,$7f                ; SPACE SYM M N B
         bit 0,a
         jr nz,ri_5
         set K_HARD,c            ; SPACE
-ri_5:
+ri_5:   ld a,(menu_mode)        ; im Splash zaehlt die Tastatur nicht:
+        or a                    ; Einstellungen und Start nur per Joystick
+        jr z,ri_nk
+        ld c,0
+ri_nk:
         ; Sinclair-Joystick 1: 6=links 7=rechts 8=runter 9=hoch 0=Feuer
         ld a,$ef                ; 0 9 8 7 6
         in a,($fe)
@@ -792,13 +810,7 @@ new_piece:
         ld b,50                 ; 1 s Pause, damit niemand versehentlich weiterdrueckt
         call wait_frames
         call wait_key
-        ld hl,msg_clear
-        call draw_list
-        ld a,ATTR_TEXT          ; Zeile wieder normal faerben
-        call color_over
-        call init_board
-        call render_board
-        call reset_game
+        jp new_game             ; zurueck zum Splash (Einstellungen aendern)
 np_ok:  jp draw_piece
 
 ; A = Attribut fuer die GAME-OVER-Zeile (Zeile 17, Spalten 23-31)
@@ -1302,16 +1314,55 @@ bf_swp: ld hl,bag               ; A = j, tausche bag[i] <-> bag[j]
 ; ==========================================================================
 
 ; B = Anzahl Halbwellen, C = Laenge einer Halbwelle (groesser = tiefer)
-; Rand bleibt schwarz.  Veraendert A, B, E.
-tone:   di
-        xor a
-tn_lp:  xor $10
+; Lautstaerke (opt_vol 0-3) ueber das Tastverhaeltnis: Der Beeper hat nur
+; 1 Bit, aber je schmaler die Hoch-Phase einer Periode, desto leiser.
+;   3 = 50 %   2 = 25 %   1 = 12,5 %   0 = aus (kehrt sofort zurueck)
+; Periode = 2*C: Hoch H, danach Tief (C-H) + C.  Rand bleibt schwarz.
+; Veraendert A und B, erhaelt C, D, E, H, L.
+tone:   ld a,(opt_vol)
+        or a
+        ret z
+        push hl
+        push de
+        ld e,a
+        ld a,c
+        dec e
+        jr z,tn_q               ; Stufe 1: C/4
+        dec e
+        jr z,tn_h               ; Stufe 2: C/2
+        jr tn_f                 ; Stufe 3: C
+tn_q:   srl a
+tn_h:   srl a
+tn_f:   ld h,a                  ; H = Hoch-Zaehler
+        ld a,c
+        sub h
+        ld l,a                  ; L = C - H (bei Stufe 3 gleich 0)
+        ld a,b
+        srl a                   ; B Halbwellen = B/2 Perioden
+        jr nz,tn_cnt
+        inc a
+tn_cnt: ld b,a
+        di
+tn_per: ld a,$10
         out ($fe),a
-        ld e,c
-tn_dl:  dec e
-        jr nz,tn_dl
-        djnz tn_lp
+        ld d,h
+tn_d1:  dec d
+        jr nz,tn_d1
+        xor a
+        out ($fe),a
+        ld d,l
+        inc d
+        dec d
+        jr z,tn_l2              ; L = 0 ueberspringen (sonst 256 Durchlaeufe)
+tn_d2:  dec d
+        jr nz,tn_d2
+tn_l2:  ld d,c
+tn_d3:  dec d
+        jr nz,tn_d3
+        djnz tn_per
         ei
+        pop de
+        pop hl
         ret
 
 ; Game Over: absteigende Tonfolge
@@ -1324,6 +1375,228 @@ so_lp:  ld b,30
         ld c,a
         cp 240
         jr c,so_lp
+        ret
+
+; ==========================================================================
+;  Splash-Screen mit Einstellungen
+; ==========================================================================
+
+SPL_ROW_VOL equ 11              ; Zeile der Lautstaerke-Einstellung
+SPL_ROW_GHO equ 13              ; Zeile der Ghost-Einstellung
+SPL_SEL     equ $46             ; gewaehlte Zeile: BRIGHT, INK 6 (gelb)
+SPL_DIM     equ $07             ; andere Zeile: normal weiss
+
+; Zeigt Titel und Einstellungen.  Joystick links/rechts aendert den Wert,
+; Joystick runter wechselt die Zeile.  Nur Feuer startet.  Waehrend des Wartens laeuft seed hoch -> Zufallsstartwert.
+splash:
+        ld a,1
+        ld (menu_mode),a        ; Tastatur: nur Start, Einstellungen per Joystick
+        call draw_title
+        ld hl,splash_texts
+        call draw_list
+        ld hl,$5800+20*32+9     ; "FEUER = START" blinkt (FLASH-Attribut)
+        ld b,13
+        ld a,$c7                ; FLASH, BRIGHT, INK 7
+spl_bl: ld (hl),a
+        inc hl
+        djnz spl_bl
+        ld hl,best+2            ; Rekord
+        ld d,3
+        ld bc,22*256+16
+        call print_bcd
+        xor a
+        ld (spl_sel),a
+        call spl_refresh
+spl_lp: halt
+        ld hl,(seed)
+        inc hl
+        ld (seed),hl
+        call read_input
+        ld a,(pressed)
+        and M_FIRE              ; nur Feuer startet (hoch/Tastatur nicht)
+        jr nz,spl_go
+        ld a,(pressed)
+        bit K_DOWN,a
+        jr z,spl_lr
+        ld a,(spl_sel)          ; Zeile wechseln
+        xor 1
+        ld (spl_sel),a
+        call spl_refresh
+spl_lr: ld a,(pressed)
+        and M_LR
+        jr z,spl_lp
+        call spl_change
+        call spl_refresh
+        jr spl_lp
+spl_go: xor a
+        ld (menu_mode),a        ; im Spiel gilt die Tastatur wieder voll
+        ld hl,(seed)            ; Zufall: Frames + Register R
+        ld a,r
+        xor l
+        ld l,a
+        or h
+        jr nz,sg_ok
+        inc l                   ; Xorshift braucht Startwert <> 0
+sg_ok:  ld (seed),hl
+        ld a,$ff                ; gehaltene Taste nicht als neuen Druck werten
+        ld (keys),a
+        ret
+
+; Wert der gewaehlten Zeile aendern (links/rechts aus pressed)
+spl_change:
+        ld a,(spl_sel)
+        or a
+        jr nz,sc_gh
+        ld a,(opt_vol)
+        ld b,a
+        ld a,(pressed)
+        bit K_LEFT,a
+        jr z,sc_r
+        ld a,b                  ; leiser (bei 0 stehen bleiben)
+        or a
+        ret z
+        dec a
+        jr sc_st
+sc_r:   ld a,b                  ; lauter (bei 3 stehen bleiben)
+        cp 3
+        ret nc
+        inc a
+sc_st:  ld (opt_vol),a
+        ld bc,20*256+60         ; Hoerprobe in der neuen Lautstaerke
+        jp tone
+sc_gh:  ld a,(opt_ghost)
+        xor 1
+        ld (opt_ghost),a
+        ret
+
+; Werte als Text ausgeben und die gewaehlte Zeile gelb markieren
+spl_refresh:
+        ld a,(opt_vol)
+        ld e,a
+        add a,a
+        add a,a
+        add a,a
+        add a,e                 ; *9 (8 Zeichen + Endmarke)
+        ld e,a
+        ld d,0
+        ld hl,vol_txt
+        add hl,de
+        ld b,SPL_ROW_VOL
+        ld c,16
+        call print_at
+        ld a,(opt_ghost)
+        ld e,a
+        add a,a
+        add a,a
+        add a,a
+        add a,e
+        ld e,a
+        ld d,0
+        ld hl,ghost_txt
+        add hl,de
+        ld b,SPL_ROW_GHO
+        ld c,16
+        call print_at
+        ld a,(spl_sel)
+        or a
+        ld b,SPL_SEL
+        ld c,SPL_DIM
+        jr z,sr_s               ; Zeile 0 gewaehlt
+        ld b,SPL_DIM
+        ld c,SPL_SEL
+sr_s:   ld a,b
+        ld hl,$5800+SPL_ROW_VOL*32+6
+        call spl_row
+        ld a,c
+        ld hl,$5800+SPL_ROW_GHO*32+6
+spl_row:
+        ld b,19                 ; Spalten 6-24
+sr_lp:  ld (hl),a
+        inc hl
+        djnz sr_lp
+        ret
+
+; Grosser Titel aus Blockzellen: 6 Buchstaben, je 3x5 Zellen, ab Zeile 3
+draw_title:
+        xor a
+        ld (tt_pos),a
+dtt_p:  ld a,(tt_pos)
+        ld e,a
+        ld d,0
+        ld hl,title_word
+        add hl,de
+        ld a,(hl)               ; Buchstabennummer
+        ld c,a
+        add a,a
+        add a,a
+        add a,c                 ; *5 Bytes je Buchstabe
+        ld e,a
+        ld hl,font5
+        add hl,de
+        ld (tt_font),hl
+        ld a,(tt_pos)
+        ld e,a
+        ld hl,title_cols
+        add hl,de
+        ld a,(hl)
+        ld (tt_attr),a
+        ld a,(tt_pos)
+        add a,a
+        add a,a
+        add a,4                 ; Startspalte = 4 + 4*Position
+        ld (tt_col),a
+        xor a
+        ld (tt_row),a
+dtt_r:  ld hl,(tt_font)
+        ld a,(tt_row)
+        ld e,a
+        ld d,0
+        add hl,de
+        ld d,(hl)               ; D = 3 Bits der Zeile (Bit 2 = links)
+        ld e,0                  ; E = Spalte im Buchstaben
+dtt_c:  bit 2,d
+        jr z,dtt_n
+        push de
+        ld a,(tt_row)
+        add a,3
+        ld b,a
+        ld a,(tt_col)
+        add a,e
+        ld c,a
+        call put_block
+        pop de
+dtt_n:  sla d
+        inc e
+        ld a,e
+        cp 3
+        jr nz,dtt_c
+        ld a,(tt_row)
+        inc a
+        ld (tt_row),a
+        cp 5
+        jr nz,dtt_r
+        ld a,(tt_pos)
+        inc a
+        ld (tt_pos),a
+        cp 6
+        jr nz,dtt_p
+        ret
+
+; Blockzelle bei B = Zeile, C = Spalte: Muster + Farbe aus tt_attr
+put_block:
+        push bc
+        call cell_pix
+        ld de,pat_block
+        ld b,8
+pbk_l:  ld a,(de)
+        ld (hl),a
+        inc de
+        inc h
+        djnz pbk_l
+        pop bc
+        call cell_attr
+        ld a,(tt_attr)
+        ld (hl),a
         ret
 
 ; ==========================================================================
@@ -1467,20 +1740,42 @@ pts_lines:  db $40,$00,$00      ;   40  Single
             db $00,$03,$00      ;  300  Triple
             db $00,$12,$00      ; 1200  Tetris
 
-msg_start:
-        db 19,24,"TASTE",0
-        db 20,23,"DRUECKEN",0
-        db $ff
 msg_over:
         db 17,23,"GAME OVER",0
         db 19,24,"TASTE",0
         db 20,23,"DRUECKEN",0
         db $ff
-msg_clear:
-        db 17,23,"         ",0
-        db 19,23,"         ",0
-        db 20,23,"         ",0
+
+splash_texts:
+        db 9,8,"FUER ZX SPECTRUM",0
+        db 11,6,"SOUND",0
+        db 11,14,"<",0
+        db 11,24,">",0
+        db 13,6,"GHOST",0
+        db 13,14,"<",0
+        db 13,24,">",0
+        db 17,3,"STICK LINKS RECHTS = WERT",0
+        db 18,3,"STICK RUNTER = ZEILE",0
+        db 20,9,"FEUER = START",0
+        db 22,9,"REKORD",0
         db $ff
+
+; Werte der Einstellungen, je 8 Zeichen + Endmarke
+vol_txt:    db "AUS     ",0
+            db "LEISE   ",0
+            db "MITTEL  ",0
+            db "LAUT    ",0
+ghost_txt:  db "AUS     ",0
+            db "AN      ",0
+
+; Titelschrift 3x5: T E R I S (Bit 2 = linke Spalte)
+font5:      db %111,%010,%010,%010,%010     ; T
+            db %111,%100,%110,%100,%111     ; E
+            db %110,%101,%110,%101,%101     ; R
+            db %111,%010,%010,%010,%111     ; I
+            db %111,%100,%111,%001,%111     ; S
+title_word: db 0,1,0,2,3,4                  ; T E T R I S
+title_cols: db $50,$70,$58,$60,$68,$48      ; rot gelb magenta gruen cyan blau
 
 ; --- Variablen ------------------------------------------------------------
 piece_type: db 0
@@ -1493,6 +1788,16 @@ paint_attr: db 0
 paint_row:  db 0
 ghost_row:  db 0
 rot_try:    db 0
+sp_save:    dw 0                ; Stack beim Programmstart
+opt_vol:    db 2                ; Lautstaerke 0 aus .. 3 laut
+opt_ghost:  db 1                ; Ghost 0 aus, 1 an
+spl_sel:    db 0                ; Splash: gewaehlte Zeile
+menu_mode:  db 0                ; 1 = Splash aktiv (Tastatur nur Start)
+tt_pos:     db 0                ; Titel-Zeichenroutine
+tt_font:    dw 0
+tt_attr:    db 0
+tt_col:     db 0
+tt_row:     db 0
 keys:       db 0
 pressed:    db 0
 das_cnt:    db 0
