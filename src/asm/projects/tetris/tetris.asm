@@ -1,15 +1,16 @@
 ; ==========================================================================
-;  TETRIS fuer den ZX Spectrum - Schritt 1-5
+;  TETRIS fuer den ZX Spectrum - Schritt 1-6
 ;  Spielfeld (eigene Datenstruktur), Blockgrafik, Figuren mit
 ;  Rotationstabelle, Kollision, Schwerkraft, Ablegen, Zeilen loeschen,
-;  Zufallsfiguren (Xorshift + 7-Bag), Punkte, Level, Vorschau, Bestwert.
+;  Zufallsfiguren (Xorshift + 7-Bag), Punkte, Level, Vorschau, Bestwert,
+;  Beeper-Sound, Wall Kicks, Ghost-Figur, Hard Drop.
 ;
 ;  Assemblieren:  pasmo --tapbas tetris.asm tetris.tap
 ;
 ;  Steuerung:  O / P  links / rechts      Q  drehen
-;              A      runter
+;              A      runter              SPACE  fallen lassen (Hard Drop)
 ;              Sinclair-Joystick (IF2) Port 1 (6-0) und Port 2 (1-5):
-;              links/rechts/runter, hoch oder Feuer = drehen
+;              links/rechts/runter, Feuer = drehen, hoch = fallen lassen
 ; ==========================================================================
 
         org $8000
@@ -44,6 +45,7 @@ K_LEFT      equ 0
 K_RIGHT     equ 1
 K_DOWN      equ 2
 K_ROT       equ 3
+K_HARD      equ 4
 M_LR        equ %00000011   ; Maske links|rechts
 
 ; ==========================================================================
@@ -369,18 +371,43 @@ ft_hit: pop bc
         or a                    ; -> NZ
         ret
 
-; Figur loeschen (Zellen aus dem Brett wiederherstellen) bzw. zeichnen
+; Figur und Ghost loeschen (Zellen aus dem Brett wiederherstellen)
 erase_piece:
+        ld a,(ghost_row)
+        ld (paint_row),a
+        xor a
+        call paint
+        ld a,(piece_row)
+        ld (paint_row),a
         xor a
         jr paint
+
+; Ghost (Landeposition) und Figur zeichnen
 draw_piece:
+        call calc_ghost
+        ld a,(ghost_row)
+        ld (paint_row),a
+        ld a,(piece_type)
+        inc a
+        call color_of           ; PAPER-Farbe der Figur ...
+        rrca
+        rrca
+        rrca
+        and 7                   ; ... als INK: nur die Fugenlinien leuchten
+        or $40                  ; BRIGHT, hebt sich vom dunkelblauen Raster ab
+        call paint
+draw_only:                      ; nur die Figur (ohne Ghost)
+        ld a,(piece_row)
+        ld (paint_row),a
         ld a,(piece_type)
         inc a
         call color_of
+
+; A = Attribut (0 = loeschen), Zeile aus paint_row, Spalte/Rotation der Figur
 paint:  ld (paint_attr),a
         ld a,(piece_rot)
         call cells_ptr
-        ld a,(piece_row)
+        ld a,(paint_row)
         ld b,a
         ld a,(piece_col)
         ld c,a
@@ -421,6 +448,22 @@ pt_set: ld e,a
         pop af
         dec a
         jr nz,pt_lp
+        ret
+
+; Ghost-Zeile: so weit nach unten, wie die Figur passt
+calc_ghost:
+        ld a,(piece_row)
+        ld b,a
+        ld a,(piece_col)
+        ld c,a
+cg_lp:  inc b
+        ld a,(piece_rot)
+        call cells_ptr          ; aendert BC nicht
+        call fits               ; erhaelt BC
+        jr z,cg_lp
+        dec b
+        ld a,b
+        ld (ghost_row),a
         ret
 
 ; Bewegung versuchen: B = neue Zeile, C = neue Spalte, A = neue Rotation
@@ -470,7 +513,12 @@ ri_3:   ld a,$fb                ; Q W E R T
         bit 0,a
         jr nz,ri_4
         set K_ROT,c             ; Q
-ri_4:
+ri_4:   ld a,$7f                ; SPACE SYM M N B
+        in a,($fe)
+        bit 0,a
+        jr nz,ri_5
+        set K_HARD,c            ; SPACE
+ri_5:
         ; Sinclair-Joystick 1: 6=links 7=rechts 8=runter 9=hoch 0=Feuer
         ld a,$ef                ; 0 9 8 7 6
         in a,($fe)
@@ -485,10 +533,12 @@ ri_6:   bit 3,b
 ri_7:   bit 2,b
         jr z,ri_8
         set K_DOWN,c
-ri_8:   ld a,b
-        and %00000011           ; hoch oder Feuer
+ri_8:   bit 0,b
+        jr z,ri_8b
+        set K_ROT,c             ; Feuer (Taste 0)
+ri_8b:  bit 1,b
         jr z,ri_9
-        set K_ROT,c
+        set K_HARD,c            ; hoch (Taste 9)
 ri_9:
         ; Sinclair-Joystick 2: 1=links 2=rechts 3=runter 4=hoch 5=Feuer
         ld a,$f7                ; 1 2 3 4 5
@@ -504,10 +554,12 @@ ri_10:  bit 1,b
 ri_11:  bit 2,b
         jr z,ri_12
         set K_DOWN,c
-ri_12:  ld a,b
-        and %00011000           ; hoch oder Feuer
+ri_12:  bit 4,b
+        jr z,ri_12b
+        set K_ROT,c             ; Feuer (Taste 5)
+ri_12b: bit 3,b
         jr z,ri_13
-        set K_ROT,c
+        set K_HARD,c            ; hoch (Taste 4)
 ri_13:
         ld a,(keys)
         cpl
@@ -518,6 +570,9 @@ ri_13:
         ret
 
 handle_input:
+        ld a,(pressed)
+        bit K_HARD,a
+        jp nz,hard_drop
         ld a,(pressed)
         bit K_ROT,a
         call nz,do_rotate
@@ -584,15 +639,58 @@ hd_go:  ld a,DROP_RATE-1
         call add_score
         jp draw_stats
 
+; Drehen mit Wall Kicks: Spalte +0, -1, +1 (beim I zusaetzlich -2, +2)
 do_rotate:
-        ld a,(piece_row)
-        ld b,a
-        ld a,(piece_col)
-        ld c,a
         ld a,(piece_rot)
         inc a
         and 3
-        jp try_move
+        ld (rot_try),a
+        ld hl,kick_tab
+        ld b,3
+        ld a,(piece_type)
+        or a
+        jr nz,dr_lp
+        ld b,5                  ; I-Stueck
+dr_lp:  push hl
+        push bc
+        ld a,(piece_col)
+        add a,(hl)
+        ld c,a
+        ld a,(piece_row)
+        ld b,a
+        ld a,(rot_try)
+        call try_move
+        pop bc
+        pop hl
+        jr z,dr_ok              ; POP aendert keine Flags
+        inc hl
+        djnz dr_lp
+        ret                     ; keine Variante passt
+dr_ok:  ld bc,4*256+30          ; kurzer Klick
+        jp tone
+
+; Hard Drop: sofort auf die Ghost-Position, 2 Punkte pro Zeile, ablegen
+hard_drop:
+        call calc_ghost         ; sicherheitshalber frisch berechnen
+        ld a,(piece_row)
+        ld c,a
+        ld a,(ghost_row)
+        sub c
+        jr z,hdr_lock
+        ld b,a
+hdr_pts:
+        push bc
+        ld de,pts_hard
+        call add_score
+        pop bc
+        djnz hdr_pts
+        call erase_piece
+        ld a,(ghost_row)
+        ld (piece_row),a
+        call draw_only
+        call draw_stats
+hdr_lock:
+        jp lock_and_next
 
 ; ==========================================================================
 ;  Schwerkraft, Ablegen, neue Figur
@@ -612,6 +710,8 @@ step_down:
         call try_down
         ret z
 lock_and_next:
+        ld bc,10*256+180        ; dumpfer Aufsetz-Ton
+        call tone
         call lock_piece
         call check_lines
         jp new_piece
@@ -682,7 +782,8 @@ new_piece:
         ld c,SPAWN_COL
         call fits
         jr z,np_ok
-        call draw_piece         ; ueberlappende Figur zeigen
+        call draw_only          ; ueberlappende Figur zeigen
+        call snd_over
         call update_best
         ld hl,msg_over
         call draw_list
@@ -818,13 +919,23 @@ sl_next:
 level_flash:
         push bc
         ld b,6
-lf_lp:  ld a,b
+lf_lp:  push bc
+        ld a,b                  ; steigende Toene
+        add a,a
+        add a,a
+        add a,a
+        add a,20
+        ld c,a
+        ld b,40
+        call tone
+        pop bc                  ; tone setzt den Rand schwarz -> Farbe erst danach
+        push bc
+        ld a,b
         and 1
         jr z,lf_1
         ld a,6                  ; gelb
 lf_1:   out ($fe),a
-        push bc
-        ld b,3
+        ld b,2
         call wait_frames
         pop bc
         djnz lf_lp
@@ -861,11 +972,11 @@ draw_stats:
         call print_bcd
         ld hl,level_bcd
         ld d,1
-        ld bc,7*256+2
+        ld bc,7*256+3
         call print_bcd
         ld hl,lines+1
         ld d,2
-        ld bc,11*256+2
+        ld bc,11*256+3
         call print_bcd
         ld hl,best+2
         ld d,3
@@ -1027,7 +1138,16 @@ cl_next:
 cl_fl:  push de
         ld a,ATTR_FLASH
         call paint_full
-        ld b,4
+        ld a,(full_cnt)         ; Tonhoehe: mehr Reihen = hoeher
+        ld e,a
+        ld a,90
+cl_snd: sub 15
+        dec e
+        jr nz,cl_snd
+        ld c,a
+        ld b,60
+        call tone
+        ld b,3
         call wait_frames
         ld a,ATTR_EMPTY
         call paint_full
@@ -1178,6 +1298,35 @@ bf_swp: ld hl,bag               ; A = j, tausche bag[i] <-> bag[j]
         ret
 
 ; ==========================================================================
+;  Sound (Beeper, Port $FE Bit 4)
+; ==========================================================================
+
+; B = Anzahl Halbwellen, C = Laenge einer Halbwelle (groesser = tiefer)
+; Rand bleibt schwarz.  Veraendert A, B, E.
+tone:   di
+        xor a
+tn_lp:  xor $10
+        out ($fe),a
+        ld e,c
+tn_dl:  dec e
+        jr nz,tn_dl
+        djnz tn_lp
+        ei
+        ret
+
+; Game Over: absteigende Tonfolge
+snd_over:
+        ld c,40
+so_lp:  ld b,30
+        call tone
+        ld a,c
+        add a,20
+        ld c,a
+        cp 240
+        jr c,so_lp
+        ret
+
+; ==========================================================================
 ;  Warten
 ; ==========================================================================
 
@@ -1292,13 +1441,17 @@ texts:
         db 9,23,"O P <  >",0
         db 10,23,"Q DREHEN",0
         db 11,23,"A RUNTER",0
-        db 13,23,"JOYSTICK",0
-        db 14,23,"IF2 1+2",0
+        db 12,23,"SPC DROP",0
+        db 14,23,"JOYSTICK",0
+        db 15,23,"IF2 1+2",0
         db 2,2,"PUNKTE",0
         db 6,2,"LEVEL",0
         db 10,2,"REIHEN",0
         db 18,2,"REKORD",0
         db $ff
+
+; Wall-Kick-Versatz in Spalten (I nutzt alle 5)
+kick_tab:   db 0,-1,1,-2,2
 
 ; Frames pro Zeile je Level (50 Hz), angelehnt an NES-Tetris (PAL)
 speed_table:
@@ -1308,6 +1461,7 @@ speed_table:
 
 ; Punkte als 3 Byte BCD, niederwertig zuerst
 pts_soft:   db $01,$00,$00
+pts_hard:   db $02,$00,$00
 pts_lines:  db $40,$00,$00      ;   40  Single
             db $00,$01,$00      ;  100  Double
             db $00,$03,$00      ;  300  Triple
@@ -1336,6 +1490,9 @@ piece_col:  db 0
 new_rot:    db 0
 new_pos:    dw 0                ; Low = Spalte (C), High = Zeile (B)
 paint_attr: db 0
+paint_row:  db 0
+ghost_row:  db 0
+rot_try:    db 0
 keys:       db 0
 pressed:    db 0
 das_cnt:    db 0
