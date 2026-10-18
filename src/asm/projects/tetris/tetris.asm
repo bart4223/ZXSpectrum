@@ -63,10 +63,6 @@ start:
         ld (opt_up),a
         ld a,$ff
         ld (keys),a             ; gehaltene Taste zaehlt nicht als Druck
-        call cls
-        ld hl,msg_load
-        call draw_list
-        call load_best          ; gesicherten Rekord laden (falls vorhanden)
 
 new_game:                       ; auch nach Game Over: wieder zum Splash
         ld sp,(sp_save)
@@ -820,7 +816,6 @@ new_piece:
         call color_over
         ld b,50                 ; 1 s Pause, damit niemand versehentlich weiterdrueckt
         call wait_frames
-        call save_best          ; neuer Rekord -> als TAP sichern
         call wait_key
         jp new_game             ; zurueck zum Splash (Einstellungen aendern)
 np_ok:  jp draw_piece
@@ -987,111 +982,6 @@ ub_copy:
         ld bc,3
         ldir
         jp draw_stats
-
-; Neuer Rekord seit dem letzten Sichern?  Dann ueber die ROM-Routine
-; SA-BYTES ($04C2) als Kopfblock + Datenblock auf "Band" (TAP) schreiben.
-save_best:
-        ld hl,best
-        ld de,best_sv
-        ld b,3
-sb_cmp: ld a,(de)
-        cp (hl)
-        jr nz,sb_do
-        inc hl
-        inc de
-        djnz sb_cmp
-        ret                     ; Rekord unveraendert
-sb_do:  ld hl,best
-        ld de,best_sv
-        ld bc,3
-        ldir
-        ld hl,msg_save
-        call draw_list
-        ld ix,hdr_best          ; Kopfblock (17 Bytes, Flag 0)
-        ld de,17
-        xor a
-        call $04c2
-        ld b,10                 ; kurze Pause zwischen den Bloecken
-        call wait_frames
-        ld ix,best              ; Datenblock (3 Bytes, Flag $FF)
-        ld de,3
-        ld a,$ff
-        call $04c2
-        xor a
-        out ($fe),a             ; Rand wieder schwarz
-        ei
-        ld hl,msg_clr
-        jp draw_list
-
-; Rekord vom "Band" lesen (ROM LD-BYTES $0556).  Das ganze Band wird Block
-; fuer Block durchsucht: Kopfbloecke mit Typ CODE und Name "tetris_hi" liefern
-; den Rekord (der letzte gewinnt), fremde Bloecke werden uebersprungen.
-; Ende des Bandes/Fehler beendet die Suche.  ld_state: 1 gefunden, 2 nicht,
-; ld_seen = Anzahl gelesener Kopfbloecke (zur Diagnose im Splash).
-load_best:
-        xor a
-        ld (ld_seen),a
-        ld (ld_found),a
-lb_next:
-        ld ix,hdr_in
-        ld de,17
-        xor a                   ; Flag 0 = Kopfblock
-        scf                     ; Carry = laden
-        call $0556
-        jr nc,lb_done           ; kein Block mehr / Fehler
-        ld hl,ld_seen
-        inc (hl)
-        ld hl,hdr_in            ; Typ + Name pruefen
-        ld de,hdr_best
-        ld b,11
-lb_cmp: ld a,(de)
-        cp (hl)
-        jr nz,lb_skip
-        inc hl
-        inc de
-        djnz lb_cmp
-        ld ix,ld_buf
-        ld de,3
-        ld a,$ff                ; Flag $FF = Datenblock
-        scf
-        call $0556
-        jr nc,lb_done
-        ld hl,ld_buf            ; Rekord uebernehmen und als gesichert merken
-        ld de,best
-        ld bc,3
-        ldir
-        ld hl,ld_buf
-        ld de,best_sv
-        ld bc,3
-        ldir
-        ld a,1
-        ld (ld_found),a
-        jr lb_next
-lb_skip:                        ; fremder Block: Datenblock ueberspringen
-        ld a,(hdr_in+12)        ; Laenge (High) muss 0 sein
-        or a
-        jr nz,lb_done
-        ld a,(hdr_in+11)        ; Laenge (Low)
-        ld e,a
-        ld d,0
-        or a
-        jr z,lb_next            ; Laenge 0: kein Datenblock lesen
-        ld ix,skip_buf
-        ld a,$ff
-        scf
-        call $0556
-        jr c,lb_next
-lb_done:
-        ld a,(ld_found)
-        or a
-        ld a,2                  ; Status: nicht gefunden (best bleibt)
-        jr z,lb_end
-        ld a,1                  ; Status: OK
-lb_end: ld (ld_state),a
-        xor a
-        out ($fe),a
-        ei
-        ret
 
 ; Punkte, Zeilen, Level, Bestwert anzeigen
 draw_stats:
@@ -1501,7 +1391,6 @@ so_lp:  ld b,30
 SPL_ROW_VOL equ 11              ; Zeile der Lautstaerke-Einstellung
 SPL_ROW_GHO equ 13              ; Zeile der Ghost-Einstellung
 SPL_ROW_UP  equ 15              ; Zeile Joystick-hoch (Hard Drop)
-SPL_ROW_LD  equ 17              ; Zeile Rekord laden
 SPL_SEL     equ $46             ; gewaehlte Zeile: BRIGHT, INK 6 (gelb)
 SPL_DIM     equ $07             ; andere Zeile: normal weiss
 
@@ -1513,7 +1402,7 @@ splash:
         call draw_title
         ld hl,splash_texts
         call draw_list
-        ld hl,$5800+21*32+9     ; "FEUER = START" blinkt (FLASH-Attribut)
+        ld hl,$5800+20*32+9     ; "FEUER = START" blinkt (FLASH-Attribut)
         ld b,13
         ld a,$c7                ; FLASH, BRIGHT, INK 7
 spl_bl: ld (hl),a
@@ -1521,7 +1410,7 @@ spl_bl: ld (hl),a
         djnz spl_bl
         ld hl,best+2            ; Rekord
         ld d,3
-        ld bc,23*256+16
+        ld bc,22*256+16
         call print_bcd
         xor a
         ld (spl_sel),a
@@ -1537,9 +1426,9 @@ spl_lp: halt
         ld a,(pressed)
         bit K_DOWN,a
         jr z,spl_lr
-        ld a,(spl_sel)          ; Zeile wechseln (0..3 im Kreis)
+        ld a,(spl_sel)          ; Zeile wechseln (0,1,2 im Kreis)
         inc a
-        cp 4
+        cp 3
         jr c,spl_sv
         xor a
 spl_sv: ld (spl_sel),a
@@ -1587,23 +1476,14 @@ sc_st:  ld (opt_vol),a
         ld bc,20*256+60         ; Hoerprobe in der neuen Lautstaerke
         jp tone
 sc_o:   dec a
-        jr nz,sc_u2
+        jr nz,sc_up
         ld a,(opt_ghost)
         xor 1
         ld (opt_ghost),a
         ret
-sc_u2:  dec a
-        jr nz,sc_ld
-        ld a,(opt_up)
+sc_up:  ld a,(opt_up)
         xor 1
         ld (opt_up),a
-        ret
-sc_ld:  ld a,3                  ; Rekord jetzt laden (Band im Geraet einlegen)
-        ld (ld_state),a
-        call spl_refresh        ; zeigt "LADE..."
-        call load_best
-        ld a,$ff
-        ld (keys),a             ; waehrend des Ladens gehaltene Tasten ignorieren
         ret
 
 ; Werte als Text ausgeben und die gewaehlte Zeile gelb markieren
@@ -1647,36 +1527,8 @@ spl_refresh:
         ld b,SPL_ROW_UP
         ld c,16
         call print_at
-        ld a,(ld_state)
-        ld e,a
-        add a,a
-        add a,a
-        add a,a
-        add a,e
-        ld e,a
-        ld d,0
-        ld hl,ld_txt
-        add hl,de
-        ld b,SPL_ROW_LD
-        ld c,16
-        call print_at
-        ld a,(ld_state)         ; nach dem Laden: Anzahl gelesener Kopfbloecke
-        cp 1
-        jr c,sr_nodg
-        cp 3
-        jr nc,sr_nodg
-        ld a,(ld_seen)
-        add a,'0'
-        ld b,SPL_ROW_LD
-        ld c,22
-        call print_char
-sr_nodg:
-        ld hl,best+2            ; Rekord (kann sich durch Laden geaendert haben)
-        ld d,3
-        ld bc,23*256+16
-        call print_bcd
         ld hl,$5800+SPL_ROW_VOL*32+6
-        ld b,0                  ; Zeilen 0..3: gewaehlte gelb, andere weiss
+        ld b,0                  ; Zeilen 0..2: gewaehlte gelb, andere weiss
 sr_lp3: ld a,(spl_sel)
         cp b
         ld a,SPL_DIM
@@ -1689,7 +1541,7 @@ sr_c:   push bc
         add hl,de
         inc b
         ld a,b
-        cp 4
+        cp 3
         jr nz,sr_lp3
         ret
 spl_row:
@@ -1923,18 +1775,6 @@ pts_lines:  db $40,$00,$00      ;   40  Single
             db $00,$03,$00      ;  300  Triple
             db $00,$12,$00      ; 1200  Tetris
 
-msg_load:
-        db 11,10,"LADE REKORD",0
-        db $ff
-msg_save:
-        db 22,23,"SICHERE",0
-        db 23,23,"REKORD",0
-        db $ff
-msg_clr:
-        db 22,23,"       ",0   ; exakt dort, wo msg_save steht
-        db 23,23,"      ",0
-        db $ff
-
 msg_over:
         db 17,23,"GAME OVER",0
         db 19,24,"TASTE",0
@@ -1952,12 +1792,10 @@ splash_texts:
         db 15,6,"HOCH",0
         db 15,14,"<",0
         db 15,24,">",0
-        db 17,6,"LADEN",0
-        db 17,24,">",0
-        db 19,3,"STICK LINKS RECHTS = WERT",0
-        db 20,3,"STICK RUNTER = ZEILE",0
-        db 21,9,"FEUER = START",0
-        db 23,9,"REKORD",0
+        db 17,3,"STICK LINKS RECHTS = WERT",0
+        db 18,3,"STICK RUNTER = ZEILE",0
+        db 20,9,"FEUER = START",0
+        db 22,9,"REKORD",0
         db $ff
 
 ; Werte der Einstellungen, je 8 Zeichen + Endmarke
@@ -1967,10 +1805,6 @@ vol_txt:    db "AUS     ",0
             db "LAUT    ",0
 ghost_txt:  db "AUS     ",0
             db "AN      ",0
-ld_txt:     db "RECHTS  ",0
-            db "GELADEN ",0
-            db "FEHLT   ",0
-            db "LADE... ",0
 
 ; Titelschrift 3x5: T E R I S (Bit 2 = linke Spalte)
 font5:      db %111,%010,%010,%010,%010     ; T
@@ -2020,15 +1854,6 @@ full_cnt:   db 0
 lines:      dw 0                ; BCD, 4 Stellen
 score:      ds 3                ; BCD, 6 Stellen, niederwertig zuerst
 best:       ds 3
-best_sv:    ds 3                ; zuletzt gesicherter Rekord
-ld_buf:     ds 3                ; geladener Rekord (erst nach Pruefung uebernommen)
-ld_seen:    db 0                ; gelesene Kopfbloecke
-ld_found:   db 0
-skip_buf:   ds 255
-ld_state:   db 0                ; Splash: 0 offen, 1 geladen, 2 nicht gefunden
-hdr_in:     ds 17               ; gelesener Kopfblock
-hdr_best:   db 3,"tetris_hi ",3,0   ; Typ CODE, Name (10), Laenge 3
-            dw best,32768           ; Startadresse, Parameter
 level:      db 0                ; binaer (fuer Tabelle/Multiplikator)
 level_bcd:  db 0                ; BCD (fuer Anzeige)
 level_left: db 0                ; Zeilen bis zum naechsten Level
