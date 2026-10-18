@@ -1041,22 +1041,26 @@ lb_cmp: ld a,(de)
         inc hl
         inc de
         djnz lb_cmp
-        ld ix,best
+        ld ix,ld_buf
         ld de,3
         ld a,$ff                ; Flag $FF = Datenblock
         scf
         call $0556
         jr nc,lb_fail
-        ld hl,best              ; als gesichert merken -> kein sofortiges Neu-Sichern
+        ld hl,ld_buf            ; geladenen Rekord uebernehmen ...
+        ld de,best
+        ld bc,3
+        ldir
+        ld hl,ld_buf            ; ... und als gesichert merken (kein Neu-Sichern)
         ld de,best_sv
         ld bc,3
         ldir
+        ld a,1                  ; Status: OK
         jr lb_end
 lb_fail:
-        ld hl,0
-        ld (best),hl
-        ld (best+1),hl
-lb_end: xor a
+        ld a,2                  ; Status: nicht gefunden (best bleibt)
+lb_end: ld (ld_state),a
+        xor a
         out ($fe),a
         ei
         ret
@@ -1469,6 +1473,7 @@ so_lp:  ld b,30
 SPL_ROW_VOL equ 11              ; Zeile der Lautstaerke-Einstellung
 SPL_ROW_GHO equ 13              ; Zeile der Ghost-Einstellung
 SPL_ROW_UP  equ 15              ; Zeile Joystick-hoch (Hard Drop)
+SPL_ROW_LD  equ 17              ; Zeile Rekord laden
 SPL_SEL     equ $46             ; gewaehlte Zeile: BRIGHT, INK 6 (gelb)
 SPL_DIM     equ $07             ; andere Zeile: normal weiss
 
@@ -1480,7 +1485,7 @@ splash:
         call draw_title
         ld hl,splash_texts
         call draw_list
-        ld hl,$5800+20*32+9     ; "FEUER = START" blinkt (FLASH-Attribut)
+        ld hl,$5800+21*32+9     ; "FEUER = START" blinkt (FLASH-Attribut)
         ld b,13
         ld a,$c7                ; FLASH, BRIGHT, INK 7
 spl_bl: ld (hl),a
@@ -1488,7 +1493,7 @@ spl_bl: ld (hl),a
         djnz spl_bl
         ld hl,best+2            ; Rekord
         ld d,3
-        ld bc,22*256+16
+        ld bc,23*256+16
         call print_bcd
         xor a
         ld (spl_sel),a
@@ -1504,9 +1509,9 @@ spl_lp: halt
         ld a,(pressed)
         bit K_DOWN,a
         jr z,spl_lr
-        ld a,(spl_sel)          ; Zeile wechseln (0,1,2 im Kreis)
+        ld a,(spl_sel)          ; Zeile wechseln (0..3 im Kreis)
         inc a
-        cp 3
+        cp 4
         jr c,spl_sv
         xor a
 spl_sv: ld (spl_sel),a
@@ -1554,14 +1559,23 @@ sc_st:  ld (opt_vol),a
         ld bc,20*256+60         ; Hoerprobe in der neuen Lautstaerke
         jp tone
 sc_o:   dec a
-        jr nz,sc_up
+        jr nz,sc_u2
         ld a,(opt_ghost)
         xor 1
         ld (opt_ghost),a
         ret
-sc_up:  ld a,(opt_up)
+sc_u2:  dec a
+        jr nz,sc_ld
+        ld a,(opt_up)
         xor 1
         ld (opt_up),a
+        ret
+sc_ld:  ld a,3                  ; Rekord jetzt laden (Band im Geraet einlegen)
+        ld (ld_state),a
+        call spl_refresh        ; zeigt "LADE..."
+        call load_best
+        ld a,$ff
+        ld (keys),a             ; waehrend des Ladens gehaltene Tasten ignorieren
         ret
 
 ; Werte als Text ausgeben und die gewaehlte Zeile gelb markieren
@@ -1605,8 +1619,25 @@ spl_refresh:
         ld b,SPL_ROW_UP
         ld c,16
         call print_at
+        ld a,(ld_state)
+        ld e,a
+        add a,a
+        add a,a
+        add a,a
+        add a,e
+        ld e,a
+        ld d,0
+        ld hl,ld_txt
+        add hl,de
+        ld b,SPL_ROW_LD
+        ld c,16
+        call print_at
+        ld hl,best+2            ; Rekord (kann sich durch Laden geaendert haben)
+        ld d,3
+        ld bc,23*256+16
+        call print_bcd
         ld hl,$5800+SPL_ROW_VOL*32+6
-        ld b,0                  ; Zeilen 0..2: gewaehlte gelb, andere weiss
+        ld b,0                  ; Zeilen 0..3: gewaehlte gelb, andere weiss
 sr_lp3: ld a,(spl_sel)
         cp b
         ld a,SPL_DIM
@@ -1619,7 +1650,7 @@ sr_c:   push bc
         add hl,de
         inc b
         ld a,b
-        cp 3
+        cp 4
         jr nz,sr_lp3
         ret
 spl_row:
@@ -1861,8 +1892,8 @@ msg_save:
         db 23,23,"REKORD",0
         db $ff
 msg_clr:
-        db 22,22,"       ",0
-        db 23,22,"      ",0
+        db 22,23,"       ",0   ; exakt dort, wo msg_save steht
+        db 23,23,"      ",0
         db $ff
 
 msg_over:
@@ -1882,10 +1913,12 @@ splash_texts:
         db 15,6,"HOCH",0
         db 15,14,"<",0
         db 15,24,">",0
-        db 17,3,"STICK LINKS RECHTS = WERT",0
-        db 18,3,"STICK RUNTER = ZEILE",0
-        db 20,9,"FEUER = START",0
-        db 22,9,"REKORD",0
+        db 17,6,"LADEN",0
+        db 17,24,">",0
+        db 19,3,"STICK LINKS RECHTS = WERT",0
+        db 20,3,"STICK RUNTER = ZEILE",0
+        db 21,9,"FEUER = START",0
+        db 23,9,"REKORD",0
         db $ff
 
 ; Werte der Einstellungen, je 8 Zeichen + Endmarke
@@ -1895,6 +1928,10 @@ vol_txt:    db "AUS     ",0
             db "LAUT    ",0
 ghost_txt:  db "AUS     ",0
             db "AN      ",0
+ld_txt:     db "RECHTS  ",0
+            db "GELADEN ",0
+            db "FEHLT   ",0
+            db "LADE... ",0
 
 ; Titelschrift 3x5: T E R I S (Bit 2 = linke Spalte)
 font5:      db %111,%010,%010,%010,%010     ; T
@@ -1945,6 +1982,8 @@ lines:      dw 0                ; BCD, 4 Stellen
 score:      ds 3                ; BCD, 6 Stellen, niederwertig zuerst
 best:       ds 3
 best_sv:    ds 3                ; zuletzt gesicherter Rekord
+ld_buf:     ds 3                ; geladener Rekord (erst nach Pruefung uebernommen)
+ld_state:   db 0                ; Splash: 0 offen, 1 geladen, 2 nicht gefunden
 hdr_in:     ds 17               ; gelesener Kopfblock
 hdr_best:   db 3,"tetris_hi ",3,0   ; Typ CODE, Name (10), Laenge 3
             dw best,32768           ; Startadresse, Parameter
