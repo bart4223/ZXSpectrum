@@ -1,12 +1,13 @@
 ; ==========================================================================
-;  TETRIS fuer den ZX Spectrum - Schritt 1-3
+;  TETRIS fuer den ZX Spectrum - Schritt 1-5
 ;  Spielfeld (eigene Datenstruktur), Blockgrafik, Figuren mit
-;  Rotationstabelle, Kollision, Schwerkraft und Ablegen ins Spielfeld.
+;  Rotationstabelle, Kollision, Schwerkraft, Ablegen, Zeilen loeschen,
+;  Zufallsfiguren (Xorshift + 7-Bag), Punkte, Level, Vorschau, Bestwert.
 ;
 ;  Assemblieren:  pasmo --tapbas tetris.asm tetris.tap
 ;
 ;  Steuerung:  O / P  links / rechts      Q  drehen
-;              A      runter              N  naechste Figur (Testtaste)
+;              A      runter
 ;              Sinclair-Joystick (IF2) Port 1 (6-0) und Port 2 (1-5):
 ;              links/rechts/runter, hoch oder Feuer = drehen
 ; ==========================================================================
@@ -27,17 +28,21 @@ SPAWN_COL   equ 4           ; Ankerspalte beim Erscheinen
 DAS_DELAY   equ 10          ; Frames bis Auto-Repeat links/rechts
 DAS_RATE    equ 3           ; Frames zwischen Wiederholungen
 DROP_RATE   equ 3           ; Frames zwischen Schritten beim Runterdruecken
-FALL_START  equ 48          ; Frames pro Zeile Schwerkraft (Level 0)
+PREV_ROW    equ 5           ; Vorschau: 4x2 Zellen ab Zeile 5, Spalte 24
+PREV_COL    equ 24
+LINES_PER_LEVEL equ 10
+MAX_LEVEL_SPEED equ 29      ; ab hier bleibt die Geschwindigkeit gleich
 
 ATTR_TEXT   equ $47         ; BRIGHT, PAPER 0, INK 7
 ATTR_TITLE  equ $46         ; BRIGHT, PAPER 0, INK 6
+ATTR_EMPTY  equ $01         ; leere Zelle: PAPER 0, INK 1
+ATTR_FLASH  equ $78         ; volle Zeile beim Blinken: BRIGHT, PAPER 7
 
 ; Eingabebits (aktiv high) in keys / pressed
 K_LEFT      equ 0
 K_RIGHT     equ 1
 K_DOWN      equ 2
 K_ROT       equ 3
-K_NEXT      equ 4
 M_LR        equ %00000011   ; Maske links|rechts
 
 ; ==========================================================================
@@ -54,15 +59,27 @@ start:
 st_ttl: ld (hl),ATTR_TITLE
         inc hl
         djnz st_ttl
+        call draw_prev_pattern
 
         xor a
         ld (keys),a
         ld (das_cnt),a
         ld (drop_cnt),a
-        ld a,FALL_START
-        ld (fall_delay),a
-        ld a,6                  ; new_piece zaehlt weiter -> erste Figur I
-        ld (piece_type),a
+        ld hl,0
+        ld (best),hl
+        ld (best+1),hl
+        call reset_game
+        ; Startmeldung; die Wartezeit bis zum Tastendruck liefert den Zufall
+        ld hl,msg_start
+        call draw_list
+        call wait_key
+        ld hl,msg_clear
+        call draw_list
+
+        ld a,7                  ; Beutel leer -> wird beim ersten Ziehen gefuellt
+        ld (bag_pos),a
+        call bag_next
+        ld (next_type),a
         call new_piece
 
 main_loop:
@@ -270,6 +287,8 @@ pc_ln:  ld a,(hl)
 
 draw_texts:
         ld hl,texts
+; HL = Liste aus Zeile, Spalte, String, 0 ... $ff
+draw_list:
 dt_lp:  ld a,(hl)
         cp $ff
         ret z
@@ -449,12 +468,7 @@ ri_3:   ld a,$fb                ; Q W E R T
         bit 0,a
         jr nz,ri_4
         set K_ROT,c             ; Q
-ri_4:   ld a,$7f                ; SPACE SYM M N B
-        in a,($fe)
-        bit 3,a
-        jr nz,ri_5
-        set K_NEXT,c            ; N
-ri_5:
+ri_4:
         ; Sinclair-Joystick 1: 6=links 7=rechts 8=runter 9=hoch 0=Feuer
         ld a,$ef                ; 0 9 8 7 6
         in a,($fe)
@@ -505,9 +519,6 @@ handle_input:
         ld a,(pressed)
         bit K_ROT,a
         call nz,do_rotate
-        ld a,(pressed)
-        bit K_NEXT,a
-        call nz,do_next
 
         ; --- links/rechts mit Auto-Repeat (DAS) ---
         ld a,(keys)
@@ -565,7 +576,11 @@ hd_go:  ld a,DROP_RATE-1
         ld (drop_cnt),a
         ld a,(fall_delay)       ; Schwerkraft-Takt neu starten
         ld (fall_cnt),a
-        jp step_down
+        call try_down
+        jp nz,lock_and_next
+        ld de,pts_soft          ; 1 Punkt pro Zeile Runterdruecken
+        call add_score
+        jp draw_stats
 
 do_rotate:
         ld a,(piece_row)
@@ -576,11 +591,6 @@ do_rotate:
         inc a
         and 3
         jp try_move
-
-; Testfunktion: aktuelle Figur verwerfen, naechste einsetzen
-do_next:
-        call erase_piece
-        jp new_piece
 
 ; ==========================================================================
 ;  Schwerkraft, Ablegen, neue Figur
@@ -597,16 +607,22 @@ gravity:
 
 ; Eine Zeile nach unten; geht das nicht, Figur ablegen + neue Figur
 step_down:
+        call try_down
+        ret z
+lock_and_next:
+        call lock_piece
+        call check_lines
+        jp new_piece
+
+; Eine Zeile nach unten versuchen: Z = bewegt, NZ = liegt auf
+try_down:
         ld a,(piece_row)
         inc a
         ld b,a
         ld a,(piece_col)
         ld c,a
         ld a,(piece_rot)
-        call try_move
-        ret z
-        call lock_piece
-        jp new_piece
+        jp try_move
 
 ; Aktive Figur ins Spielfeld-Array schreiben (Wert = Typ+1).
 ; Auf dem Bildschirm steht sie schon in der richtigen Farbe.
@@ -645,15 +661,14 @@ lk_lp:  push af
         jr nz,lk_lp
         ret
 
-; Naechste Figur oben einsetzen (vorerst der Reihe nach, Zufall in Schritt 4).
-; Passt sie nicht mehr: Game Over -> vorlaeufig kurz warten, Feld leeren.
+; Naechste Figur oben einsetzen: next_type wird aktiv, neue Vorschau ziehen.
+; Passt sie nicht mehr: Game Over -> Meldung, Taste, Feld leeren.
 new_piece:
-        ld a,(piece_type)
-        inc a
-        cp 7
-        jr c,np_set
-        xor a
-np_set: ld (piece_type),a
+        ld a,(next_type)
+        ld (piece_type),a
+        call bag_next
+        ld (next_type),a
+        call draw_next
         call spawn
         ld a,(fall_delay)
         ld (fall_cnt),a
@@ -666,12 +681,519 @@ np_set: ld (piece_type),a
         call fits
         jr z,np_ok
         call draw_piece         ; ueberlappende Figur zeigen
-        ld b,100                ; 2 Sekunden
-np_wt:  halt
-        djnz np_wt
+        call update_best
+        ld hl,msg_over
+        call draw_list
+        ld b,50                 ; 1 s Pause, damit niemand versehentlich weiterdrueckt
+        call wait_frames
+        call wait_key
+        ld hl,msg_clear
+        call draw_list
         call init_board
         call render_board
+        call reset_game
 np_ok:  jp draw_piece
+
+; ==========================================================================
+;  Punkte, Level, Anzeige
+; ==========================================================================
+
+; Neues Spiel: Punkte, Zeilen, Level auf 0
+reset_game:
+        ld hl,0
+        ld (score),hl
+        ld (score+1),hl         ; 3 Bytes BCD
+        ld (lines),hl           ; 2 Bytes BCD
+        xor a
+        ld (level),a
+        ld (level_bcd),a
+        ld a,LINES_PER_LEVEL
+        ld (level_left),a
+        call set_speed
+        jp draw_stats
+
+; fall_delay aus der Tabelle fuer das aktuelle Level
+set_speed:
+        ld a,(level)
+        cp MAX_LEVEL_SPEED
+        jr c,ss_ok
+        ld a,MAX_LEVEL_SPEED
+ss_ok:  ld e,a
+        ld d,0
+        ld hl,speed_table
+        add hl,de
+        ld a,(hl)
+        ld (fall_delay),a
+        ret
+
+; DE = 3 Byte BCD (niederwertiges Byte zuerst) zu score addieren.
+; Ueberlauf -> 999999.  Veraendert A, B, DE, HL.
+add_score:
+        ld hl,score
+        ld b,3
+        or a                    ; Carry loeschen
+as_lp:  ld a,(de)
+        adc a,(hl)
+        daa
+        ld (hl),a
+        inc hl                  ; INC rr / DJNZ lassen das Carry stehen
+        inc de
+        djnz as_lp
+        ret nc
+        ld a,$99
+        ld (score),a
+        ld (score+1),a
+        ld (score+2),a
+        ret
+
+; Punkte fuer full_cnt Zeilen: Basis * (Level+1), danach Zeilen/Level erhoehen
+score_lines:
+        ld a,(full_cnt)
+        dec a
+        ld e,a
+        add a,a
+        add a,e                 ; *3 Bytes
+        ld e,a
+        ld d,0
+        ld hl,pts_lines
+        add hl,de               ; HL = Basispunkte
+        ld a,(level)
+        inc a
+        ld c,a                  ; Level+1 mal addieren
+sl_add: push hl
+        push bc
+        ex de,hl
+        call add_score
+        pop bc
+        pop hl
+        dec c
+        jr nz,sl_add
+
+        ld a,(full_cnt)
+        ld c,a
+sl_line:
+        ld a,(lines)            ; lines += 1 (BCD)
+        add a,1
+        daa
+        ld (lines),a
+        ld a,(lines+1)
+        adc a,0
+        daa
+        ld (lines+1),a
+        ld hl,level_left
+        dec (hl)
+        jr nz,sl_next
+        ld (hl),LINES_PER_LEVEL
+        ld hl,level             ; Level hoch
+        inc (hl)
+        ld a,(level_bcd)
+        add a,1
+        daa
+        ld (level_bcd),a
+        call set_speed
+        call level_flash
+sl_next:
+        dec c
+        jr nz,sl_line
+        jp draw_stats
+
+; kurzer Randblitz beim Levelaufstieg
+level_flash:
+        push bc
+        ld b,6
+lf_lp:  ld a,b
+        and 1
+        jr z,lf_1
+        ld a,6                  ; gelb
+lf_1:   out ($fe),a
+        push bc
+        ld b,3
+        call wait_frames
+        pop bc
+        djnz lf_lp
+        xor a
+        out ($fe),a
+        pop bc
+        ret
+
+; Bestwert merken, falls score groesser
+update_best:
+        ld hl,score+2
+        ld de,best+2
+        ld b,3
+ub_cmp: ld a,(de)
+        cp (hl)
+        jr c,ub_copy            ; best < score
+        ret nz                  ; best > score
+        dec hl
+        dec de
+        djnz ub_cmp
+        ret                     ; gleich
+ub_copy:
+        ld hl,score
+        ld de,best
+        ld bc,3
+        ldir
+        jp draw_stats
+
+; Punkte, Zeilen, Level, Bestwert anzeigen
+draw_stats:
+        ld hl,score+2
+        ld d,3
+        ld bc,3*256+1           ; Zeile 3, Spalte 1
+        call print_bcd
+        ld hl,level_bcd
+        ld d,1
+        ld bc,7*256+1
+        call print_bcd
+        ld hl,lines+1
+        ld d,2
+        ld bc,11*256+1
+        call print_bcd
+        ld hl,best+2
+        ld d,3
+        ld bc,19*256+1
+        ; weiter in print_bcd
+
+; HL = hoechstwertiges BCD-Byte, D = Anzahl Bytes, B/C = Position
+print_bcd:
+        ld a,(hl)
+        rrca
+        rrca
+        rrca
+        rrca
+        and $0f
+        call pb_dig
+        ld a,(hl)
+        and $0f
+        call pb_dig
+        dec hl
+        dec d
+        jr nz,print_bcd
+        ret
+pb_dig: add a,'0'
+        push hl
+        push de
+        push bc
+        call print_char
+        pop bc
+        pop de
+        pop hl
+        inc c
+        ret
+
+; Vorschaufeld: Blockmuster einmalig zeichnen
+draw_prev_pattern:
+        ld b,PREV_ROW
+dpp_r:  ld c,PREV_COL
+dpp_c:  push bc
+        call cell_pix
+        ld de,pat_block
+        ld b,8
+dpp_l:  ld a,(de)
+        ld (hl),a
+        inc de
+        inc h
+        djnz dpp_l
+        pop bc
+        inc c
+        ld a,c
+        cp PREV_COL+4
+        jr nz,dpp_c
+        inc b
+        ld a,b
+        cp PREV_ROW+2
+        jr nz,dpp_r
+        ret
+
+; next_type in Grundstellung ins Vorschaufeld malen
+draw_next:
+        ld b,PREV_ROW           ; erst 4x2 Zellen schwarz
+dn_r:   ld c,PREV_COL
+        call cell_attr
+        ld (hl),0
+        inc hl
+        ld (hl),0
+        inc hl
+        ld (hl),0
+        inc hl
+        ld (hl),0
+        inc b
+        ld a,b
+        cp PREV_ROW+2
+        jr nz,dn_r
+        ld a,(next_type)
+        inc a
+        call color_of
+        ld (paint_attr),a
+        ld a,(next_type)        ; Zellen von Typ next_type, Rot 0
+        add a,a
+        add a,a
+        add a,a
+        add a,a
+        ld e,a
+        ld d,0
+        ld hl,pieces
+        add hl,de
+        ex de,hl
+        ld a,4
+dn_lp:  push af
+        ld a,(de)
+        and $0f
+        add a,PREV_COL
+        ld c,a
+        ld a,(de)
+        rrca
+        rrca
+        rrca
+        rrca
+        and $0f
+        ld b,a                  ; dy (0..1)
+        ld a,(next_type)
+        or a
+        jr nz,dn_y
+        dec b                   ; I liegt in Grundstellung in Zeile 1 -> hochziehen
+dn_y:   ld a,b
+        add a,PREV_ROW
+        ld b,a
+        call cell_attr
+        ld a,(paint_attr)
+        ld (hl),a
+        inc de
+        pop af
+        dec a
+        jr nz,dn_lp
+        ret
+
+; ==========================================================================
+;  Volle Zeilen
+; ==========================================================================
+
+; Nach dem Ablegen: volle Zeilen suchen, blinken lassen, entfernen
+check_lines:
+        xor a
+        ld (full_cnt),a
+        ld b,0                  ; Brettzeile (Boden = Zeile 20 nicht pruefen)
+cl_row: ld c,1
+        call board_addr
+        ld e,BOARD_W-2
+cl_col: ld a,(hl)
+        or a
+        jr z,cl_next            ; Luecke -> Zeile nicht voll
+        inc hl
+        dec e
+        jr nz,cl_col
+        ld hl,full_rows         ; volle Zeile merken (aufsteigend)
+        ld a,(full_cnt)
+        ld e,a
+        ld d,0
+        add hl,de
+        ld (hl),b
+        inc a
+        ld (full_cnt),a
+cl_next:
+        inc b
+        ld a,b
+        cp BOARD_H-1
+        jr nz,cl_row
+
+        ld a,(full_cnt)
+        or a
+        ret z
+
+        ld d,3                  ; 3x blinken
+cl_fl:  push de
+        ld a,ATTR_FLASH
+        call paint_full
+        ld b,4
+        call wait_frames
+        ld a,ATTR_EMPTY
+        call paint_full
+        ld b,4
+        call wait_frames
+        pop de
+        dec d
+        jr nz,cl_fl
+
+        ; von oben nach unten entfernen: so bleiben die gemerkten
+        ; Zeilennummern darunter gueltig
+        ld a,(full_cnt)
+        ld b,a
+        ld hl,full_rows
+cl_rm:  push bc
+        push hl
+        ld b,(hl)
+        call remove_row
+        pop hl
+        inc hl
+        pop bc
+        djnz cl_rm
+
+        call render_board
+        jp score_lines
+
+; A = Attribut fuer alle gemerkten vollen Zeilen (nur Bildschirm)
+paint_full:
+        ld e,a
+        ld a,(full_cnt)
+        ld d,a
+        ld hl,full_rows
+pf_lp:  ld a,(hl)
+        push hl
+        push de
+        add a,SCR_ROW0
+        ld b,a
+        ld c,SCR_COL0+1
+        call cell_attr
+        ld b,BOARD_W-2
+pf_col: ld (hl),e
+        inc hl
+        djnz pf_col
+        pop de
+        pop hl
+        inc hl
+        dec d
+        jr nz,pf_lp
+        ret
+
+; B = Brettzeile entfernen: alles darueber eine Zeile tiefer, Zeile 0 leer.
+; Ganze Zeilen inkl. Waende werden kopiert, die Waende bleiben also stehen.
+remove_row:
+        ld a,b
+        or a
+        jr z,rr_top
+        ld c,BOARD_W-1
+        call board_addr         ; HL = letzte Zelle der Zeile (Ziel-Ende)
+        ld d,h
+        ld e,l
+        ld a,l
+        sub BOARD_W
+        ld l,a                  ; HL = letzte Zelle der Zeile darueber
+        inc a
+        ld c,a                  ; Anzahl = 12 * Zeile
+        ld b,0
+        lddr
+rr_top: ld hl,BOARD+1
+        ld b,BOARD_W-2
+rr_clr: ld (hl),0
+        inc hl
+        djnz rr_clr
+        ret
+
+; ==========================================================================
+;  Zufall: Xorshift16 (Periode 65535) + 7-Bag
+; ==========================================================================
+
+; -> A = Zufallsbyte.  Veraendert HL.
+rnd:    ld hl,(seed)
+        ld a,h
+        rra
+        ld a,l
+        rra
+        xor h
+        ld h,a
+        ld a,l
+        rra
+        ld a,h
+        rra
+        xor l
+        ld l,a
+        xor h
+        ld h,a
+        ld (seed),hl
+        ret
+
+; -> A = naechste Figur aus dem Beutel (jede der 7 genau einmal pro Runde)
+bag_next:
+        ld a,(bag_pos)
+        cp 7
+        call nc,bag_fill
+        ld a,(bag_pos)
+        ld e,a
+        inc a
+        ld (bag_pos),a
+        ld d,0
+        ld hl,bag
+        add hl,de
+        ld a,(hl)
+        ret
+
+; Beutel mit 0..6 fuellen und mischen (Fisher-Yates)
+bag_fill:
+        ld hl,bag
+        xor a
+bf_ini: ld (hl),a
+        inc hl
+        inc a
+        cp 7
+        jr nz,bf_ini
+        ld c,6                  ; i = 6 .. 1
+bf_shf: call rnd
+        ld e,c
+        inc e                   ; Modulo i+1
+bf_mod: cp e
+        jr c,bf_swp
+        sub e
+        jr bf_mod
+bf_swp: ld hl,bag               ; A = j, tausche bag[i] <-> bag[j]
+        ld e,a
+        ld d,0
+        add hl,de
+        push hl
+        ld hl,bag
+        ld e,c
+        add hl,de
+        pop de
+        ld a,(de)
+        ld b,(hl)
+        ld (hl),a
+        ld a,b
+        ld (de),a
+        dec c
+        jr nz,bf_shf
+        xor a
+        ld (bag_pos),a
+        ret
+
+; ==========================================================================
+;  Warten
+; ==========================================================================
+
+; B = Anzahl Frames
+wait_frames:
+        halt
+        djnz wait_frames
+        ret
+
+; Auf Loslassen, dann auf eine Taste (inkl. IF2-Joystick) warten.
+; Die Frames bis zum Druck + Register R ergeben den Startwert fuer rnd.
+wait_key:
+        xor a
+        in a,($fe)
+        cpl
+        and $1f
+        jr nz,wait_key
+wk_lp:  ld hl,(seed)
+        inc hl
+        ld (seed),hl
+wk_halt:
+        halt
+        xor a
+        in a,($fe)
+        cpl
+        and $1f
+        jr z,wk_lp
+        ld a,r
+        ld hl,(seed)
+        xor l
+        ld l,a
+        or h
+        jr nz,wk_ok
+        inc l                   ; Xorshift braucht Startwert <> 0
+wk_ok:  ld (seed),hl
+        ld a,$ff                ; gehaltene Taste nicht als neuen Druck werten
+        ld (keys),a
+        ret
 
 ; ==========================================================================
 ;  Daten
@@ -680,7 +1202,7 @@ np_ok:  jp draw_piece
 ; Attribut je Zellwert: 0 leer, 1 I, 2 O, 3 T, 4 S, 5 Z, 6 J, 7 L, 8 Wand
 ; Figuren: BRIGHT + PAPER Farbe + INK 0 (schwarze Fuge aus dem Muster)
 cell_colors:
-        db $01                  ; leer: PAPER 0, INK 1 -> dunkelblaues Raster
+        db ATTR_EMPTY           ; leer: PAPER 0, INK 1 -> dunkelblaues Raster
         db $68                  ; I cyan
         db $70                  ; O gelb
         db $58                  ; T magenta
@@ -745,12 +1267,44 @@ pieces:
 ; Texte: Zeile, Spalte, String, 0 ... $ff = Ende
 texts:
         db 2,23,"TETRIS",0
-        db 6,23,"O P  <  >",0
-        db 8,23,"Q  DREHEN",0
-        db 10,23,"A  RUNTER",0
-        db 12,23,"N  NEXT",0
-        db 15,23,"JOYSTICK",0
-        db 16,23,"IF2 1+2",0
+        db 4,23,"NEXT",0
+        db 9,23,"O P  <  >",0
+        db 10,23,"Q  DREHEN",0
+        db 11,23,"A  RUNTER",0
+        db 13,23,"JOYSTICK",0
+        db 14,23,"IF2 1+2",0
+        db 2,1,"PUNKTE",0
+        db 6,1,"LEVEL",0
+        db 10,1,"REIHEN",0
+        db 18,1,"BESTER",0
+        db $ff
+
+; Frames pro Zeile je Level (50 Hz), angelehnt an NES-Tetris (PAL)
+speed_table:
+        db 48,43,38,33,28,23,18,13,8,6
+        db 5,5,5,4,4,4,3,3,3,2
+        db 2,2,2,2,2,2,2,2,2,1
+
+; Punkte als 3 Byte BCD, niederwertig zuerst
+pts_soft:   db $01,$00,$00
+pts_lines:  db $40,$00,$00      ;   40  Single
+            db $00,$01,$00      ;  100  Double
+            db $00,$03,$00      ;  300  Triple
+            db $00,$12,$00      ; 1200  Tetris
+
+msg_start:
+        db 19,23,"TASTE",0
+        db 20,23,"DRUECKEN",0
+        db $ff
+msg_over:
+        db 18,23,"GAME OVER",0
+        db 19,23,"TASTE",0
+        db 20,23,"DRUECKEN",0
+        db $ff
+msg_clear:
+        db 18,23,"         ",0
+        db 19,23,"         ",0
+        db 20,23,"         ",0
         db $ff
 
 ; --- Variablen ------------------------------------------------------------
@@ -769,5 +1323,17 @@ fall_delay: db 0                ; Frames pro Zeile
 fall_cnt:   db 0
 down_lock:  db 0                ; 1 = Runter erst nach Loslassen
 lock_val:   db 0
+next_type:  db 0                ; Vorschau
+seed:       dw 1
+bag:        ds 7
+bag_pos:    db 7
+full_rows:  ds 4
+full_cnt:   db 0
+lines:      dw 0                ; BCD, 4 Stellen
+score:      ds 3                ; BCD, 6 Stellen, niederwertig zuerst
+best:       ds 3
+level:      db 0                ; binaer (fuer Tabelle/Multiplikator)
+level_bcd:  db 0                ; BCD (fuer Anzeige)
+level_left: db 0                ; Zeilen bis zum naechsten Level
 
         end start
