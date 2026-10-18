@@ -11,7 +11,10 @@
 ;     Attribut (also 4 Farben pro Kachel, kein Attribute Clash)
 ;   - Dirty-Liste: nur geaenderte Felder werden neu gezeichnet,
 ;     Felder ausserhalb des Viewports werden verworfen
-;   - Scrollen in Kachelschritten = Viewport komplett neu zeichnen
+;   - Scrollen in Kachelschritten; der Viewport wird gegen einen
+;     Shadow-Puffer (was steht auf dem Schirm) verglichen, es werden
+;     nur Kacheln gezeichnet, die sich wirklich geaendert haben
+;   - Kamera wird jeden Frame abgefragt (CAM_FRAMES), nicht nur im Tick
 ;   - fester Spieltakt: HALT = 50 Hz, Logik-Tick alle 6 Frames
 ;   - Demo: Diamanten funkeln, Kamera per Tasten/Joystick bewegen
 ;
@@ -32,6 +35,7 @@ CAM_MAX_X       equ     CAVE_W-VIEW_W   ; 24
 CAM_MAX_Y       equ     CAVE_H-VIEW_H   ; 11
 CAM_START_X     equ     0
 CAM_START_Y     equ     0
+CAM_FRAMES      equ     1               ; Frames zwischen zwei Kameraschritten
 FRAMES_PER_TICK equ     6
 DIRTY_MAX       equ     192
 SEED_START      equ     0ACE1h
@@ -66,6 +70,13 @@ start:
         ld      (cam_x),a
         ld      a,CAM_START_Y
         ld      (cam_y),a
+        xor     a
+        ld      (cam_ctr),a
+        ld      hl,shadow               ; Shadow-Puffer: 0FFh = noch nichts gezeichnet
+        ld      de,shadow+1
+        ld      bc,VIEW_W*VIEW_H-1
+        ld      (hl),0FFh
+        ldir
         ld      hl,0
         ld      (tick_count),hl
         ld      hl,SEED_START
@@ -84,7 +95,8 @@ start:
 main_loop:
         halt                            ; auf Bildstrahl-Ruecklauf warten
         call    flush_dirty             ; zuerst zeichnen (wenig Flackern)
-        call    scan_input              ; Eingabe merken, bis der Tick sie holt
+        call    scan_input              ; Eingabe merken
+        call    move_camera             ; Kamera: jeden Frame, nicht nur im Tick
 
         ld      hl,frame_ctr
         inc     (hl)
@@ -112,56 +124,7 @@ game_tick:
         xor     1
         ld      (anim_phase),a
 
-        ; --- Kamera bewegen ---
-        ld      a,(input_latch)
-        ld      c,a
-        xor     a
-        ld      (input_latch),a
-        ld      b,0                     ; B = Anzahl Kamerabewegungen
-
-        ld      a,(cam_x)
-        bit     0,c                     ; links
-        jr      z,gt_r
-        or      a
-        jr      z,gt_r
-        dec     a
-        inc     b
-gt_r:   bit     1,c                     ; rechts
-        jr      z,gt_xs
-        cp      CAM_MAX_X
-        jr      nc,gt_xs
-        inc     a
-        inc     b
-gt_xs:  ld      (cam_x),a
-
-        ld      a,(cam_y)
-        bit     2,c                     ; hoch
-        jr      z,gt_d
-        or      a
-        jr      z,gt_d
-        dec     a
-        inc     b
-gt_d:   bit     3,c                     ; runter
-        jr      z,gt_ys
-        cp      CAM_MAX_Y
-        jr      nc,gt_ys
-        inc     a
-        inc     b
-gt_ys:  ld      (cam_y),a
-
-        ld      a,b
-        or      a
-        jr      z,gt_sparkle
-
-        ; Kamera hat sich bewegt: Liste verwerfen, alles neu zeichnen
-        xor     a
-        ld      (dirty_count),a
-        ld      (dirty_overflow),a
-        call    draw_view
-        jr      gt_stats
-
         ; --- sichtbare Diamanten als "dirty" markieren (Funkeln) ---
-gt_sparkle:
         ld      a,(cam_y)
         ld      d,a
         ld      a,(cam_x)
@@ -208,6 +171,61 @@ scan_input:
         or      (hl)
         ld      (hl),a
         ret
+
+; move_camera: holt die gemerkte Eingabe und bewegt die Kamera um hoechstens
+; ein Feld je Achse. Wird jeden Frame aufgerufen; zwischen zwei Schritten
+; liegen mindestens CAM_FRAMES Frames (kleiner = schnelleres Scrollen).
+move_camera:
+        ld      a,(input_latch)
+        or      a
+        ret     z                       ; keine Eingabe
+        ld      hl,cam_ctr
+        inc     (hl)
+        ld      a,(hl)
+        cp      CAM_FRAMES
+        ret     c                       ; noch zu frueh
+        ld      (hl),0
+        ld      a,(input_latch)
+        ld      c,a
+        xor     a
+        ld      (input_latch),a
+        ld      b,0                     ; B = Anzahl Kamerabewegungen
+
+        ld      a,(cam_x)
+        bit     0,c                     ; links
+        jr      z,mc_r
+        or      a
+        jr      z,mc_r
+        dec     a
+        inc     b
+mc_r:   bit     1,c                     ; rechts
+        jr      z,mc_xs
+        cp      CAM_MAX_X
+        jr      nc,mc_xs
+        inc     a
+        inc     b
+mc_xs:  ld      (cam_x),a
+
+        ld      a,(cam_y)
+        bit     2,c                     ; hoch
+        jr      z,mc_d
+        or      a
+        jr      z,mc_d
+        dec     a
+        inc     b
+mc_d:   bit     3,c                     ; runter
+        jr      z,mc_ys
+        cp      CAM_MAX_Y
+        jr      nc,mc_ys
+        inc     a
+        inc     b
+mc_ys:  ld      (cam_y),a
+
+        ld      a,b
+        or      a
+        ret     z                       ; Kamera steht still
+        call    draw_view               ; nur geaenderte Kacheln werden gezeichnet
+        jp      print_cam
 
 ; read_input: A = IN_LEFT/IN_RIGHT/IN_UP/IN_DOWN (gesetzte Bits)
 read_input:
@@ -336,25 +354,45 @@ fd_full:
 ; ============================================================
 ;  Renderer
 ; ============================================================
-; draw_view: zeichnet den kompletten Viewport
+; draw_view: bringt den Viewport auf den Stand der Hoehle. Pro Feld wird der
+; Frame-Schluessel mit dem Shadow-Puffer verglichen; nur bei Abweichung wird
+; gezeichnet (draw_tile aktualisiert den Puffer). Dadurch ist Scrollen ueber
+; gleichfoermige Flaechen (Erde!) fast kostenlos.
 draw_view:
         ld      a,(cam_y)
         ld      d,a
         ld      a,(cam_x)
         ld      e,a
         call    cave_addr               ; HL = Zeiger auf (cam_x,cam_y)
+        ld      ix,shadow
         ld      c,0                     ; C = ty
 dv_row:
         push    hl                      ; Zeilenanfang merken
         ld      b,0                     ; B = tx
 dv_col:
+        ld      a,(hl)                  ; Tile
+        add     a,a
+        ld      e,a
+        ld      a,(anim_phase)
+        or      e                       ; A = Frame = Tile*2 + Phase
+        ld      e,a
+        ld      d,0
+        push    hl
+        ld      hl,frame_key
+        add     hl,de
+        ld      a,(hl)                  ; A = Schluessel (gleiche Grafik = gleicher Schluessel)
+        pop     hl
+        cp      (ix+0)
+        jr      z,dv_next               ; steht schon richtig auf dem Schirm
         push    bc
         push    hl
         ld      a,(hl)
         call    draw_tile
         pop     hl
         pop     bc
+dv_next:
         inc     hl
+        inc     ix
         inc     b
         ld      a,b
         cp      VIEW_W
@@ -394,7 +432,29 @@ draw_cell:
 ; draw_tile: A = Tile-ID, B = tx (0..15), C = ty (0..10) im Viewport.
 ; Schreibt 4 Attribute und 16x16 Pixel. Zerstoert alle Register.
 draw_tile:
-        ld      (tmp_tile),a
+        add     a,a
+        ld      hl,anim_phase
+        or      (hl)                    ; A = Frame = Tile*2 + Phase
+        ld      (tmp_frame),a
+
+        ; --- Shadow-Puffer: shadow[ty*16 + tx] = frame_key[Frame] ---
+        ld      e,a
+        ld      d,0
+        ld      hl,frame_key
+        add     hl,de
+        ld      e,(hl)                  ; E = Schluessel
+        ld      a,c
+        add     a,a
+        add     a,a
+        add     a,a
+        add     a,a
+        or      b                       ; A = ty*16 + tx
+        ld      l,a
+        ld      h,0
+        ld      a,e
+        ld      de,shadow
+        add     hl,de
+        ld      (hl),a
 
         ; --- Bildschirmadresse der Kachel (links oben) ---
         ld      a,c
@@ -416,11 +476,8 @@ draw_tile:
         ld      l,a
         push    hl
 
-        ; --- Frame-Block: frame_table[(Tile*2 + Phase)] ---
-        ld      a,(tmp_tile)
-        add     a,a
-        ld      hl,anim_phase
-        or      (hl)
+        ; --- Frame-Block: frame_table[Frame] ---
+        ld      a,(tmp_frame)
         add     a,a                     ; * 2 (Tabelle aus Woertern)
         ld      c,a
         ld      b,0
@@ -468,8 +525,7 @@ draw_tile:
         add     a,32
         ld      l,a
 dt_half:
-        ld      b,8
-dt_row:
+        rept    8                       ; 8 Pixelzeilen entrollt (kein DJNZ)
         ld      a,(de)                  ; linkes Byte
         ld      (hl),a
         inc     de
@@ -479,7 +535,7 @@ dt_row:
         inc     de
         dec     l
         inc     h                       ; naechste Pixelzeile
-        djnz    dt_row
+        endm
         ret
 
 ; ============================================================
@@ -593,12 +649,13 @@ clear_screen:
         ldir
         ret
 
-; print_status: Ticks, Kameraposition in die Kopfzeile
+; print_status: Ticks und Kameraposition in die Kopfzeile (print_cam: nur Kamera)
 print_status:
         ld      hl,txt_tickpos
         call    print_str
         ld      hl,(tick_count)
         call    print_num
+print_cam:
         ld      hl,txt_xpos
         call    print_str
         ld      a,(cam_x)
@@ -676,7 +733,7 @@ txt_header:
 txt_tickpos:
         db      22,1,6, 16,5, 17,0, 19,1, 0FFh
 txt_xpos:
-        db      22,1,13, 0FFh
+        db      22,1,13, 16,5, 17,0, 19,1, 0FFh
 txt_ypos:
         db      22,1,17, 0FFh
 
@@ -690,6 +747,12 @@ frame_table:
         dw      blk_diamond0,blk_diamond1
         dw      blk_rockford,blk_rockford
         dw      blk_exit,    blk_exit
+
+; Schluessel je Frame fuer den Shadow-Puffer: Frames mit identischer Grafik
+; (alle ausser den animierten) bekommen denselben Schluessel, damit ein
+; Phasenwechsel nicht ueberall ein Neuzeichnen ausloest.
+frame_key:
+        db      0,0, 2,2, 4,4, 6,6, 8,8, 10,11, 12,12, 14,14
 
 ; Kachel-Bloecke: 4 Attributbytes (oben links, oben rechts, unten links,
 ; unten rechts), danach 16 Pixelzeilen zu je 2 Bytes (links, rechts).
@@ -876,7 +939,9 @@ dirty_overflow: db      0
 input_latch:    db      0
 cam_x:          db      0
 cam_y:          db      0
-tmp_tile:       db      0
+tmp_frame:      db      0
+cam_ctr:        db      0
+shadow:         ds      VIEW_W*VIEW_H
 dirty_list:     ds      DIRTY_MAX*2
 cave:           ds      CAVE_SIZE
 
