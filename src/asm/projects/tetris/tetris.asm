@@ -1023,21 +1023,30 @@ sb_do:  ld hl,best
         ld hl,msg_clr
         jp draw_list
 
-; Rekord vom "Band" lesen (ROM LD-BYTES $0556): erst der Kopfblock, dessen
-; Name "tetris_hi" sein muss, dann die 3 Datenbytes.  Bei Fehler bleibt best = 0.
+; Rekord vom "Band" lesen (ROM LD-BYTES $0556).  Das ganze Band wird Block
+; fuer Block durchsucht: Kopfbloecke mit Typ CODE und Name "tetris_hi" liefern
+; den Rekord (der letzte gewinnt), fremde Bloecke werden uebersprungen.
+; Ende des Bandes/Fehler beendet die Suche.  ld_state: 1 gefunden, 2 nicht,
+; ld_seen = Anzahl gelesener Kopfbloecke (zur Diagnose im Splash).
 load_best:
+        xor a
+        ld (ld_seen),a
+        ld (ld_found),a
+lb_next:
         ld ix,hdr_in
         ld de,17
         xor a                   ; Flag 0 = Kopfblock
         scf                     ; Carry = laden
         call $0556
-        jr nc,lb_fail
+        jr nc,lb_done           ; kein Block mehr / Fehler
+        ld hl,ld_seen
+        inc (hl)
         ld hl,hdr_in            ; Typ + Name pruefen
         ld de,hdr_best
         ld b,11
 lb_cmp: ld a,(de)
         cp (hl)
-        jr nz,lb_fail
+        jr nz,lb_skip
         inc hl
         inc de
         djnz lb_cmp
@@ -1046,19 +1055,38 @@ lb_cmp: ld a,(de)
         ld a,$ff                ; Flag $FF = Datenblock
         scf
         call $0556
-        jr nc,lb_fail
-        ld hl,ld_buf            ; geladenen Rekord uebernehmen ...
+        jr nc,lb_done
+        ld hl,ld_buf            ; Rekord uebernehmen und als gesichert merken
         ld de,best
         ld bc,3
         ldir
-        ld hl,ld_buf            ; ... und als gesichert merken (kein Neu-Sichern)
+        ld hl,ld_buf
         ld de,best_sv
         ld bc,3
         ldir
-        ld a,1                  ; Status: OK
-        jr lb_end
-lb_fail:
+        ld a,1
+        ld (ld_found),a
+        jr lb_next
+lb_skip:                        ; fremder Block: Datenblock ueberspringen
+        ld a,(hdr_in+12)        ; Laenge (High) muss 0 sein
+        or a
+        jr nz,lb_done
+        ld a,(hdr_in+11)        ; Laenge (Low)
+        ld e,a
+        ld d,0
+        or a
+        jr z,lb_next            ; Laenge 0: kein Datenblock lesen
+        ld ix,skip_buf
+        ld a,$ff
+        scf
+        call $0556
+        jr c,lb_next
+lb_done:
+        ld a,(ld_found)
+        or a
         ld a,2                  ; Status: nicht gefunden (best bleibt)
+        jr z,lb_end
+        ld a,1                  ; Status: OK
 lb_end: ld (ld_state),a
         xor a
         out ($fe),a
@@ -1632,6 +1660,17 @@ spl_refresh:
         ld b,SPL_ROW_LD
         ld c,16
         call print_at
+        ld a,(ld_state)         ; nach dem Laden: Anzahl gelesener Kopfbloecke
+        cp 1
+        jr c,sr_nodg
+        cp 3
+        jr nc,sr_nodg
+        ld a,(ld_seen)
+        add a,'0'
+        ld b,SPL_ROW_LD
+        ld c,22
+        call print_char
+sr_nodg:
         ld hl,best+2            ; Rekord (kann sich durch Laden geaendert haben)
         ld d,3
         ld bc,23*256+16
@@ -1983,6 +2022,9 @@ score:      ds 3                ; BCD, 6 Stellen, niederwertig zuerst
 best:       ds 3
 best_sv:    ds 3                ; zuletzt gesicherter Rekord
 ld_buf:     ds 3                ; geladener Rekord (erst nach Pruefung uebernommen)
+ld_seen:    db 0                ; gelesene Kopfbloecke
+ld_found:   db 0
+skip_buf:   ds 255
 ld_state:   db 0                ; Splash: 0 offen, 1 geladen, 2 nicht gefunden
 hdr_in:     ds 17               ; gelesener Kopfblock
 hdr_best:   db 3,"tetris_hi ",3,0   ; Typ CODE, Name (10), Laenge 3
