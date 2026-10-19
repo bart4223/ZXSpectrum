@@ -16,7 +16,8 @@
 ;     nur Kacheln gezeichnet, die sich wirklich geaendert haben
 ;   - Kamera wird jeden Frame abgefragt (CAM_FRAMES), nicht nur im Tick
 ;   - fester Spieltakt: HALT = 50 Hz, Logik-Tick alle 6 Frames
-;   - Demo: Diamanten funkeln, Kamera per Tasten/Joystick bewegen
+;   - Demo: Diamanten funkeln, Kamera per Tasten/Joystick bewegen,
+;     Rockford blinzelt im Leerlauf und stampft mit dem linken Fuss auf
 ;
 ;  Steuerung (Kamera):  Q=hoch  A=runter  O=links  P=rechts
 ;                       oder Sinclair-Joystick 1 (Tasten 6-0)
@@ -36,6 +37,8 @@ CAM_MAX_Y       equ     CAVE_H-VIEW_H   ; 11
 CAM_START_X     equ     0
 CAM_START_Y     equ     0
 CAM_FRAMES      equ     1               ; Frames zwischen zwei Kameraschritten
+ROCK_START_X    equ     2
+ROCK_START_Y    equ     1
 FRAMES_PER_TICK equ     6
 DIRTY_MAX       equ     192
 SEED_START      equ     0ACE1h
@@ -49,7 +52,10 @@ T_STEEL         equ     3
 T_STONE         equ     4
 T_DIAMOND       equ     5
 T_ROCKFORD      equ     6
-T_EXIT          equ     7
+T_ROCKFORD_UP   equ     7               ; linker Fuss angehoben
+T_ROCKFORD_STOMP equ    8               ; Fuss aufgesetzt
+T_ROCKFORD_BLINK equ    9               ; Augen zu
+T_EXIT          equ     10
 
 ; Eingabe-Bits
 IN_LEFT         equ     1
@@ -72,6 +78,11 @@ start:
         ld      (cam_y),a
         xor     a
         ld      (cam_ctr),a
+        ld      (rock_step),a
+        ld      a,ROCK_START_X
+        ld      (rock_x),a
+        ld      a,ROCK_START_Y
+        ld      (rock_y),a
         ld      hl,shadow               ; Shadow-Puffer: 0FFh = noch nichts gezeichnet
         ld      de,shadow+1
         ld      bc,VIEW_W*VIEW_H-1
@@ -123,6 +134,7 @@ game_tick:
         ld      a,(anim_phase)
         xor     1
         ld      (anim_phase),a
+        call    animate_rockford
 
         ; --- sichtbare Diamanten als "dirty" markieren (Funkeln) ---
         ld      a,(cam_y)
@@ -160,6 +172,43 @@ gt_stats:
         inc     hl
         ld      (tick_count),hl
         jp      print_status
+
+; animate_rockford: Leerlauf-Animation. Je Tick wird der naechste Eintrag aus
+; rock_pattern genommen; weicht die Kachel an Rockfords Position davon ab,
+; wird sie getauscht und das Feld als "dirty" markiert. (In Stufe 1 wird der
+; Zaehler beim Laufen zurueckgesetzt.)
+animate_rockford:
+        ld      a,(rock_y)
+        ld      d,a
+        ld      a,(rock_x)
+        ld      e,a
+        push    de                      ; fuer mark_dirty merken
+        call    cave_addr               ; HL = Zelle Rockfords
+        ld      a,(hl)
+        sub     T_ROCKFORD
+        cp      T_ROCKFORD_BLINK-T_ROCKFORD+1
+        jr      nc,ar_done              ; dort steht kein Rockford: nichts tun
+        ld      a,(rock_step)
+        inc     a
+        cp      rock_pattern_end-rock_pattern
+        jr      c,ar_ok
+        xor     a
+ar_ok:  ld      (rock_step),a
+        ld      e,a
+        ld      d,0
+        push    hl
+        ld      hl,rock_pattern
+        add     hl,de
+        ld      a,(hl)                  ; A = gewuenschte Kachel
+        pop     hl
+        cp      (hl)
+        jr      z,ar_done               ; schon richtig
+        ld      (hl),a
+        pop     de
+        jp      mark_dirty
+ar_done:
+        pop     de
+        ret
 
 ; ============================================================
 ;  Eingabe
@@ -608,7 +657,7 @@ gc_w2:  ld      (hl),T_BRICK
 
         ; Rockford oben links, Ausgang unten rechts
         ld      a,T_ROCKFORD
-        ld      (cave+1*CAVE_W+2),a
+        ld      (cave+ROCK_START_Y*CAVE_W+ROCK_START_X),a
         ld      a,T_EXIT
         ld      (cave+20*CAVE_W+38),a
         ret
@@ -746,13 +795,27 @@ frame_table:
         dw      blk_stone,   blk_stone
         dw      blk_diamond0,blk_diamond1
         dw      blk_rockford,blk_rockford
+        dw      blk_rockford_up,blk_rockford_up
+        dw      blk_rockford_stomp,blk_rockford_stomp
+        dw      blk_rockford_blink,blk_rockford_blink
         dw      blk_exit,    blk_exit
 
 ; Schluessel je Frame fuer den Shadow-Puffer: Frames mit identischer Grafik
 ; (alle ausser den animierten) bekommen denselben Schluessel, damit ein
 ; Phasenwechsel nicht ueberall ein Neuzeichnen ausloest.
 frame_key:
-        db      0,0, 2,2, 4,4, 6,6, 8,8, 10,11, 12,12, 14,14
+        db      0,0, 2,2, 4,4, 6,6, 8,8, 10,11, 12,12, 14,14, 16,16, 18,18, 20,20
+
+; Leerlauf-Animation Rockford: ein Eintrag je Tick (6 Frames = ca. 0,12 s).
+; Beliebig aenderbar; die Laenge ergibt sich aus den Labels.
+rock_pattern:
+        db      T_ROCKFORD, T_ROCKFORD, T_ROCKFORD, T_ROCKFORD       ; steht
+        db      T_ROCKFORD_BLINK, T_ROCKFORD, T_ROCKFORD, T_ROCKFORD ; blinzelt
+        db      T_ROCKFORD_UP, T_ROCKFORD_STOMP                      ; Fuss hoch, Stampf
+        db      T_ROCKFORD_UP, T_ROCKFORD_STOMP                      ; nochmal
+        db      T_ROCKFORD, T_ROCKFORD, T_ROCKFORD, T_ROCKFORD       ; steht
+        db      T_ROCKFORD, T_ROCKFORD_BLINK, T_ROCKFORD, T_ROCKFORD ; blinzelt
+rock_pattern_end:
 
 ; Kachel-Bloecke: 4 Attributbytes (oben links, oben rechts, unten links,
 ; unten rechts), danach 16 Pixelzeilen zu je 2 Bytes (links, rechts).
@@ -892,18 +955,75 @@ blk_diamond1:  ; Diamant, Phase 1 (Funkeln)
         db      %00000000,%00000000   ; ................
 
 blk_rockford:  ; Rockford
-        db      046h,046h,047h,047h
+        db      046h,046h,041h,041h
+        db      %00000000,%00000000   ; ................
+        db      %00000111,%11100000   ; .....######.....
+        db      %00001101,%10110000   ; ....##.##.##....
+        db      %00001101,%10110000   ; ....##.##.##....
+        db      %00001111,%11110000   ; ....########....
+        db      %00000111,%11100000   ; .....######.....
+        db      %00111111,%11111100   ; ..############..
+        db      %00101111,%11110100   ; ..#.########.#..
+        db      %00001111,%11110000   ; ....########....
+        db      %00001111,%11110000   ; ....########....
+        db      %00001110,%01110000   ; ....###..###....
+        db      %00001110,%01110000   ; ....###..###....
+        db      %00001110,%01110000   ; ....###..###....
+        db      %00001110,%01110000   ; ....###..###....
+        db      %00011110,%01111000   ; ...####..####...
+        db      %00000000,%00000000   ; ................
+
+blk_rockford_up:  ; Rockford, linker Fuss angehoben
+        db      046h,046h,041h,041h
+        db      %00000000,%00000000   ; ................
+        db      %00000111,%11100000   ; .....######.....
+        db      %00001101,%10110000   ; ....##.##.##....
+        db      %00001101,%10110000   ; ....##.##.##....
+        db      %00001111,%11110000   ; ....########....
+        db      %00000111,%11100000   ; .....######.....
+        db      %00111111,%11111100   ; ..############..
+        db      %00101111,%11110100   ; ..#.########.#..
+        db      %00001111,%11110000   ; ....########....
+        db      %00001111,%11110000   ; ....########....
+        db      %00001110,%01110000   ; ....###..###....
+        db      %00001110,%01110000   ; ....###..###....
+        db      %00001110,%01111000   ; ....###..####...
+        db      %00001110,%00000000   ; ....###.........
+        db      %00011110,%00000000   ; ...####.........
+        db      %00000000,%00000000   ; ................
+
+blk_rockford_stomp:  ; Rockford, Fuss aufgesetzt (Stosslinien)
+        db      046h,046h,041h,041h
+        db      %00000000,%00000000   ; ................
+        db      %00000111,%11100000   ; .....######.....
+        db      %00001101,%10110000   ; ....##.##.##....
+        db      %00001101,%10110000   ; ....##.##.##....
+        db      %00001111,%11110000   ; ....########....
+        db      %00000111,%11100000   ; .....######.....
+        db      %00111111,%11111100   ; ..############..
+        db      %00101111,%11110100   ; ..#.########.#..
+        db      %00001111,%11110000   ; ....########....
+        db      %00001111,%11110000   ; ....########....
+        db      %00001110,%01110000   ; ....###..###....
+        db      %00001110,%01110010   ; ....###..###..#.
+        db      %00001110,%01110001   ; ....###..###...#
+        db      %00001110,%01110010   ; ....###..###..#.
+        db      %00011110,%01111001   ; ...####..####..#
+        db      %00000000,%00000000   ; ................
+
+blk_rockford_blink:  ; Rockford, Augen zu (blinzelt)
+        db      046h,046h,041h,041h
         db      %00000000,%00000000   ; ................
         db      %00000111,%11100000   ; .....######.....
         db      %00001111,%11110000   ; ....########....
         db      %00001101,%10110000   ; ....##.##.##....
         db      %00001111,%11110000   ; ....########....
         db      %00000111,%11100000   ; .....######.....
-        db      %00000011,%11000000   ; ......####......
-        db      %00011111,%11111000   ; ...##########...
         db      %00111111,%11111100   ; ..############..
         db      %00101111,%11110100   ; ..#.########.#..
-        db      %00101111,%11110100   ; ..#.########.#..
+        db      %00001111,%11110000   ; ....########....
+        db      %00001111,%11110000   ; ....########....
+        db      %00001110,%01110000   ; ....###..###....
         db      %00001110,%01110000   ; ....###..###....
         db      %00001110,%01110000   ; ....###..###....
         db      %00001110,%01110000   ; ....###..###....
@@ -941,6 +1061,9 @@ cam_x:          db      0
 cam_y:          db      0
 tmp_frame:      db      0
 cam_ctr:        db      0
+rock_x:         db      0
+rock_y:         db      0
+rock_step:      db      0
 shadow:         ds      VIEW_W*VIEW_H
 dirty_list:     ds      DIRTY_MAX*2
 cave:           ds      CAVE_SIZE
