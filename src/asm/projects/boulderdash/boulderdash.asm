@@ -25,6 +25,7 @@
 ;
 ;  Steuerung:  Q=hoch  A=runter  O=links  P=rechts
 ;              oder Sinclair-Joystick 1 (Tasten 6-0)
+;              oder Sinclair-Joystick 2 (Tasten 1-5)
 ;                       SPACE beendet und kehrt zu BASIC zurueck
 ; ============================================================
 
@@ -413,6 +414,21 @@ ri_j3:  bit     2,b
         jr      nz,ri_j4
         set     3,c
 ri_j4:  bit     1,b
+        jr      nz,ri_s2
+        set     2,c
+ri_s2:  ld      a,0F7h                  ; Sinclair 2: 1=links 2=rechts 3=runter 4=hoch
+        in      a,(0FEh)
+        ld      b,a
+        bit     0,b
+        jr      nz,ri_s2b
+        set     0,c
+ri_s2b: bit     1,b
+        jr      nz,ri_s2c
+        set     1,c
+ri_s2c: bit     2,b
+        jr      nz,ri_s2d
+        set     3,c
+ri_s2d: bit     3,b
         jr      nz,ri_end
         set     2,c
 ri_end: ld      a,c
