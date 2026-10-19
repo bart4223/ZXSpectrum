@@ -22,7 +22,7 @@ Stufe 1: Rockford läuft
 Bewegung durch Erde und leere Felder, Wände blockieren.
 Steuerung per Tastatur oder Kempston-Joystick.
 
--State: InProgress
+-State: Done
 
 Stufe 2: Schwerkraft (das Herzstück)
 
@@ -31,7 +31,7 @@ Die Zustände „liegt“ und „fällt“ unterscheiden: Nur ein fallender Stei
 Den Scan von oben nach unten aufbauen und bewegte Objekte für den Rest des Ticks markieren, damit nichts doppelt bewegt wird.
 Rockford kann Steine waagerecht schieben. Im Original klappt das nur mit einer gewissen Wahrscheinlichkeit.
 
--State: Open
+-State: InProgress
 
 Stufe 3: Erste spielbare Version
 
