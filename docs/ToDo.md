@@ -15,14 +15,14 @@ Dazu ein Tile-Renderer und ein fester Spieltakt. Das Original läuft mit etwa 8�
 Gleich festlegen: Es werden nur Zellen neu gezeichnet, die sich geändert haben (Dirty-Liste). Auf dem Spectrum entscheidet das über die Performance.
 Die Tilegröße wählst du jetzt. Mit 8×8 passt eine 32×22-Höhle ohne Scrolling auf den Bildschirm. Mit 16×16 sieht man nur 16×12 Felder, du brauchst also früher Scrolling, bekommst aber hübschere Grafik. Ich würde mit 8×8 und verkleinerten Höhlen starten.
 
--State: Open
+-State: Done
 
 Stufe 1: Rockford läuft
 
 Bewegung durch Erde und leere Felder, Wände blockieren.
 Steuerung per Tastatur oder Kempston-Joystick.
 
--State: Open
+-State: InProgress
 
 Stufe 2: Schwerkraft (das Herzstück)
 

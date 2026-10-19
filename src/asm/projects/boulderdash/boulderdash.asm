@@ -1,5 +1,5 @@
 ; ============================================================
-;  BOULDER DASH fuer ZX Spectrum  -  Stufe 0: Fundament
+;  BOULDER DASH fuer ZX Spectrum  -  Stufe 1: Rockford laeuft
 ;  16x16-Kacheln, Hoehle 40x22, scrollender Viewport 16x11
 ;
 ;  Assembler: pasmo   ->   pasmo --tapbas boulderdash.asm boulderdash.tap
@@ -14,13 +14,17 @@
 ;   - Scrollen in Kachelschritten; der Viewport wird gegen einen
 ;     Shadow-Puffer (was steht auf dem Schirm) verglichen, es werden
 ;     nur Kacheln gezeichnet, die sich wirklich geaendert haben
-;   - Kamera wird jeden Frame abgefragt (CAM_FRAMES), nicht nur im Tick
+;   - Die Kamera folgt Rockford: ausserhalb einer Randzone rueckt der
+;     Viewport um ein Feld nach (follow_camera)
 ;   - fester Spieltakt: HALT = 50 Hz, Logik-Tick alle 6 Frames
-;   - Demo: Diamanten funkeln, Kamera per Tasten/Joystick bewegen,
-;     Rockford blinzelt im Leerlauf und stampft mit dem linken Fuss auf
+;   - Rockford laeuft pro Tick ein Feld durch leere Felder und Erde (graebt)
+;     und sammelt Diamanten; Steine, Mauern und Stahl blockieren noch
+;   - Leerlauf: nach einigen Ticks Stillstand blinzelt Rockford und
+;     stampft mit dem linken Fuss auf
+;   - Diamanten funkeln
 ;
-;  Steuerung (Kamera):  Q=hoch  A=runter  O=links  P=rechts
-;                       oder Sinclair-Joystick 1 (Tasten 6-0)
+;  Steuerung:  Q=hoch  A=runter  O=links  P=rechts
+;              oder Sinclair-Joystick 1 (Tasten 6-0)
 ;                       SPACE beendet und kehrt zu BASIC zurueck
 ; ============================================================
 
@@ -36,7 +40,10 @@ CAM_MAX_X       equ     CAVE_W-VIEW_W   ; 24
 CAM_MAX_Y       equ     CAVE_H-VIEW_H   ; 11
 CAM_START_X     equ     0
 CAM_START_Y     equ     0
-CAM_FRAMES      equ     1               ; Frames zwischen zwei Kameraschritten
+CAM_MARGIN_X    equ     5               ; Randzone: so nah darf Rockford am
+CAM_MARGIN_Y    equ     3               ; Viewportrand sein, bevor die Kamera folgt
+IDLE_DELAY      equ     8               ; Ticks Stillstand bis zur Leerlauf-Animation
+MAX_DIAMONDS    equ     99
 ROCK_START_X    equ     2
 ROCK_START_Y    equ     1
 FRAMES_PER_TICK equ     6
@@ -55,7 +62,8 @@ T_ROCKFORD      equ     6
 T_ROCKFORD_UP   equ     7               ; linker Fuss angehoben
 T_ROCKFORD_STOMP equ    8               ; Fuss aufgesetzt
 T_ROCKFORD_BLINK equ    9               ; Augen zu
-T_EXIT          equ     10
+T_ROCKFORD_WALK equ     10              ; Schrittstellung
+T_EXIT          equ     11
 
 ; Eingabe-Bits
 IN_LEFT         equ     1
@@ -77,8 +85,11 @@ start:
         ld      a,CAM_START_Y
         ld      (cam_y),a
         xor     a
-        ld      (cam_ctr),a
         ld      (rock_step),a
+        ld      (diamonds),a
+        ld      (rock_walk),a
+        ld      a,IDLE_DELAY            ; Leerlauf-Animation laeuft von Anfang an
+        ld      (rock_idle),a
         ld      a,ROCK_START_X
         ld      (rock_x),a
         ld      a,ROCK_START_Y
@@ -107,7 +118,6 @@ main_loop:
         halt                            ; auf Bildstrahl-Ruecklauf warten
         call    flush_dirty             ; zuerst zeichnen (wenig Flackern)
         call    scan_input              ; Eingabe merken
-        call    move_camera             ; Kamera: jeden Frame, nicht nur im Tick
 
         ld      hl,frame_ctr
         inc     (hl)
@@ -128,15 +138,22 @@ ml_keys:
         ret
 
 ; ============================================================
-;  Spiellogik (Stufe 0: Kamera + Animation)
+;  Spiellogik (Stufe 1: Rockford laeuft)
 ; ============================================================
 game_tick:
         ld      a,(anim_phase)
         xor     1
         ld      (anim_phase),a
-        call    animate_rockford
+        call    move_rockford           ; NZ = Rockford hat sich bewegt
+        jr      z,gt_idle
+        call    follow_camera           ; NZ = Viewport wurde neu gezeichnet
+        jr      nz,gt_stats             ; (dann ist auch das Funkeln erledigt)
+        jr      gt_sparkle
+gt_idle:
+        call    animate_rockford        ; steht still: Leerlauf-Animation
 
         ; --- sichtbare Diamanten als "dirty" markieren (Funkeln) ---
+gt_sparkle:
         ld      a,(cam_y)
         ld      d,a
         ld      a,(cam_x)
@@ -173,22 +190,152 @@ gt_stats:
         ld      (tick_count),hl
         jp      print_status
 
-; animate_rockford: Leerlauf-Animation. Je Tick wird der naechste Eintrag aus
-; rock_pattern genommen; weicht die Kachel an Rockfords Position davon ab,
-; wird sie getauscht und das Feld als "dirty" markiert. (In Stufe 1 wird der
-; Zaehler beim Laufen zurueckgesetzt.)
-animate_rockford:
-        ld      a,(rock_y)
-        ld      d,a
+; ============================================================
+;  Rockford
+; ============================================================
+; move_rockford: holt die gemerkte Eingabe und versucht, Rockford um ein Feld
+; zu bewegen (Prioritaet: links, rechts, hoch, runter). Betretbar sind leere
+; Felder, Erde (wird weggegraben) und Diamanten (werden eingesammelt).
+; Steine, Mauern, Stahl und Ausgang blockieren (Stufe 2/3 erweitern das).
+; Rueckgabe: NZ = Rockford hat sich bewegt, Z = nicht.
+move_rockford:
+        ld      a,(input_latch)
+        ld      c,a
+        xor     a
+        ld      (input_latch),a
         ld      a,(rock_x)
-        ld      e,a
-        push    de                      ; fuer mark_dirty merken
-        call    cave_addr               ; HL = Zelle Rockfords
+        ld      e,a                     ; E = x
+        ld      a,(rock_y)
+        ld      d,a                     ; D = y
+        bit     0,c                     ; links
+        jr      z,mr_r
+        dec     e
+        jr      mr_try
+mr_r:   bit     1,c                     ; rechts
+        jr      z,mr_u
+        inc     e
+        jr      mr_try
+mr_u:   bit     2,c                     ; hoch
+        jr      z,mr_d
+        dec     d
+        jr      mr_try
+mr_d:   bit     3,c                     ; runter
+        ret     z                       ; keine Eingabe: Z = nicht bewegt
+        inc     d
+mr_try:                                 ; (E,D) = Zielfeld
+        push    de
+        call    cave_addr               ; HL = Zielzelle (zerstoert BC, DE)
         ld      a,(hl)
-        sub     T_ROCKFORD
-        cp      T_ROCKFORD_BLINK-T_ROCKFORD+1
-        jr      nc,ar_done              ; dort steht kein Rockford: nichts tun
-        ld      a,(rock_step)
+        or      a                       ; T_EMPTY = 0
+        jr      z,mr_go
+        cp      T_DIRT
+        jr      z,mr_go
+        cp      T_DIAMOND
+        jr      nz,mr_blocked
+        ld      a,(diamonds)            ; Diamant einsammeln
+        cp      MAX_DIAMONDS
+        jr      nc,mr_go
+        inc     a
+        ld      (diamonds),a
+mr_go:  ld      a,(rock_walk)           ; Schrittanimation: abwechselnd stehen/gehen
+        xor     1
+        ld      (rock_walk),a
+        ld      a,T_ROCKFORD
+        jr      z,mr_t
+        ld      a,T_ROCKFORD_WALK
+mr_t:   ld      (hl),a                  ; Rockford steht jetzt im Zielfeld
+        pop     de                      ; DE = Ziel (x in E, y in D)
+        ld      a,(rock_x)
+        ld      c,a                     ; C = alte x
+        ld      a,(rock_y)
+        ld      b,a                     ; B = alte y
+        ld      a,e
+        ld      (rock_x),a
+        ld      a,d
+        ld      (rock_y),a
+        call    mark_dirty              ; Zielfeld neu zeichnen
+        ld      d,b
+        ld      e,c                     ; DE = alte Position
+        push    de
+        call    cave_addr
+        ld      (hl),T_EMPTY            ; altes Feld ist leer
+        pop     de
+        call    mark_dirty
+        xor     a
+        ld      (rock_idle),a           ; Leerlauf-Animation beginnt von vorn
+        ld      (rock_step),a
+        inc     a                       ; NZ = bewegt
+        ret
+mr_blocked:
+        pop     de
+        xor     a                       ; Z = nicht bewegt
+        ret
+
+; follow_camera: Kamera folgt Rockford. Ausserhalb der Randzone (CAM_MARGIN_X/Y)
+; rueckt der Viewport um ein Feld nach. Danach wird er per Shadow-Vergleich neu
+; gezeichnet. Rueckgabe: NZ = Viewport wurde neu gezeichnet.
+follow_camera:
+        ld      c,0                     ; C = Anzahl Kamerabewegungen
+        ld      a,(rock_x)
+        ld      hl,cam_x
+        sub     (hl)                    ; A = Spalte Rockfords im Viewport
+        cp      CAM_MARGIN_X
+        jr      nc,fc_xr
+        ld      a,(hl)                  ; zu weit links
+        or      a
+        jr      z,fc_y
+        dec     (hl)
+        inc     c
+        jr      fc_y
+fc_xr:  cp      VIEW_W-CAM_MARGIN_X
+        jr      c,fc_y
+        ld      a,(hl)                  ; zu weit rechts
+        cp      CAM_MAX_X
+        jr      nc,fc_y
+        inc     (hl)
+        inc     c
+fc_y:   ld      a,(rock_y)
+        ld      hl,cam_y
+        sub     (hl)                    ; A = Zeile Rockfords im Viewport
+        cp      CAM_MARGIN_Y
+        jr      nc,fc_yd
+        ld      a,(hl)                  ; zu weit oben
+        or      a
+        jr      z,fc_done
+        dec     (hl)
+        inc     c
+        jr      fc_done
+fc_yd:  cp      VIEW_H-CAM_MARGIN_Y
+        jr      c,fc_done
+        ld      a,(hl)                  ; zu weit unten
+        cp      CAM_MAX_Y
+        jr      nc,fc_done
+        inc     (hl)
+        inc     c
+fc_done:
+        ld      a,c
+        or      a
+        ret     z                       ; Kamera steht still: Z
+        call    draw_view
+        xor     a                       ; Dirty-Liste erledigt (Shadow-Vergleich)
+        ld      (dirty_count),a
+        ld      (dirty_overflow),a
+        inc     a                       ; NZ = neu gezeichnet
+        ret
+
+; animate_rockford: Leerlauf-Animation, wird in Ticks ohne Bewegung aufgerufen.
+; Zuerst steht Rockford IDLE_DELAY Ticks still, dann laeuft rock_pattern (ein
+; Eintrag je Tick). Weicht die Kachel an Rockfords Position von der gewuenschten
+; ab, wird sie getauscht und das Feld als "dirty" markiert.
+animate_rockford:
+        ld      a,(rock_idle)
+        cp      IDLE_DELAY
+        jr      nc,ar_pat
+        inc     a
+        ld      (rock_idle),a
+        ld      a,T_ROCKFORD            ; kurz nach dem Laufen: einfach stehen
+        jr      ar_apply
+ar_pat: ld      a,(rock_step)
         inc     a
         cp      rock_pattern_end-rock_pattern
         jr      c,ar_ok
@@ -196,19 +343,29 @@ animate_rockford:
 ar_ok:  ld      (rock_step),a
         ld      e,a
         ld      d,0
-        push    hl
         ld      hl,rock_pattern
         add     hl,de
         ld      a,(hl)                  ; A = gewuenschte Kachel
-        pop     hl
-        cp      (hl)
-        jr      z,ar_done               ; schon richtig
-        ld      (hl),a
-        pop     de
+ar_apply:
+        push    af
+        ld      a,(rock_y)
+        ld      d,a
+        ld      a,(rock_x)
+        ld      e,a
+        push    de
+        call    cave_addr               ; HL = Zelle Rockfords
+        pop     de                      ; DE = (x,y) fuer mark_dirty
+        pop     af
+        ld      c,a                     ; C = gewuenschte Kachel
+        ld      a,(hl)
+        sub     T_ROCKFORD
+        cp      T_ROCKFORD_WALK-T_ROCKFORD+1
+        ret     nc                      ; dort steht kein Rockford: nichts tun
+        ld      a,(hl)
+        cp      c
+        ret     z                       ; schon richtig
+        ld      (hl),c
         jp      mark_dirty
-ar_done:
-        pop     de
-        ret
 
 ; ============================================================
 ;  Eingabe
@@ -220,61 +377,6 @@ scan_input:
         or      (hl)
         ld      (hl),a
         ret
-
-; move_camera: holt die gemerkte Eingabe und bewegt die Kamera um hoechstens
-; ein Feld je Achse. Wird jeden Frame aufgerufen; zwischen zwei Schritten
-; liegen mindestens CAM_FRAMES Frames (kleiner = schnelleres Scrollen).
-move_camera:
-        ld      a,(input_latch)
-        or      a
-        ret     z                       ; keine Eingabe
-        ld      hl,cam_ctr
-        inc     (hl)
-        ld      a,(hl)
-        cp      CAM_FRAMES
-        ret     c                       ; noch zu frueh
-        ld      (hl),0
-        ld      a,(input_latch)
-        ld      c,a
-        xor     a
-        ld      (input_latch),a
-        ld      b,0                     ; B = Anzahl Kamerabewegungen
-
-        ld      a,(cam_x)
-        bit     0,c                     ; links
-        jr      z,mc_r
-        or      a
-        jr      z,mc_r
-        dec     a
-        inc     b
-mc_r:   bit     1,c                     ; rechts
-        jr      z,mc_xs
-        cp      CAM_MAX_X
-        jr      nc,mc_xs
-        inc     a
-        inc     b
-mc_xs:  ld      (cam_x),a
-
-        ld      a,(cam_y)
-        bit     2,c                     ; hoch
-        jr      z,mc_d
-        or      a
-        jr      z,mc_d
-        dec     a
-        inc     b
-mc_d:   bit     3,c                     ; runter
-        jr      z,mc_ys
-        cp      CAM_MAX_Y
-        jr      nc,mc_ys
-        inc     a
-        inc     b
-mc_ys:  ld      (cam_y),a
-
-        ld      a,b
-        or      a
-        ret     z                       ; Kamera steht still
-        call    draw_view               ; nur geaenderte Kacheln werden gezeichnet
-        jp      print_cam
 
 ; read_input: A = IN_LEFT/IN_RIGHT/IN_UP/IN_DOWN (gesetzte Bits)
 read_input:
@@ -698,20 +800,15 @@ clear_screen:
         ldir
         ret
 
-; print_status: Ticks und Kameraposition in die Kopfzeile (print_cam: nur Kamera)
+; print_status: Ticks und Diamanten in die Kopfzeile
 print_status:
         ld      hl,txt_tickpos
         call    print_str
         ld      hl,(tick_count)
         call    print_num
-print_cam:
-        ld      hl,txt_xpos
+        ld      hl,txt_diapos
         call    print_str
-        ld      a,(cam_x)
-        call    print_dec2
-        ld      hl,txt_ypos
-        call    print_str
-        ld      a,(cam_y)
+        ld      a,(diamonds)
         jp      print_dec2
 
 ; print_str: Text ab HL bis Endekennung FFh ueber ROM (RST 10h)
@@ -769,22 +866,18 @@ pn_loop:
 ; ============================================================
 txt_header:
         db      22,0,0, 16,6, 17,0, 19,1
-        db      "BOULDER DASH  -  STUFE 0"
+        db      "BOULDER DASH  -  STUFE 1"
         db      22,1,0, 16,7, 17,0, 19,0
         db      "TICKS"
         db      22,1,12
-        db      "X"
-        db      22,1,16
-        db      "Y"
+        db      "DIA:"
         db      22,1,21
         db      "SPACE=ENDE"
         db      0FFh
 txt_tickpos:
         db      22,1,6, 16,5, 17,0, 19,1, 0FFh
-txt_xpos:
-        db      22,1,13, 16,5, 17,0, 19,1, 0FFh
-txt_ypos:
-        db      22,1,17, 0FFh
+txt_diapos:
+        db      22,1,16, 16,5, 17,0, 19,1, 0FFh
 
 ; Frame-Tabelle: je Tile zwei Eintraege (Phase 0 und Phase 1)
 frame_table:
@@ -798,13 +891,14 @@ frame_table:
         dw      blk_rockford_up,blk_rockford_up
         dw      blk_rockford_stomp,blk_rockford_stomp
         dw      blk_rockford_blink,blk_rockford_blink
+        dw      blk_rockford_walk,blk_rockford_walk
         dw      blk_exit,    blk_exit
 
 ; Schluessel je Frame fuer den Shadow-Puffer: Frames mit identischer Grafik
 ; (alle ausser den animierten) bekommen denselben Schluessel, damit ein
 ; Phasenwechsel nicht ueberall ein Neuzeichnen ausloest.
 frame_key:
-        db      0,0, 2,2, 4,4, 6,6, 8,8, 10,11, 12,12, 14,14, 16,16, 18,18, 20,20
+        db      0,0, 2,2, 4,4, 6,6, 8,8, 10,11, 12,12, 14,14, 16,16, 18,18, 20,20, 22,22
 
 ; Leerlauf-Animation Rockford: ein Eintrag je Tick (6 Frames = ca. 0,12 s).
 ; Beliebig aenderbar; die Laenge ergibt sich aus den Labels.
@@ -1030,6 +1124,25 @@ blk_rockford_blink:  ; Rockford, Augen zu (blinzelt)
         db      %00011110,%01111000   ; ...####..####...
         db      %00000000,%00000000   ; ................
 
+blk_rockford_walk:  ; Rockford, Schrittstellung
+        db      046h,046h,041h,041h
+        db      %00000000,%00000000   ; ................
+        db      %00000111,%11100000   ; .....######.....
+        db      %00001101,%10110000   ; ....##.##.##....
+        db      %00001101,%10110000   ; ....##.##.##....
+        db      %00001111,%11110000   ; ....########....
+        db      %00000111,%11100000   ; .....######.....
+        db      %00111111,%11111100   ; ..############..
+        db      %00101111,%11110100   ; ..#.########.#..
+        db      %00001111,%11110000   ; ....########....
+        db      %00001111,%11110000   ; ....########....
+        db      %00001110,%01110000   ; ....###..###....
+        db      %00011100,%00111000   ; ...###....###...
+        db      %00111000,%00011100   ; ..###......###..
+        db      %00111000,%00011100   ; ..###......###..
+        db      %01111000,%00011110   ; .####......####.
+        db      %00000000,%00000000   ; ................
+
 blk_exit:  ; Ausgang (FLASH-Attribut blinkt)
         db      0C5h,0C5h,0C5h,0C5h
         db      %11111111,%11111111   ; ################
@@ -1060,7 +1173,9 @@ input_latch:    db      0
 cam_x:          db      0
 cam_y:          db      0
 tmp_frame:      db      0
-cam_ctr:        db      0
+diamonds:       db      0
+rock_idle:      db      0
+rock_walk:      db      0
 rock_x:         db      0
 rock_y:         db      0
 rock_step:      db      0
