@@ -21,8 +21,10 @@
 ;     und sammelt Diamanten; Mauern und Stahl blockieren
 ;   - Physik (physics): Steine und Diamanten fallen, wenn darunter frei ist,
 ;     und rollen von runden Dingen (Stein, Diamant, Ziegel) nach links/rechts
-;   - Rockford schiebt Steine seitlich, wenn dahinter frei ist
-;   - Ein fallender Stein zerquetscht Rockford (Explosion, dann Neustart)
+;   - Rockford schiebt Steine seitlich, wenn dahinter frei ist; ein Stein ist
+;     schwer: erst im zweiten Tick des Drueckens bewegt er sich
+;   - Ein fallender Stein oder Diamant zerquetscht Rockford (Explosion, dann
+;     Neustart)
 ;   - Leerlauf: nach einigen Ticks Stillstand blinzelt Rockford und
 ;     stampft mit dem linken Fuss auf
 ;   - Diamanten funkeln
@@ -99,6 +101,8 @@ start:
         ld      (diamonds),a
         ld      (rock_walk),a
         ld      (dead),a
+        ld      (push_cnt),a
+        ld      (push_prev),a
         ld      a,IDLE_DELAY            ; Leerlauf-Animation laeuft von Anfang an
         ld      (rock_idle),a
         ld      a,ROCK_START_X
@@ -228,7 +232,7 @@ gt_stats:
 ; weit kommt. Betroffen: Stein (4), Diamant (5) und ihre fallenden Formen
 ; (12, 13 = Stein/Diamant + 8).
 ;   - darunter leer              -> faellt ein Feld (wird "fallend")
-;   - fallender Stein trifft Rockford -> zerquetscht ihn (explode)
+;   - fallender Stein oder Diamant trifft Rockford -> zerquetscht ihn (explode)
 ;   - darunter Stein/Diamant/Ziegel (rund) -> rollt nach links, sonst rechts,
 ;     wenn das Feld daneben UND das Feld darunter daneben frei sind
 ;   - sonst: liegt still (fallend -> normal)
@@ -253,9 +257,8 @@ ph_obj: ld      c,a                     ; C = Kachel des Objekts
         or      a
         jr      z,ph_fall
         ld      b,a                     ; B = Kachel darunter
-        ld      a,c
-        cp      T_STONE_F
-        jr      nz,ph_nocrush
+        bit     3,c                     ; nur fallende Objekte (Stein 12, Diamant 13)
+        jr      z,ph_nocrush
         ld      a,b
         sub     T_ROCKFORD
         cp      T_ROCKFORD_WALK-T_ROCKFORD+1
@@ -382,6 +385,10 @@ move_rockford:
         ld      c,a
         xor     a
         ld      (input_latch),a
+        ld      a,(push_cnt)            ; Schiebe-Zaehler: war im letzten Tick schon
+        ld      (push_prev),a           ; ein Schiebeversuch? (sonst wieder 0)
+        xor     a
+        ld      (push_cnt),a
         ld      a,(rock_x)
         ld      e,a                     ; E = x
         ld      a,(rock_y)
@@ -421,6 +428,13 @@ mr_try:                                 ; (E,D) = Zielfeld
         ld      a,(rock_y)
         cp      d
         jr      nz,mr_blocked           ; vertikal laesst sich kein Stein schieben
+        ld      a,(push_prev)           ; Stein ist schwer: erster Tick nur Druck,
+        or      a
+        jr      nz,mr_heavy             ; erst beim zweiten Tick bewegt er sich
+        inc     a
+        ld      (push_cnt),a
+        jr      mr_blocked
+mr_heavy:
         ld      a,(rock_x)
         cp      e
         jr      c,mr_pr                 ; Ziel rechts von Rockford
@@ -1429,6 +1443,8 @@ rock_walk:      db      0
 rock_x:         db      0
 rock_y:         db      0
 rock_step:      db      0
+push_cnt:       db      0               ; Schiebeversuch im letzten Tick (0/1)
+push_prev:      db      0
 dead:           db      0               ; >0: Explosion laeuft (Ticks bis Neustart)
 shadow:         ds      VIEW_W*VIEW_H
 dirty_list:     ds      DIRTY_MAX*2
