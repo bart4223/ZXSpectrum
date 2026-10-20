@@ -31,7 +31,7 @@ Die Zustände „liegt“ und „fällt“ unterscheiden: Nur ein fallender Stei
 Den Scan von oben nach unten aufbauen und bewegte Objekte für den Rest des Ticks markieren, damit nichts doppelt bewegt wird.
 Rockford kann Steine waagerecht schieben. Im Original klappt das nur mit einer gewissen Wahrscheinlichkeit.
 
--State: InProgress
+-State: Done
 
 Stufe 3: Erste spielbare Version
 
@@ -40,7 +40,7 @@ Dazu Zeitlimit, Leben, Punkte und eine Statuszeile.
 Ab hier ist es ein echtes Spiel und ein guter Meilenstein.
 
 -1. Meilenstein
--State: Open
+-State: InProgress
 
 Stufe 4: Gegner und Explosionen
 

@@ -1,5 +1,5 @@
 ; ============================================================
-;  BOULDER DASH fuer ZX Spectrum  -  Stufe 2: Physik
+;  BOULDER DASH fuer ZX Spectrum  -  Stufe 3: Spielziel
 ;  16x16-Kacheln, Hoehle 40x22, scrollender Viewport 16x11
 ;
 ;  Assembler: pasmo   ->   pasmo --tapbas boulderdash.asm boulderdash.tap
@@ -23,8 +23,11 @@
 ;     und rollen von runden Dingen (Stein, Diamant, Ziegel) nach links/rechts
 ;   - Rockford schiebt Steine seitlich, wenn dahinter frei ist; ein Stein ist
 ;     schwer: erst im zweiten Tick des Drueckens bewegt er sich
-;   - Ein fallender Stein oder Diamant zerquetscht Rockford (Explosion, dann
-;     Neustart)
+;   - Ein fallender Stein oder Diamant zerquetscht Rockford (Explosion)
+;   - Spielziel: genug Diamanten sammeln (Quote), dann oeffnet sich der
+;     blinkende Ausgang; hineinlaufen = Level geschafft (Zeitbonus, naechstes
+;     Level mit hoeherer Quote). 10 Punkte je Diamant.
+;   - Zeit: laeuft sie ab, explodiert Rockford. 3 Leben, dann GAME OVER.
 ;   - Leerlauf: nach einigen Ticks Stillstand blinzelt Rockford und
 ;     stampft mit dem linken Fuss auf
 ;   - Diamanten funkeln
@@ -58,6 +61,17 @@ DIRTY_MAX       equ     192
 SEED_START      equ     0ACE1h
 CHAN_OPEN       equ     1601h
 FRAMES          equ     5C78h           ; ROM-Systemvariable: Bildzaehler
+START_LIVES     equ     3
+TIME_START      equ     150             ; Spielsekunden je Level
+TICKS_PER_SEC   equ     8               ; Ticks je Spielsekunde (~8,3 Hz)
+WIN_TICKS       equ     12              ; Pause nach dem Ausgang
+OVER_TICKS      equ     24              ; Pause bei GAME OVER
+EXIT_X          equ     38              ; Position des Ausgangs
+EXIT_Y          equ     20
+NEED_BASE       equ     10              ; Quote Level 1
+NEED_STEP       equ     2               ; mehr je Level
+NEED_MAX        equ     30
+DIA_SCORE       equ     10
 
 ; Tile-IDs (Reihenfolge = frame_table)
 T_EMPTY         equ     0
@@ -76,6 +90,7 @@ T_STONE_F       equ     12              ; fallender Stein (Grafik wie Stein)
 T_DIAMOND_F     equ     13              ; fallender Diamant
 T_EXPLODE       equ     14              ; Explosion
 DEAD_TICKS      equ     16              ; Explosionsdauer bis zum Neustart
+T_EXIT_OFF      equ     15              ; geschlossener Ausgang (sieht aus wie Stahl)
 
 ; Eingabe-Bits
 IN_LEFT         equ     1
@@ -85,6 +100,13 @@ IN_DOWN         equ     8
 
 ; ============================================================
 start:
+        ld      a,START_LIVES
+        ld      (lives),a
+        ld      a,1
+        ld      (level),a
+        ld      hl,0
+        ld      (score),hl
+new_level:                              ; (Neu-)Start des aktuellen Levels
         xor     a
         out     (0FEh),a                ; Rand schwarz
         ld      (frame_ctr),a
@@ -101,6 +123,8 @@ start:
         ld      (diamonds),a
         ld      (rock_walk),a
         ld      (dead),a
+        ld      (win),a
+        ld      (over),a
         ld      (push_cnt),a
         ld      (push_prev),a
         ld      a,IDLE_DELAY            ; Leerlauf-Animation laeuft von Anfang an
@@ -116,8 +140,27 @@ start:
         ldir
         ld      hl,0
         ld      (tick_count),hl
-        ld      hl,SEED_START
-        ld      (seed),hl               ; gleiche Hoehle bei jedem Start
+        ld      a,TIME_START
+        ld      (time),a
+        ld      a,TICKS_PER_SEC
+        ld      (time_sub),a
+        ld      a,(level)               ; Quote: NEED_BASE + NEED_STEP*(level-1)
+        dec     a
+        add     a,a
+        add     a,NEED_BASE
+        cp      NEED_MAX+1
+        jr      c,nl_need
+        ld      a,NEED_MAX
+nl_need:ld      (need),a
+        ld      hl,SEED_START           ; Hoehle je Level, aber reproduzierbar
+        ld      a,(level)
+        dec     a
+        jr      z,nl_seed
+        ld      b,a
+        ld      de,1357h
+nl_sl:  add     hl,de
+        djnz    nl_sl
+nl_seed:ld      (seed),hl
 
         call    clear_screen
         ld      a,2
@@ -127,7 +170,7 @@ start:
 
         call    gen_cave
         call    draw_view
-        call    print_status
+        call    print_all
         ld      a,(FRAMES)
         ld      (frame_ctr),a           ; Tick-Takt beginnt jetzt
 
@@ -157,22 +200,29 @@ ml_keys:
         ret
 
 ; ============================================================
-;  Spiellogik (Stufe 2: Physik)
+;  Spiellogik (Stufe 3: Spielziel)
 ; ============================================================
 game_tick:
         ld      a,(anim_phase)
         xor     1
         ld      (anim_phase),a
+        ld      a,(over)
+        or      a
+        jr      nz,gt_over
         ld      a,(dead)
         or      a
         jr      nz,gt_dying
+        ld      a,(win)
+        or      a
+        jr      nz,gt_win
         call    move_rockford           ; NZ = Rockford hat sich bewegt
         push    af
         call    physics                 ; Steine und Diamanten bewegen sich
+        call    game_time               ; Zeit laeuft
         pop     af
         jr      z,gt_idle
         call    follow_camera           ; NZ = Viewport wurde neu gezeichnet
-        jr      nz,gt_stats             ; (dann ist auch das Funkeln erledigt)
+        jp      nz,gt_stats             ; (dann ist auch das Funkeln erledigt)
         jr      gt_sparkle
 gt_idle:
         call    animate_rockford        ; steht still: Leerlauf-Animation
@@ -182,8 +232,42 @@ gt_dying:                               ; Rockford ist zerquetscht: Explosion la
         ld      hl,dead
         dec     (hl)
         jr      nz,gt_sparkle
+        ld      hl,lives                ; Explosion vorbei: ein Leben weniger
+        dec     (hl)
+        jr      z,gt_gameover
         pop     hl                      ; Ruecksprung nach main_loop verwerfen
-        jp      start                   ; Neustart der Hoehle
+        jp      new_level               ; gleiche Hoehle nochmal
+gt_gameover:
+        ld      a,OVER_TICKS
+        ld      (over),a
+        ld      hl,txt_over
+        call    print_str
+        jr      gt_sparkle
+gt_over:                                ; GAME OVER steht, dann komplett neu
+        dec     a
+        ld      (over),a
+        jr      nz,gt_sparkle
+        pop     hl
+        jp      start
+gt_win:                                 ; Ausgang erreicht: kurze Pause, dann Bonus
+        dec     a
+        ld      (win),a
+        jr      nz,gt_sparkle
+        ld      a,(time)                ; Zeitbonus: 5 Punkte je Restsekunde
+        ld      e,a
+        ld      d,0
+        ld      h,d
+        ld      l,e
+        add     hl,hl
+        add     hl,hl
+        add     hl,de
+        ld      de,(score)
+        add     hl,de
+        ld      (score),hl
+        ld      hl,level
+        inc     (hl)
+        pop     hl
+        jp      new_level
 
         ; --- sichtbare Diamanten als "dirty" markieren (Funkeln) ---
 gt_sparkle:
@@ -222,7 +306,29 @@ gt_stats:
         ld      hl,(tick_count)
         inc     hl
         ld      (tick_count),hl
-        jp      print_status
+        ret
+
+; game_time: Spielsekunden herunterzaehlen; bei 0 explodiert Rockford.
+game_time:
+        ld      hl,time_sub
+        dec     (hl)
+        ret     nz
+        ld      (hl),TICKS_PER_SEC
+        ld      hl,time
+        dec     (hl)
+        call    print_time
+        ld      a,(time)
+        or      a
+        ret     nz
+        ld      a,(rock_y)              ; Zeit abgelaufen: Explosion um Rockford
+        dec     a
+        ld      d,a
+        ld      a,(rock_x)
+        ld      e,a
+        push    de
+        call    cave_addr
+        pop     de
+        jp      explode
 
 ; ============================================================
 ;  Physik
@@ -378,7 +484,7 @@ ex_nc:  inc     d
 ; zu bewegen (Prioritaet: links, rechts, hoch, runter). Betretbar sind leere
 ; Felder, Erde (wird weggegraben) und Diamanten (werden eingesammelt).
 ; Steine werden seitlich geschoben, wenn dahinter frei ist. Mauern, Stahl,
-; Ausgang und fallende Steine blockieren.
+; geschlossener Ausgang und fallende Steine blockieren.
 ; Rueckgabe: NZ = Rockford hat sich bewegt, Z = nicht.
 move_rockford:
         ld      a,(input_latch)
@@ -413,56 +519,21 @@ mr_try:                                 ; (E,D) = Zielfeld
         call    cave_addr               ; HL = Zielzelle (zerstoert BC, DE)
         ld      a,(hl)
         or      a                       ; T_EMPTY = 0
-        jr      z,mr_go
+        jp      z,mr_go
         cp      T_DIRT
-        jr      z,mr_go
+        jp      z,mr_go
         cp      T_DIAMOND
-        jr      z,mr_dia
+        jp      z,mr_dia
         cp      T_DIAMOND_F
-        jr      z,mr_dia
+        jp      z,mr_dia
+        cp      T_EXIT                  ; nur der offene Ausgang (geschlossen = 15)
+        jp      z,mr_exit
         cp      T_STONE
-        jr      nz,mr_blocked
-        ; --- Stein schieben: nur seitlich, und nur wenn dahinter frei ist ---
+        jp      z,mr_stone
+mr_blocked:
         pop     de
-        push    de                      ; DE = Zielfeld
-        ld      a,(rock_y)
-        cp      d
-        jr      nz,mr_blocked           ; vertikal laesst sich kein Stein schieben
-        ld      a,(push_prev)           ; Stein ist schwer: erster Tick nur Druck,
-        or      a
-        jr      nz,mr_heavy             ; erst beim zweiten Tick bewegt er sich
-        inc     a
-        ld      (push_cnt),a
-        jr      mr_blocked
-mr_heavy:
-        ld      a,(rock_x)
-        cp      e
-        jr      c,mr_pr                 ; Ziel rechts von Rockford
-        dec     hl                      ; Feld links hinter dem Stein
-        ld      a,(hl)
-        or      a
-        jr      nz,mr_blocked
-        ld      (hl),T_STONE
-        inc     hl
-        dec     e
-        call    mark_dirty
-        inc     e
-        jr      mr_go
-mr_pr:  inc     hl                      ; Feld rechts hinter dem Stein
-        ld      a,(hl)
-        or      a
-        jr      nz,mr_blocked
-        ld      (hl),T_STONE
-        dec     hl
-        inc     e
-        call    mark_dirty
-        dec     e
-        jr      mr_go
-mr_dia: ld      a,(diamonds)            ; Diamant einsammeln
-        cp      MAX_DIAMONDS
-        jr      nc,mr_go
-        inc     a
-        ld      (diamonds),a
+        xor     a                       ; Z = nicht bewegt
+        ret
 mr_go:  ld      a,(rock_walk)           ; Schrittanimation: abwechselnd stehen/gehen
         xor     1
         ld      (rock_walk),a
@@ -492,10 +563,73 @@ mr_t:   ld      (hl),a                  ; Rockford steht jetzt im Zielfeld
         ld      (rock_step),a
         inc     a                       ; NZ = bewegt
         ret
-mr_blocked:
+mr_stone:
+        ; --- Stein schieben: nur seitlich, und nur wenn dahinter frei ist ---
         pop     de
-        xor     a                       ; Z = nicht bewegt
-        ret
+        push    de                      ; DE = Zielfeld
+        ld      a,(rock_y)
+        cp      d
+        jp      nz,mr_blocked           ; vertikal laesst sich kein Stein schieben
+        ld      a,(push_prev)           ; Stein ist schwer: erster Tick nur Druck,
+        or      a
+        jr      nz,mr_heavy             ; erst beim zweiten Tick bewegt er sich
+        inc     a
+        ld      (push_cnt),a
+        jp      mr_blocked
+mr_heavy:
+        ld      a,(rock_x)
+        cp      e
+        jr      c,mr_pr                 ; Ziel rechts von Rockford
+        dec     hl                      ; Feld links hinter dem Stein
+        ld      a,(hl)
+        or      a
+        jp      nz,mr_blocked
+        ld      (hl),T_STONE
+        inc     hl
+        dec     e
+        call    mark_dirty
+        inc     e
+        jp      mr_go
+mr_pr:  inc     hl                      ; Feld rechts hinter dem Stein
+        ld      a,(hl)
+        or      a
+        jp      nz,mr_blocked
+        ld      (hl),T_STONE
+        dec     hl
+        inc     e
+        call    mark_dirty
+        dec     e
+        jp      mr_go
+mr_exit:                                ; offener Ausgang: Level geschafft
+        ld      a,WIN_TICKS
+        ld      (win),a
+        push    hl
+        ld      hl,txt_win
+        call    print_str
+        pop     hl
+        jp      mr_go
+mr_dia: ld      a,(diamonds)            ; Diamant einsammeln
+        cp      MAX_DIAMONDS
+        jp      nc,mr_go
+        inc     a
+        ld      (diamonds),a
+        push    hl
+        ld      hl,(score)
+        ld      de,DIA_SCORE
+        add     hl,de
+        ld      (score),hl
+        ld      a,(diamonds)
+        ld      hl,need
+        cp      (hl)
+        jr      nz,mr_dn
+        ld      a,T_EXIT                ; Quote erreicht: der Ausgang oeffnet sich
+        ld      (cave+EXIT_Y*CAVE_W+EXIT_X),a
+        ld      e,EXIT_X
+        ld      d,EXIT_Y
+        call    mark_dirty
+mr_dn:  call    print_dia_score
+        pop     hl
+        jp      mr_go
 
 ; follow_camera: Kamera folgt Rockford. Ausserhalb der Randzone (CAM_MARGIN_X/Y)
 ; rueckt der Viewport um ein Feld nach. Danach wird er per Shadow-Vergleich neu
@@ -1001,8 +1135,8 @@ gc_w2:  ld      (hl),T_BRICK
         ; Rockford oben links, Ausgang unten rechts
         ld      a,T_ROCKFORD
         ld      (cave+ROCK_START_Y*CAVE_W+ROCK_START_X),a
-        ld      a,T_EXIT
-        ld      (cave+20*CAVE_W+38),a
+        ld      a,T_EXIT_OFF
+        ld      (cave+EXIT_Y*CAVE_W+EXIT_X),a
         ret
 
 ; rnd: 16-Bit-Xorshift, Ergebnis in A (und HL)
@@ -1041,15 +1175,44 @@ clear_screen:
         ldir
         ret
 
-; print_status: Ticks und Diamanten in die Kopfzeile
-print_status:
-        ld      hl,txt_tickpos
+; Statuszeilen (nur bei Aenderung ausgeben, ROM-Ausgabe ist langsam)
+print_all:
+        call    print_time
+        call    print_dia_score
+        call    print_need
+        call    print_lives
+        jp      print_level
+print_time:
+        ld      hl,txt_timepos
         call    print_str
-        ld      hl,(tick_count)
-        call    print_num
+        ld      a,(time)
+        jp      print_dec3
+print_dia_score:
         ld      hl,txt_diapos
         call    print_str
         ld      a,(diamonds)
+        call    print_dec2
+print_score:
+        ld      hl,txt_scorepos
+        call    print_str
+        ld      hl,(score)
+        jp      print_num
+print_need:
+        ld      hl,txt_needpos
+        call    print_str
+        ld      a,(need)
+        jp      print_dec2
+print_lives:
+        ld      hl,txt_livespos
+        call    print_str
+        ld      a,(lives)
+        add     a,'0'
+        rst     10h
+        ret
+print_level:
+        ld      hl,txt_levelpos
+        call    print_str
+        ld      a,(level)
         jp      print_dec2
 
 ; print_str: Text ab HL bis Endekennung FFh ueber ROM (RST 10h)
@@ -1062,6 +1225,20 @@ print_str:
         pop     hl
         inc     hl
         jr      print_str
+
+; print_dec3: A (0..255) als dreistellige Dezimalzahl ausgeben
+print_dec3:
+        ld      b,'0'
+pd3_l:  cp      100
+        jr      c,pd3_d
+        sub     100
+        inc     b
+        jr      pd3_l
+pd3_d:  push    af
+        ld      a,b
+        rst     10h
+        pop     af
+        jr      print_dec2
 
 ; print_dec2: A (0..99) als zweistellige Dezimalzahl ausgeben
 print_dec2:
@@ -1106,20 +1283,36 @@ pn_loop:
 ;  Daten
 ; ============================================================
 txt_header:
-        db      22,0,0, 16,6, 17,0, 19,1
-        db      "BOULDER DASH  -  STUFE 2"
-        db      22,1,0, 16,7, 17,0, 19,0
-        db      "TICKS"
-        db      22,1,12
+        db      22,0,0, 16,7, 17,0, 19,0
+        db      "PUNKTE"
+        db      22,0,13
+        db      "LEBEN"
+        db      22,0,21
+        db      "LV"
+        db      22,1,0
+        db      "ZEIT"
+        db      22,1,9
         db      "DIA:"
-        db      22,1,21
+        db      22,1,15
+        db      "/"
+        db      22,1,19
         db      "SPACE=ENDE"
         db      16,5, 17,0, 19,1        ; Farbe fuer die Zahlen (bleibt gesetzt)
         db      0FFh
-txt_tickpos:
-        db      22,1,6, 0FFh
-txt_diapos:
-        db      22,1,16, 0FFh
+txt_timepos:   db      22,1,5, 0FFh
+txt_diapos:    db      22,1,13, 0FFh
+txt_needpos:   db      22,1,16, 0FFh
+txt_scorepos:  db      22,0,7, 0FFh
+txt_livespos:  db      22,0,19, 0FFh
+txt_levelpos:  db      22,0,24, 0FFh
+txt_win:
+        db      22,0,0, 16,6, 17,0, 19,1
+        db      "        LEVEL GESCHAFFT!        "
+        db      16,5, 17,0, 19,1, 0FFh
+txt_over:
+        db      22,0,0, 16,2, 17,0, 19,1
+        db      "           GAME OVER            "
+        db      16,5, 17,0, 19,1, 0FFh
 
 ; Frame-Tabelle: je Tile zwei Eintraege (Phase 0 und Phase 1)
 frame_table:
@@ -1138,12 +1331,13 @@ frame_table:
         dw      blk_stone,   blk_stone       ; fallender Stein
         dw      blk_diamond0,blk_diamond1    ; fallender Diamant
         dw      blk_explode, blk_explode
+        dw      blk_steel,   blk_steel       ; geschlossener Ausgang
 
 ; Schluessel je Frame fuer den Shadow-Puffer: Frames mit identischer Grafik
 ; (alle ausser den animierten) bekommen denselben Schluessel, damit ein
 ; Phasenwechsel nicht ueberall ein Neuzeichnen ausloest.
 frame_key:
-        db      0,0, 2,2, 4,4, 6,6, 8,8, 10,11, 12,12, 14,14, 16,16, 18,18, 20,20, 22,22, 8,8, 10,11, 28,28
+        db      0,0, 2,2, 4,4, 6,6, 8,8, 10,11, 12,12, 14,14, 16,16, 18,18, 20,20, 22,22, 8,8, 10,11, 28,28, 6,6
 
 ; Leerlauf-Animation Rockford: ein Eintrag je Tick (6 Frames = ca. 0,12 s).
 ; Beliebig aenderbar; die Laenge ergibt sich aus den Labels.
@@ -1445,6 +1639,14 @@ rock_y:         db      0
 rock_step:      db      0
 push_cnt:       db      0               ; Schiebeversuch im letzten Tick (0/1)
 push_prev:      db      0
+score:          dw      0
+lives:          db      0
+level:          db      1
+need:           db      10              ; Diamantenquote
+time:           db      0               ; Restzeit in Spielsekunden
+time_sub:       db      0
+win:            db      0               ; >0: Ausgang erreicht (Pausen-Ticks)
+over:           db      0               ; >0: GAME OVER (Pausen-Ticks)
 dead:           db      0               ; >0: Explosion laeuft (Ticks bis Neustart)
 shadow:         ds      VIEW_W*VIEW_H
 dirty_list:     ds      DIRTY_MAX*2
