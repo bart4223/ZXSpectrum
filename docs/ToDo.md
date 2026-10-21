@@ -40,7 +40,7 @@ Dazu Zeitlimit, Leben, Punkte und eine Statuszeile.
 Ab hier ist es ein echtes Spiel und ein guter Meilenstein.
 
 -1. Meilenstein
--State: InProgress
+-State: Done
 
 Stufe 4: Gegner und Explosionen
 
@@ -48,7 +48,7 @@ Fireflies folgen der Wand links herum, Butterflies rechts herum.
 Explosionen erfassen ein 3×3-Feld. Eine explodierende Butterfly hinterlässt Diamanten.
 Animationsphasen für Gegner, Diamanten und den blinkenden Ausgang.
 
--State: Open
+-State: InProgress
 
 Stufe 5: Level-DSL
 

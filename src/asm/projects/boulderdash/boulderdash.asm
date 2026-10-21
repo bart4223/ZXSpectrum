@@ -1,5 +1,5 @@
 ; ============================================================
-;  BOULDER DASH fuer ZX Spectrum  -  Stufe 3: Spielziel
+;  BOULDER DASH fuer ZX Spectrum  -  Stufe 4: Gegner und Explosionen
 ;  16x16-Kacheln, Hoehle 40x22, scrollender Viewport 16x11
 ;
 ;  Assembler: pasmo   ->   pasmo --tapbas boulderdash.asm boulderdash.tap
@@ -28,6 +28,10 @@
 ;     blinkende Ausgang; hineinlaufen = Level geschafft (Zeitbonus, naechstes
 ;     Level mit hoeherer Quote). 10 Punkte je Diamant.
 ;   - Zeit: laeuft sie ab, explodiert Rockford. 3 Leben, dann GAME OVER.
+;   - Gegner: Gluehwuermchen (halten sich links an der Wand) und Schmetterlinge
+;     (rechts). Beruehren sie Rockford, explodieren sie und reissen ihn mit.
+;     Ein fallender Stein/Diamant auf einen Gegner loest ebenfalls die
+;     Explosion aus: Gluehwuermchen -> 3x3 leer, Schmetterling -> 3x3 Diamanten.
 ;   - Leerlauf: nach einigen Ticks Stillstand blinzelt Rockford und
 ;     stampft mit dem linken Fuss auf
 ;   - Diamanten funkeln
@@ -88,7 +92,11 @@ T_ROCKFORD_WALK equ     10              ; Schrittstellung
 T_EXIT          equ     11
 T_STONE_F       equ     12              ; fallender Stein (Grafik wie Stein)
 T_DIAMOND_F     equ     13              ; fallender Diamant
-T_EXPLODE       equ     14              ; Explosion
+T_FIREFLY       equ     16              ; Gluehwuermchen 16..23, Schmetterling 24..31
+T_BUTTERFLY     equ     24              ;   Kachel = Typ + 4*Paritaet + Richtung (0 hoch,
+                                        ;   1 rechts, 2 runter, 3 links)
+T_EXPLODE       equ     32              ; Explosion 32..35 (danach leer)
+T_DEXPLODE      equ     36              ; Diamant-Explosion 36..39 (danach Diamant)
 DEAD_TICKS      equ     16              ; Explosionsdauer bis zum Neustart
 T_EXIT_OFF      equ     15              ; geschlossener Ausgang (sieht aus wie Stahl)
 
@@ -125,6 +133,7 @@ new_level:                              ; (Neu-)Start des aktuellen Levels
         ld      (dead),a
         ld      (win),a
         ld      (over),a
+        ld      (par),a
         ld      (push_cnt),a
         ld      (push_prev),a
         ld      a,IDLE_DELAY            ; Leerlauf-Animation laeuft von Anfang an
@@ -200,7 +209,7 @@ ml_keys:
         ret
 
 ; ============================================================
-;  Spiellogik (Stufe 3: Spielziel)
+;  Spiellogik (Stufe 4: Gegner und Explosionen)
 ; ============================================================
 game_tick:
         ld      a,(anim_phase)
@@ -321,41 +330,73 @@ game_time:
         or      a
         ret     nz
         ld      a,(rock_y)              ; Zeit abgelaufen: Explosion um Rockford
-        dec     a
         ld      d,a
         ld      a,(rock_x)
         ld      e,a
         push    de
         call    cave_addr
         pop     de
-        jp      explode
+        ld      a,T_EXPLODE
+        jp      explode_at
 
 ; ============================================================
-;  Physik
+;  Physik und Gegner
 ; ============================================================
 ; physics: ein Durchlauf ueber die Hoehle (Zeilen von unten nach oben, in jeder
 ; Zeile von links nach rechts), damit jedes Objekt pro Tick hoechstens ein Feld
-; weit kommt. Betroffen: Stein (4), Diamant (5) und ihre fallenden Formen
-; (12, 13 = Stein/Diamant + 8).
+; weit kommt. Betroffen:
+;   Stein (4), Diamant (5) und ihre fallenden Formen (12, 13 = +8):
 ;   - darunter leer              -> faellt ein Feld (wird "fallend")
-;   - fallender Stein oder Diamant trifft Rockford -> zerquetscht ihn (explode)
+;   - fallend auf Rockford       -> zerquetscht ihn (Explosion)
+;   - fallend auf einen Gegner   -> Gegner explodiert
 ;   - darunter Stein/Diamant/Ziegel (rund) -> rollt nach links, sonst rechts,
 ;     wenn das Feld daneben UND das Feld darunter daneben frei sind
 ;   - sonst: liegt still (fallend -> normal)
+;   Gegner (16..31): Rockford daneben -> Explosion; sonst ein Schritt nach der
+;   Wandregel (Gluehwuermchen: links, geradeaus, rechts drehen; Schmetterling
+;   spiegelbildlich). Die Paritaet (Bit 2 der Kachel) verhindert, dass ein
+;   Gegner im selben Tick zweimal zieht.
+;   Explosionen (32..39) altern pro Tick; die letzte Stufe wird leer bzw. Diamant.
 physics:
+        ld      a,(par)                 ; Paritaet wechselt je Tick
+        xor     4
+        ld      (par),a
         ld      hl,cave+(CAVE_H-2)*CAVE_W+1
         ld      d,CAVE_H-2
 ph_row: push    hl                      ; Zeilenanfang (x = 1)
         ld      e,1
 ph_col: ld      a,(hl)
         cp      T_STONE
-        jp      c,ph_next               ; 0..3: kein Objekt
+        jp      c,ph_next               ; 0..3: nichts
         cp      T_DIAMOND+1
         jr      c,ph_obj                ; 4, 5
         cp      T_STONE_F
         jp      c,ph_next               ; 6..11
         cp      T_DIAMOND_F+1
-        jp      nc,ph_next              ; ab 14
+        jr      c,ph_obj                ; 12, 13
+        cp      16
+        jp      c,ph_next               ; 14, 15
+        cp      32
+        jp      c,ph_enemy              ; 16..31 Gegner
+        cp      40
+        jp      nc,ph_next
+        ld      c,a                     ; 32..39 Explosion altert
+        and     3
+        cp      3
+        jr      z,ph_xend
+        inc     (hl)
+        jp      ph_next
+ph_xend:
+        ld      a,c
+        cp      T_DEXPLODE
+        ld      a,T_EMPTY               ; Fluechtigkeit: ld aendert die Flags nicht
+        jr      c,ph_xe
+        ld      a,T_DIAMOND
+ph_xe:  ld      (hl),a
+        call    mark_dirty
+        jp      ph_next
+
+; ---- Steine und Diamanten ----
 ph_obj: ld      c,a                     ; C = Kachel des Objekts
         push    hl
         pop     ix
@@ -363,12 +404,30 @@ ph_obj: ld      c,a                     ; C = Kachel des Objekts
         or      a
         jr      z,ph_fall
         ld      b,a                     ; B = Kachel darunter
-        bit     3,c                     ; nur fallende Objekte (Stein 12, Diamant 13)
-        jr      z,ph_nocrush
-        ld      a,b
+        bit     3,c
+        jr      z,ph_nocrush            ; nur fallende Objekte treffen
         sub     T_ROCKFORD
         cp      T_ROCKFORD_WALK-T_ROCKFORD+1
-        jr      c,ph_crush              ; fallender Stein auf Rockford
+        jr      c,ph_crush              ; auf Rockford
+        ld      a,b
+        and     0F0h
+        cp      10h
+        jr      nz,ph_nocrush           ; kein Gegner
+        bit     3,b                     ; Gegner getroffen
+        ld      a,T_EXPLODE
+        jr      z,ph_hit
+        ld      a,T_DEXPLODE
+        jr      ph_hit
+ph_crush:
+        ld      a,T_EXPLODE
+ph_hit: push    hl                      ; Explosion um das Feld darunter
+        ld      bc,CAVE_W
+        add     hl,bc
+        inc     d
+        call    explode_at
+        dec     d
+        pop     hl
+        jp      ph_next
 ph_nocrush:
         ld      a,b
         cp      T_BRICK
@@ -392,7 +451,7 @@ ph_round:                               ; runde Unterlage: Rollen versuchen
         dec     e
         call    mark_dirty
         inc     e
-        jr      ph_next
+        jp      ph_next
 ph_right:
         ld      a,(ix+1)
         or      a
@@ -408,12 +467,12 @@ ph_right:
         inc     e
         call    mark_dirty
         inc     hl                      ; das Zielfeld nicht nochmal bearbeiten
-        jr      ph_next
+        jp      ph_next
 ph_land:
         ld      a,c                     ; liegt still: "fallend"-Bit loeschen
         and     0F7h                    ; (gleiche Grafik, kein Neuzeichnen noetig)
         ld      (hl),a
-        jr      ph_next
+        jp      ph_next
 ph_fall:
         ld      a,c
         or      8
@@ -423,9 +482,95 @@ ph_fall:
         inc     d
         call    mark_dirty
         dec     d
-        jr      ph_next
-ph_crush:
-        call    explode
+        jp      ph_next
+
+; ---- Gegner ----
+ph_enemy:
+        ld      c,a                     ; C = Kachel
+        ld      a,(par)
+        ld      b,a
+        ld      a,c
+        and     4
+        cp      b
+        jp      z,ph_next               ; hat in diesem Tick schon gezogen
+        push    hl
+        pop     ix
+        ld      a,(ix-CAVE_W)           ; Rockford direkt daneben?
+        sub     T_ROCKFORD
+        cp      T_ROCKFORD_WALK-T_ROCKFORD+1
+        jr      c,ph_boom
+        ld      a,(ix+CAVE_W)
+        sub     T_ROCKFORD
+        cp      T_ROCKFORD_WALK-T_ROCKFORD+1
+        jr      c,ph_boom
+        ld      a,(ix-1)
+        sub     T_ROCKFORD
+        cp      T_ROCKFORD_WALK-T_ROCKFORD+1
+        jr      c,ph_boom
+        ld      a,(ix+1)
+        sub     T_ROCKFORD
+        cp      T_ROCKFORD_WALK-T_ROCKFORD+1
+        jr      c,ph_boom
+        ld      a,c
+        and     3
+        ld      b,a                     ; B = Richtung
+        ld      a,c
+        and     18h
+        ld      c,a                     ; C = Typ (10h Gluehwuermchen, 18h Schmetterling)
+        ld      a,b
+        bit     3,c
+        jr      nz,pe_b1
+        dec     a                       ; Gluehwuermchen: zuerst nach links
+        jr      pe_t1
+pe_b1:  inc     a                       ; Schmetterling: zuerst nach rechts
+pe_t1:  and     3
+        push    af
+        call    nbr
+        or      a
+        jr      z,pe_go
+        pop     af
+        ld      a,b                     ; sonst geradeaus
+        push    af
+        call    nbr
+        or      a
+        jr      z,pe_go
+        pop     af
+        ld      a,b                     ; sonst auf der Stelle drehen
+        bit     3,c
+        jr      nz,pe_tb
+        inc     a                       ; Gluehwuermchen dreht nach rechts
+        jr      pe_ts
+pe_tb:  dec     a                       ; Schmetterling nach links
+pe_ts:  and     3
+        or      c
+        ld      c,a
+        ld      a,(par)
+        or      c
+        ld      (hl),a
+        call    mark_dirty
+        jp      ph_next
+pe_go:  pop     af                      ; A = neue Richtung
+        ld      b,a
+        or      c
+        ld      c,a
+        ld      a,(par)
+        or      c
+        ld      c,a                     ; C = neue Kachel
+        ld      a,b
+        call    nbr_wr
+        ld      (hl),T_EMPTY
+        call    mark_dirty
+        ld      a,b
+        call    nbr_dirty
+        jp      ph_next
+ph_boom:
+        bit     3,c                     ; Typ steckt in Bit 3 der Original-Kachel
+        ld      a,T_EXPLODE
+        jr      z,pb_x
+        ld      a,T_DEXPLODE
+pb_x:   call    explode_at              ; Mitte = HL, (E,D)
+        jp      ph_next
+
 ph_next:
         inc     hl
         inc     e
@@ -439,23 +584,94 @@ ph_next:
         jp      nz,ph_row
         ret
 
-; explode: HL = Zelle des Steins, E = x, D = y. Rockford steht eine Zeile darunter.
-; Alle Felder im 3x3-Block um Rockford (ausser Stahl) werden zur Explosion.
-; Alle Register bleiben erhalten.
-explode:
+; nbr: A = Richtung (0 hoch, 1 rechts, 2 runter, 3 links) -> A = Kachel dort
+; (relativ zu IX = Gegnerfeld)
+nbr:    or      a
+        jr      z,nb_u
+        dec     a
+        jr      z,nb_r
+        dec     a
+        jr      z,nb_d
+        ld      a,(ix-1)
+        ret
+nb_u:   ld      a,(ix-CAVE_W)
+        ret
+nb_r:   ld      a,(ix+1)
+        ret
+nb_d:   ld      a,(ix+CAVE_W)
+        ret
+
+; nbr_wr: schreibt C in das Nachbarfeld in Richtung A (relativ zu IX)
+nbr_wr: or      a
+        jr      z,nw_u
+        dec     a
+        jr      z,nw_r
+        dec     a
+        jr      z,nw_d
+        ld      (ix-1),c
+        ret
+nw_u:   ld      (ix-CAVE_W),c
+        ret
+nw_r:   ld      (ix+1),c
+        ret
+nw_d:   ld      (ix+CAVE_W),c
+        ret
+
+; nbr_dirty: markiert das Nachbarfeld in Richtung A (E,D = Gegnerfeld) als dirty
+nbr_dirty:
+        or      a
+        jr      z,nd_u
+        dec     a
+        jr      z,nd_r
+        dec     a
+        jr      z,nd_d
+        dec     e
+        call    mark_dirty
+        inc     e
+        ret
+nd_u:   dec     d
+        call    mark_dirty
+        inc     d
+        ret
+nd_r:   inc     e
+        call    mark_dirty
+        dec     e
+        ret
+nd_d:   inc     d
+        call    mark_dirty
+        dec     d
+        ret
+
+; explode_at: A = erste Explosionskachel (T_EXPLODE / T_DEXPLODE), HL = Mitte,
+; E = x, D = y. Der 3x3-Block um die Mitte wird zur Explosion (ausser Stahl und
+; Ausgang). Liegt Rockford darin, ist er tot. Alle Register bleiben erhalten.
+explode_at:
+        ld      (ex_tile),a
         push    hl
         push    de
         push    bc
-        dec     hl                      ; Feld (x-1, y)
+        ld      bc,-(CAVE_W+1)
+        add     hl,bc                   ; Feld (x-1, y-1)
+        dec     d
         dec     e
-        ld      b,3                     ; 3 Zeilen: y .. y+2
+        ld      b,3                     ; 3 Zeilen
 ex_row: push    hl
         push    de
         ld      c,3
 ex_col: ld      a,(hl)
         cp      T_STEEL
         jr      z,ex_nx
-        ld      (hl),T_EXPLODE
+        cp      T_EXIT
+        jr      z,ex_nx
+        cp      T_EXIT_OFF
+        jr      z,ex_nx
+        sub     T_ROCKFORD
+        cp      T_ROCKFORD_WALK-T_ROCKFORD+1
+        jr      nc,ex_set
+        ld      a,DEAD_TICKS            ; Rockford liegt in der Explosion
+        ld      (dead),a
+ex_set: ld      a,(ex_tile)
+        ld      (hl),a
         call    mark_dirty
 ex_nx:  inc     hl
         inc     e
@@ -470,8 +686,6 @@ ex_nx:  inc     hl
         inc     h
 ex_nc:  inc     d
         djnz    ex_row
-        ld      a,DEAD_TICKS
-        ld      (dead),a
         pop     bc
         pop     de
         pop     hl
@@ -1084,9 +1298,16 @@ gc_a:   cp      40
         jr      nc,gc_b
         ld      d,T_DIAMOND
         jr      gc_store
-gc_b:   cp      70
-        jr      nc,gc_c
+gc_b:   cp      68
+        jr      nc,gc_e
         ld      d,T_EMPTY
+        jr      gc_store
+gc_e:   cp      70                      ; 68 = Gluehwuermchen, 69 = Schmetterling
+        jr      nc,gc_c
+        cp      69
+        ld      d,T_FIREFLY
+        jr      nz,gc_store
+        ld      d,T_BUTTERFLY
         jr      gc_store
 gc_c:   ld      d,T_DIRT
 gc_store:
@@ -1135,6 +1356,10 @@ gc_w2:  ld      (hl),T_BRICK
         ; Rockford oben links, Ausgang unten rechts
         ld      a,T_ROCKFORD
         ld      (cave+ROCK_START_Y*CAVE_W+ROCK_START_X),a
+        ld      a,T_EMPTY               ; Startbereich frei (keine Gegner direkt neben Rockford)
+        ld      (cave+ROCK_START_Y*CAVE_W+ROCK_START_X-1),a
+        ld      (cave+ROCK_START_Y*CAVE_W+ROCK_START_X+1),a
+        ld      (cave+(ROCK_START_Y+1)*CAVE_W+ROCK_START_X),a
         ld      a,T_EXIT_OFF
         ld      (cave+EXIT_Y*CAVE_W+EXIT_X),a
         ret
@@ -1332,12 +1557,30 @@ frame_table:
         dw      blk_diamond0,blk_diamond1    ; fallender Diamant
         dw      blk_explode, blk_explode
         dw      blk_steel,   blk_steel       ; geschlossener Ausgang
+        rept    8                            ; 16..23 Gluehwuermchen
+        dw      blk_firefly0,blk_firefly1
+        endm
+        rept    8                            ; 24..31 Schmetterling
+        dw      blk_butterfly0,blk_butterfly1
+        endm
+        rept    8                            ; 32..39 Explosionen
+        dw      blk_explode, blk_explode
+        endm
 
 ; Schluessel je Frame fuer den Shadow-Puffer: Frames mit identischer Grafik
 ; (alle ausser den animierten) bekommen denselben Schluessel, damit ein
 ; Phasenwechsel nicht ueberall ein Neuzeichnen ausloest.
 frame_key:
         db      0,0, 2,2, 4,4, 6,6, 8,8, 10,11, 12,12, 14,14, 16,16, 18,18, 20,20, 22,22, 8,8, 10,11, 28,28, 6,6
+        rept    8
+        db      40,41                   ; Gluehwuermchen (Phase 0/1)
+        endm
+        rept    8
+        db      44,45                   ; Schmetterling
+        endm
+        rept    8
+        db      28,28                   ; Explosionen
+        endm
 
 ; Leerlauf-Animation Rockford: ein Eintrag je Tick (6 Frames = ca. 0,12 s).
 ; Beliebig aenderbar; die Laenge ergibt sich aus den Labels.
@@ -1582,6 +1825,82 @@ blk_rockford_walk:  ; Rockford, Schrittstellung
         db      %01111000,%00011110   ; .####......####.
         db      %00000000,%00000000   ; ................
 
+blk_firefly0:  ; Gluehwuermchen, Phase 0
+        db      046h,046h,042h,042h
+        db      %00000000,%00000000   ; ................
+        db      %00010000,%00001000   ; ...#........#...
+        db      %00001000,%00010000   ; ....#......#....
+        db      %00000111,%11100000   ; .....######.....
+        db      %00001111,%11110000   ; ....########....
+        db      %00011011,%11011000   ; ...##.####.##...
+        db      %00111011,%11011100   ; ..###.####.###..
+        db      %00111111,%11111100   ; ..############..
+        db      %00111111,%11111100   ; ..############..
+        db      %00111011,%11011100   ; ..###.####.###..
+        db      %00011011,%11011000   ; ...##.####.##...
+        db      %00001111,%11110000   ; ....########....
+        db      %00000111,%11100000   ; .....######.....
+        db      %00001000,%00010000   ; ....#......#....
+        db      %00010000,%00001000   ; ...#........#...
+        db      %00000000,%00000000   ; ................
+
+blk_firefly1:  ; Gluehwuermchen, Phase 1
+        db      046h,046h,042h,042h
+        db      %00000000,%00000000   ; ................
+        db      %00001000,%00010000   ; ....#......#....
+        db      %00000100,%00100000   ; .....#....#.....
+        db      %00000111,%11100000   ; .....######.....
+        db      %00001111,%11110000   ; ....########....
+        db      %00011011,%11011000   ; ...##.####.##...
+        db      %00111011,%11011100   ; ..###.####.###..
+        db      %00111111,%11111100   ; ..############..
+        db      %00111111,%11111100   ; ..############..
+        db      %00111011,%11011100   ; ..###.####.###..
+        db      %00011011,%11011000   ; ...##.####.##...
+        db      %00001111,%11110000   ; ....########....
+        db      %00000111,%11100000   ; .....######.....
+        db      %00010000,%00001000   ; ...#........#...
+        db      %00100000,%00000100   ; ..#..........#..
+        db      %00000000,%00000000   ; ................
+
+blk_butterfly0:  ; Schmetterling, Fluegel offen
+        db      043h,043h,045h,045h
+        db      %00000010,%01000000   ; ......#..#......
+        db      %00000101,%10100000   ; .....#.##.#.....
+        db      %11100011,%11000111   ; ###...####...###
+        db      %11111011,%11011111   ; #####.####.#####
+        db      %11111101,%10111111   ; ######.##.######
+        db      %11111101,%10111111   ; ######.##.######
+        db      %11111001,%10011111   ; #####..##..#####
+        db      %01110001,%10001110   ; .###...##...###.
+        db      %00110001,%10001100   ; ..##...##...##..
+        db      %01110011,%11001110   ; .###..####..###.
+        db      %11111011,%11011111   ; #####.####.#####
+        db      %11110011,%11001111   ; ####..####..####
+        db      %11100011,%11000111   ; ###...####...###
+        db      %01000001,%10000010   ; .#.....##.....#.
+        db      %00000010,%01000000   ; ......#..#......
+        db      %00000000,%00000000   ; ................
+
+blk_butterfly1:  ; Schmetterling, Fluegel schmal
+        db      043h,043h,045h,045h
+        db      %00000010,%01000000   ; ......#..#......
+        db      %00000101,%10100000   ; .....#.##.#.....
+        db      %00000011,%11000000   ; ......####......
+        db      %00110011,%11001100   ; ..##..####..##..
+        db      %01110011,%11001110   ; .###..####..###.
+        db      %01111011,%11011110   ; .####.####.####.
+        db      %01110011,%11001110   ; .###..####..###.
+        db      %00110011,%11001100   ; ..##..####..##..
+        db      %00110011,%11001100   ; ..##..####..##..
+        db      %01110011,%11001110   ; .###..####..###.
+        db      %01110011,%11001110   ; .###..####..###.
+        db      %00110011,%11001100   ; ..##..####..##..
+        db      %00100011,%11000100   ; ..#...####...#..
+        db      %00000010,%01000000   ; ......#..#......
+        db      %00000010,%01000000   ; ......#..#......
+        db      %00000000,%00000000   ; ................
+
 blk_explode:  ; Explosion (FLASH)
         db      0C6h,0C6h,0C6h,0C6h
         db      %00000001,%10000000   ; .......##.......
@@ -1647,6 +1966,8 @@ time:           db      0               ; Restzeit in Spielsekunden
 time_sub:       db      0
 win:            db      0               ; >0: Ausgang erreicht (Pausen-Ticks)
 over:           db      0               ; >0: GAME OVER (Pausen-Ticks)
+par:            db      0               ; Tick-Paritaet (0/4) fuer die Gegner
+ex_tile:        db      0               ; erste Kachel der laufenden Explosion
 dead:           db      0               ; >0: Explosion laeuft (Ticks bis Neustart)
 shadow:         ds      VIEW_W*VIEW_H
 dirty_list:     ds      DIRTY_MAX*2
