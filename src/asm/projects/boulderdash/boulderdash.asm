@@ -110,6 +110,10 @@ T_MAGIC_OFF     equ     42              ; Zauberwand verbraucht (wie Ziegel)
 T_AMOEBA        equ     43
 T_GROW          equ     44              ; wachsende Mauer
 T_LAVA          equ     45              ; Lava: verschluckt Steine/Diamanten, toetet Rockford
+T_BOMB          equ     46              ; Bombe (ruhend)
+T_BOMB_ON       equ     47              ; Bombe gezuendet 47..51 (Zuendschnur brennt), 52 = Knall
+T_BOMB_BOOM     equ     52
+IN_FIRE         equ     16
 MAGIC_TICKS     equ     160             ; Aktivzeit der Zauberwand (~19 s)
 AMOEBA_MAX      equ     40              ; ab mehr Feldern erstarrt die Amoebe zu Steinen
 DEAD_TICKS      equ     16              ; Explosionsdauer bis zum Neustart
@@ -226,7 +230,7 @@ ml_keys:
         ret
 
 ; ============================================================
-;  Spiellogik (Stufe 6: Lava, Zauberwand, Amoebe, wachsende Mauer)
+;  Spiellogik (Stufe 7: Bomben, Lava, Zauberwand, Amoebe, wachsende Mauer)
 ; ============================================================
 game_tick:
         ld      a,(anim_phase)
@@ -420,6 +424,17 @@ ph_col: ld      a,(hl)
         jp      z,ph_amoeba
         cp      T_GROW
         jp      z,ph_grow
+        cp      T_BOMB_ON
+        jp      c,ph_next               ; 45, 46: nichts
+        cp      T_BOMB_BOOM
+        jr      z,ph_bomb
+        inc     (hl)                    ; Zuendschnur brennt
+        call    mark_dirty
+        jp      ph_next
+ph_bomb:                                ; Knall: Explosion 3x3 um die Bombe
+        ld      (hl),T_EMPTY
+        ld      a,T_EXPLODE
+        call    explode_at
         jp      ph_next
 ph_expl:
         ld      c,a                     ; Explosion altert
@@ -877,6 +892,14 @@ ex_col: ld      a,(hl)
         jr      z,ex_nx
         cp      T_LAVA
         jr      z,ex_nx
+        cp      T_BOMB
+        jr      c,ex_nb
+        cp      T_BOMB_BOOM+1
+        jr      nc,ex_nb
+        ld      (hl),T_BOMB_BOOM        ; Bombe im Explosionsbereich: Kettenreaktion
+        call    mark_dirty
+        jr      ex_nx
+ex_nb:
         sub     T_ROCKFORD
         cp      T_ROCKFORD_WALK-T_ROCKFORD+1
         jr      nc,ex_set
@@ -925,6 +948,8 @@ move_rockford:
         ld      e,a                     ; E = x
         ld      a,(rock_y)
         ld      d,a                     ; D = y
+        bit     4,c                     ; Feuer: Bomben daneben zuenden
+        jp      nz,mr_fire
         bit     0,c                     ; links
         jr      z,mr_r
         dec     e
@@ -1028,6 +1053,41 @@ mr_pr:  inc     hl                      ; Feld rechts hinter dem Stein
         call    mark_dirty
         dec     e
         jp      mr_go
+mr_fire:                                ; Rockford bleibt stehen und zuendet Nachbarbomben
+        push    de
+        call    cave_addr
+        push    hl
+        pop     ix
+        pop     de                      ; DE = Rockford
+        ld      a,T_BOMB
+        cp      (ix-1)
+        jr      nz,mf_r
+        ld      (ix-1),T_BOMB_ON
+        dec     e
+        call    mark_dirty
+        inc     e
+mf_r:   ld      a,T_BOMB
+        cp      (ix+1)
+        jr      nz,mf_u
+        ld      (ix+1),T_BOMB_ON
+        inc     e
+        call    mark_dirty
+        dec     e
+mf_u:   ld      a,T_BOMB
+        cp      (ix-CAVE_W)
+        jr      nz,mf_d
+        ld      (ix-CAVE_W),T_BOMB_ON
+        dec     d
+        call    mark_dirty
+        inc     d
+mf_d:   ld      a,T_BOMB
+        cp      (ix+CAVE_W)
+        jr      nz,mf_end
+        ld      (ix+CAVE_W),T_BOMB_ON
+        inc     d
+        call    mark_dirty
+mf_end: xor     a                       ; Z = nicht bewegt
+        ret
 mr_lava:                                ; Lava: Rockford verbrennt auf seinem Feld
         pop     de
         ld      a,(rock_x)
@@ -1217,8 +1277,11 @@ ri_j3:  bit     2,b
         jr      nz,ri_j4
         set     3,c
 ri_j4:  bit     1,b
-        jr      nz,ri_s2
+        jr      nz,ri_s1f
         set     2,c
+ri_s1f: bit     0,b                     ; Sinclair 1: 0 = Feuer
+        jr      nz,ri_s2
+        set     4,c
 ri_s2:  ld      a,0F7h                  ; Sinclair 2: 1=links 2=rechts 3=runter 4=hoch
         in      a,(0FEh)
         ld      b,a
@@ -1232,8 +1295,16 @@ ri_s2c: bit     2,b
         jr      nz,ri_s2d
         set     3,c
 ri_s2d: bit     3,b
-        jr      nz,ri_end
+        jr      nz,ri_s2e
         set     2,c
+ri_s2e: bit     4,b                     ; Sinclair 2: 5 = Feuer
+        jr      nz,ri_m
+        set     4,c
+ri_m:   ld      a,7Fh                   ; Tastatur: M = Feuer
+        in      a,(0FEh)
+        bit     2,a
+        jr      nz,ri_end
+        set     4,c
 ri_end: ld      a,c
         ret
 
@@ -1628,6 +1699,8 @@ gc_stamp_tab:
         db      6,10,4,T_LAVA, 7,11,2,T_LAVA
         db      30,9,5,T_LAVA, 31,10,3,T_LAVA
         db      17,19,5,T_LAVA, 18,20,3,T_LAVA
+        ; Bomben an den Ziegelmauern (7: unterhalb, 14: oberhalb)
+        db      8,8,1,T_BOMB, 20,8,1,T_BOMB, 22,13,1,T_BOMB, 33,13,1,T_BOMB
         db      0FFh
 
 ; rnd: 16-Bit-Xorshift, Ergebnis in A (und HL)
@@ -1839,6 +1912,11 @@ frame_table:
         dw      blk_amoeba0, blk_amoeba1     ; 43 Amoebe
         dw      blk_grow,    blk_grow        ; 44 wachsende Mauer
         dw      blk_lava0,   blk_lava1       ; 45 Lava
+        dw      blk_bomb,    blk_bomb        ; 46 Bombe
+        rept    3                            ; 47..52 gezuendet: blinkt rot/gelb
+        dw      blk_bombon0, blk_bombon0
+        dw      blk_bombon1, blk_bombon1
+        endm
 
 ; Schluessel je Frame fuer den Shadow-Puffer: Frames mit identischer Grafik
 ; (alle ausser den animierten) bekommen denselben Schluessel, damit ein
@@ -1854,7 +1932,10 @@ frame_key:
         rept    8
         db      28,28                   ; Explosionen
         endm
-        db      48,48, 50,51, 4,4, 54,55, 56,56, 58,59   ; Zauberwand, aktiv, verbraucht, Amoebe, Mauer, Lava
+        db      48,48, 50,51, 4,4, 54,55, 56,56, 58,59, 60,60   ; Zauberwand, aktiv, verbraucht, Amoebe, Mauer, Lava, Bombe
+        rept    3
+        db      62,62, 64,64            ; Bombe gezuendet
+        endm
 
 ; Leerlauf-Animation Rockford: ein Eintrag je Tick (6 Frames = ca. 0,12 s).
 ; Beliebig aenderbar; die Laenge ergibt sich aus den Labels.
@@ -2326,6 +2407,63 @@ blk_lava1:  ; Lava, Phase 1
         db      %11001100,%11110011   ; ##..##..####..##
         db      %11110011,%00111001   ; ####..##..###..#
         db      %11111111,%11111111   ; ################
+
+blk_bomb:  ; Bombe ruhend
+        db      047h,047h,047h,047h
+        db      %00000000,%00000000   ; ................
+        db      %00000000,%00101000   ; ..........#.#...
+        db      %00000000,%00010000   ; ...........#....
+        db      %00000000,%00110000   ; ..........##....
+        db      %00000000,%11100000   ; ........###.....
+        db      %00000111,%11110000   ; .....#######....
+        db      %00001111,%11111100   ; ....##########..
+        db      %00011101,%11111100   ; ...###.#######..
+        db      %00011001,%11111100   ; ...##..#######..
+        db      %00011111,%11111100   ; ...###########..
+        db      %00011111,%11111100   ; ...###########..
+        db      %00011111,%11111100   ; ...###########..
+        db      %00011111,%11111100   ; ...###########..
+        db      %00001111,%11111000   ; ....#########...
+        db      %00000111,%11110000   ; .....#######....
+        db      %00000000,%00000000   ; ................
+
+blk_bombon0:  ; Bombe gezuendet, rot
+        db      042h,042h,042h,042h
+        db      %00000000,%00000000   ; ................
+        db      %00000000,%00101000   ; ..........#.#...
+        db      %00000000,%00010000   ; ...........#....
+        db      %00000000,%00110000   ; ..........##....
+        db      %00000000,%11100000   ; ........###.....
+        db      %00000111,%11110000   ; .....#######....
+        db      %00001111,%11111100   ; ....##########..
+        db      %00011101,%11111100   ; ...###.#######..
+        db      %00011001,%11111100   ; ...##..#######..
+        db      %00011111,%11111100   ; ...###########..
+        db      %00011111,%11111100   ; ...###########..
+        db      %00011111,%11111100   ; ...###########..
+        db      %00011111,%11111100   ; ...###########..
+        db      %00001111,%11111000   ; ....#########...
+        db      %00000111,%11110000   ; .....#######....
+        db      %00000000,%00000000   ; ................
+
+blk_bombon1:  ; Bombe gezuendet, gelb
+        db      046h,046h,046h,046h
+        db      %00000000,%00000000   ; ................
+        db      %00000000,%00101000   ; ..........#.#...
+        db      %00000000,%00010000   ; ...........#....
+        db      %00000000,%00110000   ; ..........##....
+        db      %00000000,%11100000   ; ........###.....
+        db      %00000111,%11110000   ; .....#######....
+        db      %00001111,%11111100   ; ....##########..
+        db      %00011101,%11111100   ; ...###.#######..
+        db      %00011001,%11111100   ; ...##..#######..
+        db      %00011111,%11111100   ; ...###########..
+        db      %00011111,%11111100   ; ...###########..
+        db      %00011111,%11111100   ; ...###########..
+        db      %00011111,%11111100   ; ...###########..
+        db      %00001111,%11111000   ; ....#########...
+        db      %00000111,%11110000   ; .....#######....
+        db      %00000000,%00000000   ; ................
 
 blk_explode:  ; Explosion (FLASH)
         db      0C6h,0C6h,0C6h,0C6h
