@@ -109,6 +109,7 @@ T_MAGIC_ON      equ     41              ; Zauberwand aktiv
 T_MAGIC_OFF     equ     42              ; Zauberwand verbraucht (wie Ziegel)
 T_AMOEBA        equ     43
 T_GROW          equ     44              ; wachsende Mauer
+T_LAVA          equ     45              ; Lava: verschluckt Steine/Diamanten, toetet Rockford
 MAGIC_TICKS     equ     160             ; Aktivzeit der Zauberwand (~19 s)
 AMOEBA_MAX      equ     40              ; ab mehr Feldern erstarrt die Amoebe zu Steinen
 DEAD_TICKS      equ     16              ; Explosionsdauer bis zum Neustart
@@ -225,7 +226,7 @@ ml_keys:
         ret
 
 ; ============================================================
-;  Spiellogik (Stufe 5: Zauberwand, Amoebe, wachsende Mauer)
+;  Spiellogik (Stufe 6: Lava, Zauberwand, Amoebe, wachsende Mauer)
 ; ============================================================
 game_tick:
         ld      a,(anim_phase)
@@ -314,6 +315,8 @@ gs_col:
         cp      T_MAGIC_ON              ; aktive Zauberwand funkelt
         jr      z,gs_mark
         cp      T_AMOEBA                ; Amoebe wabert
+        jr      z,gs_mark
+        cp      T_LAVA                  ; Lava blubbert
         jr      z,gs_mark
         and     0F7h                    ; fallender Diamant (13) -> 5
         cp      T_DIAMOND
@@ -443,6 +446,12 @@ ph_obj: ld      c,a                     ; C = Kachel des Objekts
         or      a
         jp      z,ph_fall
         ld      b,a                     ; B = Kachel darunter
+        cp      T_LAVA
+        jr      nz,ph_nolava
+        ld      (hl),T_EMPTY            ; Lava verschluckt das Objekt
+        call    mark_dirty
+        jp      ph_next
+ph_nolava:
         bit     3,c
         jr      z,ph_nocrush            ; nur fallende Objekte treffen
         cp      T_MAGIC                 ; A = Kachel darunter
@@ -866,6 +875,8 @@ ex_col: ld      a,(hl)
         jr      z,ex_nx
         cp      T_EXIT_OFF
         jr      z,ex_nx
+        cp      T_LAVA
+        jr      z,ex_nx
         sub     T_ROCKFORD
         cp      T_ROCKFORD_WALK-T_ROCKFORD+1
         jr      nc,ex_set
@@ -943,6 +954,8 @@ mr_try:                                 ; (E,D) = Zielfeld
         jp      z,mr_dia
         cp      T_EXIT                  ; nur der offene Ausgang (geschlossen = 15)
         jp      z,mr_exit
+        cp      T_LAVA
+        jp      z,mr_lava
         cp      T_STONE
         jp      z,mr_stone
 mr_blocked:
@@ -1015,6 +1028,22 @@ mr_pr:  inc     hl                      ; Feld rechts hinter dem Stein
         call    mark_dirty
         dec     e
         jp      mr_go
+mr_lava:                                ; Lava: Rockford verbrennt auf seinem Feld
+        pop     de
+        ld      a,(rock_x)
+        ld      e,a
+        ld      a,(rock_y)
+        ld      d,a
+        push    de
+        call    cave_addr
+        ld      (hl),T_EXPLODE
+        ld      a,DEAD_TICKS
+        ld      (dead),a
+        pop     de
+        call    mark_dirty
+        xor     a
+        inc     a                       ; NZ = "bewegt" (kein Leerlauf-Neuzeichnen)
+        ret
 mr_exit:                                ; offener Ausgang: Level geschafft
         ld      a,WIN_TICKS
         ld      (win),a
@@ -1593,6 +1622,12 @@ gc_stamp_tab:
         db      32,5,3,T_DIRT, 33,4,1,T_DIRT, 33,6,1,T_DIRT, 33,5,1,T_AMOEBA
         ; wachsende Mauer rechts unten in einem leeren Gang
         db      30,18,4,T_EMPTY, 34,18,1,T_GROW, 35,18,3,T_EMPTY
+        ; Lava-Teiche (klein, Startbereich und Ausgang bleiben frei)
+        db      18,3,5,T_LAVA, 19,4,3,T_LAVA
+        db      24,10,4,T_LAVA, 25,11,2,T_LAVA
+        db      6,10,4,T_LAVA, 7,11,2,T_LAVA
+        db      30,9,5,T_LAVA, 31,10,3,T_LAVA
+        db      17,19,5,T_LAVA, 18,20,3,T_LAVA
         db      0FFh
 
 ; rnd: 16-Bit-Xorshift, Ergebnis in A (und HL)
@@ -1803,6 +1838,7 @@ frame_table:
         dw      blk_brick,   blk_brick       ; 42 verbraucht = Ziegel
         dw      blk_amoeba0, blk_amoeba1     ; 43 Amoebe
         dw      blk_grow,    blk_grow        ; 44 wachsende Mauer
+        dw      blk_lava0,   blk_lava1       ; 45 Lava
 
 ; Schluessel je Frame fuer den Shadow-Puffer: Frames mit identischer Grafik
 ; (alle ausser den animierten) bekommen denselben Schluessel, damit ein
@@ -1818,7 +1854,7 @@ frame_key:
         rept    8
         db      28,28                   ; Explosionen
         endm
-        db      48,48, 50,51, 4,4, 54,55, 56,56   ; Zauberwand, aktiv, verbraucht, Amoebe, Mauer
+        db      48,48, 50,51, 4,4, 54,55, 56,56, 58,59   ; Zauberwand, aktiv, verbraucht, Amoebe, Mauer, Lava
 
 ; Leerlauf-Animation Rockford: ein Eintrag je Tick (6 Frames = ca. 0,12 s).
 ; Beliebig aenderbar; die Laenge ergibt sich aus den Labels.
@@ -2251,6 +2287,44 @@ blk_grow:  ; wachsende Mauer
         db      %10000000,%00000001   ; #..............#
         db      %10000000,%00000001   ; #..............#
         db      %10000000,%00000001   ; #..............#
+        db      %11111111,%11111111   ; ################
+
+blk_lava0:  ; Lava, Phase 0
+        db      046h,042h,042h,046h
+        db      %11111111,%11111111   ; ################
+        db      %10011001,%11001111   ; #..##..###..####
+        db      %11001100,%11100111   ; ##..##..###..###
+        db      %11111111,%11111111   ; ################
+        db      %11100111,%10011111   ; ###..####..#####
+        db      %10011001,%11100111   ; #..##..####..###
+        db      %11011110,%01110011   ; ##.####..###..##
+        db      %11111111,%11111111   ; ################
+        db      %10011100,%11110011   ; #..###..####..##
+        db      %11001100,%11100111   ; ##..##..###..###
+        db      %11100111,%00111001   ; ###..###..###..#
+        db      %11111111,%11111111   ; ################
+        db      %11001111,%00111011   ; ##..####..###.##
+        db      %10011001,%11100111   ; #..##..####..###
+        db      %11100110,%01110011   ; ###..##..###..##
+        db      %11111111,%11111111   ; ################
+
+blk_lava1:  ; Lava, Phase 1
+        db      042h,046h,046h,042h
+        db      %11111111,%11111111   ; ################
+        db      %11001100,%11110011   ; ##..##..####..##
+        db      %11100110,%01111001   ; ###..##..####..#
+        db      %11111111,%11111111   ; ################
+        db      %11110011,%11001111   ; ####..####..####
+        db      %11001100,%11110011   ; ##..##..####..##
+        db      %10011100,%11110011   ; #..###..####..##
+        db      %11111111,%11111111   ; ################
+        db      %11001110,%01111001   ; ##..###..####..#
+        db      %11100110,%01110011   ; ###..##..###..##
+        db      %11110011,%10011101   ; ####..###..###.#
+        db      %11111111,%11111111   ; ################
+        db      %11100111,%10011100   ; ###..####..###..
+        db      %11001100,%11110011   ; ##..##..####..##
+        db      %11110011,%00111001   ; ####..##..###..#
         db      %11111111,%11111111   ; ################
 
 blk_explode:  ; Explosion (FLASH)
