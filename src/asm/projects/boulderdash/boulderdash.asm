@@ -110,9 +110,10 @@ T_MAGIC_OFF     equ     42              ; Zauberwand verbraucht (wie Ziegel)
 T_AMOEBA        equ     43
 T_GROW          equ     44              ; wachsende Mauer
 T_LAVA          equ     45              ; Lava: verschluckt Steine/Diamanten, toetet Rockford
-T_BOMB          equ     46              ; Bombe (ruhend)
-T_BOMB_ON       equ     47              ; Bombe gezuendet 47..51 (Zuendschnur brennt), 52 = Knall
-T_BOMB_BOOM     equ     52
+T_BOMB          equ     48              ; Bombe (ruhend, schiebbar, faellt wie ein Stein)
+T_BOMB_F        equ     56              ; fallende Bombe (= T_BOMB + 8)
+T_BOMB_ON       equ     57              ; Bombe gezuendet 57..61 (Zuendschnur brennt), 62 = Knall
+T_BOMB_BOOM     equ     62
 IN_FIRE         equ     16
 MAGIC_TICKS     equ     160             ; Aktivzeit der Zauberwand (~19 s)
 AMOEBA_MAX      equ     40              ; ab mehr Feldern erstarrt die Amoebe zu Steinen
@@ -424,8 +425,12 @@ ph_col: ld      a,(hl)
         jp      z,ph_amoeba
         cp      T_GROW
         jp      z,ph_grow
-        cp      T_BOMB_ON
-        jp      c,ph_next               ; 45, 46: nichts
+        cp      T_BOMB
+        jp      c,ph_next               ; 45..47: nichts
+        jp      z,ph_obj                ; 48: ruhende Bombe wie ein Stein
+        cp      T_BOMB_F
+        jp      c,ph_next               ; 49..55
+        jp      z,ph_obj                ; 56: fallende Bombe
         cp      T_BOMB_BOOM
         jr      z,ph_bomb
         inc     (hl)                    ; Zuendschnur brennt
@@ -502,6 +507,8 @@ ph_nocrush:
         cp      T_STONE
         jr      z,ph_round
         cp      T_DIAMOND
+        jr      z,ph_round
+        cp      T_BOMB                  ; auch die Bombe ist rund
         jr      nz,ph_land
 ph_round:                               ; runde Unterlage: Rollen versuchen
         ld      a,(ix-1)
@@ -561,7 +568,10 @@ ph_magic:
         or      a
         jp      nz,ph_next
         ld      a,c
+        cp      T_BOMB_F                ; Bombe geht unveraendert durch
+        jr      z,pm_keep
         xor     1                       ; Stein (12) <-> Diamant (13), bleibt fallend
+pm_keep:
         ld      (ix+2*CAVE_W),a
         inc     d
         inc     d
@@ -893,10 +903,12 @@ ex_col: ld      a,(hl)
         cp      T_LAVA
         jr      z,ex_nx
         cp      T_BOMB
+        jr      z,ex_ch
+        cp      T_BOMB_F
         jr      c,ex_nb
         cp      T_BOMB_BOOM+1
         jr      nc,ex_nb
-        ld      (hl),T_BOMB_BOOM        ; Bombe im Explosionsbereich: Kettenreaktion
+ex_ch:  ld      (hl),T_BOMB_BOOM        ; Bombe im Explosionsbereich: Kettenreaktion
         call    mark_dirty
         jr      ex_nx
 ex_nb:
@@ -983,6 +995,8 @@ mr_try:                                 ; (E,D) = Zielfeld
         jp      z,mr_lava
         cp      T_STONE
         jp      z,mr_stone
+        cp      T_BOMB                  ; Bombe laesst sich schieben wie ein Stein
+        jp      z,mr_stone
 mr_blocked:
         pop     de
         xor     a                       ; Z = nicht bewegt
@@ -1030,6 +1044,7 @@ mr_stone:
         ld      (push_cnt),a
         jp      mr_blocked
 mr_heavy:
+        ld      c,(hl)                  ; C = Kachel (Stein oder Bombe)
         ld      a,(rock_x)
         cp      e
         jr      c,mr_pr                 ; Ziel rechts von Rockford
@@ -1037,7 +1052,7 @@ mr_heavy:
         ld      a,(hl)
         or      a
         jp      nz,mr_blocked
-        ld      (hl),T_STONE
+        ld      (hl),c
         inc     hl
         dec     e
         call    mark_dirty
@@ -1047,7 +1062,7 @@ mr_pr:  inc     hl                      ; Feld rechts hinter dem Stein
         ld      a,(hl)
         or      a
         jp      nz,mr_blocked
-        ld      (hl),T_STONE
+        ld      (hl),c
         dec     hl
         inc     e
         call    mark_dirty
@@ -1912,7 +1927,13 @@ frame_table:
         dw      blk_amoeba0, blk_amoeba1     ; 43 Amoebe
         dw      blk_grow,    blk_grow        ; 44 wachsende Mauer
         dw      blk_lava0,   blk_lava1       ; 45 Lava
-        dw      blk_bomb,    blk_bomb        ; 46 Bombe
+        dw      blk_empty,   blk_empty       ; 46, 47 unbenutzt
+        dw      blk_empty,   blk_empty
+        dw      blk_bomb,    blk_bomb        ; 48 Bombe
+        rept    7                            ; 49..55 unbenutzt
+        dw      blk_empty,   blk_empty
+        endm
+        dw      blk_bomb,    blk_bomb        ; 56 fallende Bombe
         rept    3                            ; 47..52 gezuendet: blinkt rot/gelb
         dw      blk_bombon0, blk_bombon0
         dw      blk_bombon1, blk_bombon1
@@ -1932,7 +1953,11 @@ frame_key:
         rept    8
         db      28,28                   ; Explosionen
         endm
-        db      48,48, 50,51, 4,4, 54,55, 56,56, 58,59, 60,60   ; Zauberwand, aktiv, verbraucht, Amoebe, Mauer, Lava, Bombe
+        db      48,48, 50,51, 4,4, 54,55, 56,56, 58,59, 0,0, 0,0, 60,60   ; Zauberwand, aktiv, verbraucht, Amoebe, Mauer, Lava, 46/47 leer, Bombe
+        rept    7
+        db      0,0
+        endm
+        db      60,60                   ; fallende Bombe
         rept    3
         db      62,62, 64,64            ; Bombe gezuendet
         endm
