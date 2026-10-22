@@ -48,7 +48,7 @@ Fireflies folgen der Wand links herum, Butterflies rechts herum.
 Explosionen erfassen ein 3×3-Feld. Eine explodierende Butterfly hinterlässt Diamanten.
 Animationsphasen für Gegner, Diamanten und den blinkenden Ausgang.
 
--State: InProgress
+-State: Done
 
 Stufe 5: Level-DSL
 
@@ -56,7 +56,7 @@ Höhlen als kompakte Beschreibung statt als Bitmap: Seed für den Zufallsfüller
 Dazu ein Decoder im Spiel und mehrere Höhlen mit Levelauswahl.
 Optional ein Compiler oder Editor auf dem PC, der die Leveldaten erzeugt.
 
--State: Open
+-State: InProgress
 
 Stufe 6: Scrolling
 

@@ -173,6 +173,14 @@ new_level:                              ; (Neu-)Start des aktuellen Levels
         ld      (tick_count),hl
         ld      a,TIME_START
         ld      (time),a
+        ld      a,MAGIC_TICKS           ; Vorgaben (eine Hoehlendatei ueberschreibt sie)
+        ld      (magic_len),a
+        ld      a,AMOEBA_MAX
+        ld      (amoeba_max),a
+        ld      a,EXIT_X
+        ld      (exit_x),a
+        ld      a,EXIT_Y
+        ld      (exit_y),a
         ld      a,TICKS_PER_SEC
         ld      (time_sub),a
         ld      a,(level)               ; Quote: NEED_BASE + NEED_STEP*(level-1)
@@ -199,7 +207,7 @@ nl_seed:ld      (seed),hl
         ld      hl,txt_header
         call    print_str
 
-        call    gen_cave
+        call    load_cave
         call    draw_view
         call    print_all
         ld      a,(FRAMES)
@@ -763,8 +771,10 @@ ph_next:
         jr      nz,pe_am
         ld      (amoeba_mode),a         ; keine Amoebe (mehr): Modus 0
         ret
-pe_am:  cp      AMOEBA_MAX+1
-        jr      c,pe_am2
+pe_am:  ld      b,a
+        ld      a,(amoeba_max)
+        cp      b                       ; Carry: Grenze < Anzahl -> zu gross
+        jr      nc,pe_am2
         ld      a,1                     ; zu gross -> Steine
         ld      (amoeba_mode),a
         ret
@@ -782,7 +792,7 @@ pe_am3: ld      a,2                     ; eingeschlossen -> Diamanten
 magic_activate:
         push    af
         push    de
-        ld      a,MAGIC_TICKS
+        ld      a,(magic_len)
         ld      (magic_timer),a
         ld      a,T_MAGIC
         ld      e,T_MAGIC_ON
@@ -1144,10 +1154,14 @@ mr_dia: ld      a,(diamonds)            ; Diamant einsammeln
         ld      hl,need
         cp      (hl)
         jr      nz,mr_dn
-        ld      a,T_EXIT                ; Quote erreicht: der Ausgang oeffnet sich
-        ld      (cave+EXIT_Y*CAVE_W+EXIT_X),a
-        ld      e,EXIT_X
-        ld      d,EXIT_Y
+        ld      a,(exit_x)              ; Quote erreicht: der Ausgang oeffnet sich
+        ld      e,a
+        ld      a,(exit_y)
+        ld      d,a
+        push    de
+        call    cave_addr
+        ld      (hl),T_EXIT
+        pop     de
         call    mark_dirty
 mr_dn:  call    print_dia_score
         pop     hl
@@ -1600,6 +1614,103 @@ dt_half:
 ; ============================================================
 ;  Hoehlengenerator (Testhoehle)
 ; ============================================================
+; ============================================================
+;  Hoehlen aus Daten (levels/*.cave -> tools/gen_levels.py)
+; ============================================================
+; load_cave: Level 1..LEVEL_COUNT kommen aus der Tabelle, danach Zufallshoehlen.
+; Kopf je Hoehle: Quote, Zeit, Zauberwand, Amoebe, Rockford x,y, Ausgang x,y;
+; danach Lauflaengen (Anzahl, Kachel), Ende mit Anzahl 0.
+load_cave:
+        ld      a,(level)
+        dec     a
+        cp      LEVEL_COUNT
+        jp      nc,gen_cave             ; kein handgebautes Level mehr
+        ld      l,a
+        ld      h,0
+        add     hl,hl
+        ld      de,level_table
+        add     hl,de
+        ld      e,(hl)
+        inc     hl
+        ld      d,(hl)
+        ex      de,hl                   ; HL = Daten der Hoehle
+        ld      a,(hl)
+        ld      (need),a
+        inc     hl
+        ld      a,(hl)
+        ld      (time),a
+        inc     hl
+        ld      a,(hl)
+        ld      (magic_len),a
+        inc     hl
+        ld      a,(hl)
+        ld      (amoeba_max),a
+        inc     hl
+        ld      a,(hl)
+        ld      (rock_x),a
+        inc     hl
+        ld      a,(hl)
+        ld      (rock_y),a
+        inc     hl
+        ld      a,(hl)
+        ld      (exit_x),a
+        inc     hl
+        ld      a,(hl)
+        ld      (exit_y),a
+        inc     hl
+        ld      de,cave
+lc_run: ld      b,(hl)                  ; Lauflaenge
+        inc     hl
+        ld      a,b
+        or      a
+        jr      z,lc_cam
+        ld      a,(hl)                  ; Kachel
+        inc     hl
+lc_fill:ld      (de),a
+        inc     de
+        djnz    lc_fill
+        jr      lc_run
+lc_cam: ld      a,(rock_x)              ; Kamera so, dass Rockford im Bild ist
+        sub     VIEW_W/2
+        jr      nc,lc_cx
+        xor     a
+lc_cx:  cp      CAVE_W-VIEW_W+1
+        jr      c,lc_cx2
+        ld      a,CAVE_W-VIEW_W
+lc_cx2: ld      (cam_x),a
+        ld      a,(rock_y)
+        sub     VIEW_H/2
+        jr      nc,lc_cy
+        xor     a
+lc_cy:  cp      CAVE_H-VIEW_H+1
+        jr      c,lc_cy2
+        ld      a,CAVE_H-VIEW_H
+lc_cy2: ld      (cam_y),a
+        ret
+
+LEVEL_COUNT     equ     1
+level_table:
+        dw      lvl_01
+
+lvl_01:                                 ; Einstieg
+        db      10,120,160,40,2,1,38,20
+        db      41,3,1,0,1,6,3,0,1,5,2,0,1,5,29,1
+        db      2,3,38,1,2,3,11,1,1,4,22,1,1,4,3,1
+        db      2,3,4,1,1,4,33,1,2,3,38,1,2,3,2,1
+        db      1,0,1,5,2,0,1,5,2,0,1,4,10,0,18,1
+        db      2,3,38,1,2,3,13,1,1,4,3,1,1,4,3,1
+        db      1,4,16,1,2,3,35,1,1,4,2,1,2,3,12,1
+        db      1,5,2,0,1,5,2,0,1,5,11,0,8,1,2,3
+        db      38,1,2,3,29,2,1,1,8,2,2,3,38,1,2,3
+        db      24,1,1,4,13,1,2,3,7,1,1,5,15,1,1,5
+        db      14,1,2,3,13,1,1,4,18,1,1,5,5,1,2,3
+        db      5,1,1,4,21,1,1,5,10,1,2,3,11,1,1,5
+        db      17,1,1,4,8,1,2,3,20,1,1,5,15,1,2,2
+        db      2,3,25,1,1,5,7,1,1,5,2,1,1,0,1,15
+        db      41,3
+        db      0
+
+
 gen_cave:
         ld      hl,cave
         ld      bc,CAVE_SIZE
@@ -2559,6 +2670,10 @@ time_sub:       db      0
 win:            db      0               ; >0: Ausgang erreicht (Pausen-Ticks)
 over:           db      0               ; >0: GAME OVER (Pausen-Ticks)
 magic_timer:    db      0               ; >0: Zauberwand aktiv (Ticks)
+magic_len:      db      0               ; Aktivzeit der Zauberwand dieser Hoehle
+amoeba_max:     db      0               ; Amoebengrenze dieser Hoehle
+exit_x:         db      0               ; Ausgang dieser Hoehle
+exit_y:         db      0
 amoeba_mode:    db      0               ; 0 normal, 1 -> Steine, 2 -> Diamanten
 amoeba_cnt:     db      0               ; Zaehler im laufenden Durchlauf
 amoeba_free:    db      0               ; 1 = Amoebe hat noch Platz
