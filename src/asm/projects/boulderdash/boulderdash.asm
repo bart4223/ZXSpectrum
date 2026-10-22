@@ -433,7 +433,10 @@ ph_col: ld      a,(hl)
         jp      z,ph_obj                ; 56: fallende Bombe
         cp      T_BOMB_BOOM
         jr      z,ph_bomb
-        inc     (hl)                    ; Zuendschnur brennt
+        ld      a,(par)                 ; Zuendschnur brennt nur jeden 2. Tick
+        or      a                       ; (par = 0 oder 4): Zuendzeit ca. 1,3 s
+        jp      nz,ph_next
+        inc     (hl)
         call    mark_dirty
         jp      ph_next
 ph_bomb:                                ; Knall: Explosion 3x3 um die Bombe
