@@ -1,5 +1,5 @@
 ; ============================================================
-;  BOULDER DASH fuer ZX Spectrum  -  Stufe 4: Gegner und Explosionen
+;  BOULDER DASH fuer ZX Spectrum  -  Stufe 5: Zauberwand, Amoebe, wachsende Mauer
 ;  16x16-Kacheln, Hoehle 40x22, scrollender Viewport 16x11
 ;
 ;  Assembler: pasmo   ->   pasmo --tapbas boulderdash.asm boulderdash.tap
@@ -32,6 +32,13 @@
 ;     (rechts). Beruehren sie Rockford, explodieren sie und reissen ihn mit.
 ;     Ein fallender Stein/Diamant auf einen Gegner loest ebenfalls die
 ;     Explosion aus: Gluehwuermchen -> 3x3 leer, Schmetterling -> 3x3 Diamanten.
+;   - Zauberwand: ein fallender Stein/Diamant wird darin verwandelt (Stein ->
+;     Diamant, Diamant -> Stein) und faellt unten wieder heraus. Aktiv nur fuer
+;     MAGIC_TICKS, danach eine normale Mauer.
+;   - Amoebe: waechst langsam in leere Felder und Erde. Wird sie zu gross
+;     (AMOEBA_MAX Felder), erstarrt sie zu Steinen; ist sie eingeschlossen,
+;     wird sie zu Diamanten.
+;   - Wachsende Mauer: dehnt sich waagerecht in leere Felder aus.
 ;   - Leerlauf: nach einigen Ticks Stillstand blinzelt Rockford und
 ;     stampft mit dem linken Fuss auf
 ;   - Diamanten funkeln
@@ -97,6 +104,13 @@ T_BUTTERFLY     equ     24              ;   Kachel = Typ + 4*Paritaet + Richtung
                                         ;   1 rechts, 2 runter, 3 links)
 T_EXPLODE       equ     32              ; Explosion 32..35 (danach leer)
 T_DEXPLODE      equ     36              ; Diamant-Explosion 36..39 (danach Diamant)
+T_MAGIC         equ     40              ; Zauberwand ruhend
+T_MAGIC_ON      equ     41              ; Zauberwand aktiv
+T_MAGIC_OFF     equ     42              ; Zauberwand verbraucht (wie Ziegel)
+T_AMOEBA        equ     43
+T_GROW          equ     44              ; wachsende Mauer
+MAGIC_TICKS     equ     160             ; Aktivzeit der Zauberwand (~19 s)
+AMOEBA_MAX      equ     40              ; ab mehr Feldern erstarrt die Amoebe zu Steinen
 DEAD_TICKS      equ     16              ; Explosionsdauer bis zum Neustart
 T_EXIT_OFF      equ     15              ; geschlossener Ausgang (sieht aus wie Stahl)
 
@@ -134,6 +148,8 @@ new_level:                              ; (Neu-)Start des aktuellen Levels
         ld      (win),a
         ld      (over),a
         ld      (par),a
+        ld      (magic_timer),a
+        ld      (amoeba_mode),a
         ld      (push_cnt),a
         ld      (push_prev),a
         ld      a,IDLE_DELAY            ; Leerlauf-Animation laeuft von Anfang an
@@ -209,7 +225,7 @@ ml_keys:
         ret
 
 ; ============================================================
-;  Spiellogik (Stufe 4: Gegner und Explosionen)
+;  Spiellogik (Stufe 5: Zauberwand, Amoebe, wachsende Mauer)
 ; ============================================================
 game_tick:
         ld      a,(anim_phase)
@@ -295,9 +311,16 @@ gs_row:
         ld      b,VIEW_W
 gs_col:
         ld      a,(hl)
+        cp      T_MAGIC_ON              ; aktive Zauberwand funkelt
+        jr      z,gs_mark
+        cp      T_AMOEBA                ; Amoebe wabert
+        jr      z,gs_mark
         and     0F7h                    ; fallender Diamant (13) -> 5
         cp      T_DIAMOND
-        call    z,mark_dirty
+        jr      nz,gs_skip
+gs_mark:
+        call    mark_dirty
+gs_skip:
         inc     hl
         inc     e
         djnz    gs_col
@@ -361,6 +384,16 @@ physics:
         ld      a,(par)                 ; Paritaet wechselt je Tick
         xor     4
         ld      (par),a
+        xor     a
+        ld      (amoeba_cnt),a
+        ld      (amoeba_free),a
+        ld      a,(magic_timer)         ; Zauberwand-Zeit laeuft
+        or      a
+        jr      z,ph_nomagic
+        dec     a
+        ld      (magic_timer),a
+        call    z,magic_expire
+ph_nomagic:
         ld      hl,cave+(CAVE_H-2)*CAVE_W+1
         ld      d,CAVE_H-2
 ph_row: push    hl                      ; Zeilenanfang (x = 1)
@@ -379,8 +412,14 @@ ph_col: ld      a,(hl)
         cp      32
         jp      c,ph_enemy              ; 16..31 Gegner
         cp      40
-        jp      nc,ph_next
-        ld      c,a                     ; 32..39 Explosion altert
+        jr      c,ph_expl               ; 32..39 Explosion
+        cp      T_AMOEBA
+        jp      z,ph_amoeba
+        cp      T_GROW
+        jp      z,ph_grow
+        jp      ph_next
+ph_expl:
+        ld      c,a                     ; Explosion altert
         and     3
         cp      3
         jr      z,ph_xend
@@ -402,11 +441,15 @@ ph_obj: ld      c,a                     ; C = Kachel des Objekts
         pop     ix
         ld      a,(ix+CAVE_W)           ; Feld darunter
         or      a
-        jr      z,ph_fall
+        jp      z,ph_fall
         ld      b,a                     ; B = Kachel darunter
         bit     3,c
         jr      z,ph_nocrush            ; nur fallende Objekte treffen
-        sub     T_ROCKFORD
+        cp      T_MAGIC                 ; A = Kachel darunter
+        jr      c,ph_chk
+        cp      T_MAGIC_OFF
+        jp      c,ph_magic              ; Zauberwand (40, 41)
+ph_chk: sub     T_ROCKFORD
         cp      T_ROCKFORD_WALK-T_ROCKFORD+1
         jr      c,ph_crush              ; auf Rockford
         ld      a,b
@@ -482,6 +525,102 @@ ph_fall:
         inc     d
         call    mark_dirty
         dec     d
+        jp      ph_next
+
+; ---- Zauberwand: fallendes Objekt (C) trifft die Wand darunter ----
+ph_magic:
+        cp      T_MAGIC                 ; ruhende Wand wird aktiv
+        call    z,magic_activate
+        ld      (hl),T_EMPTY            ; Objekt verschwindet ...
+        call    mark_dirty
+        ld      a,(ix+2*CAVE_W)         ; ... und kommt verwandelt unter der Wand heraus
+        or      a
+        jp      nz,ph_next
+        ld      a,c
+        xor     1                       ; Stein (12) <-> Diamant (13), bleibt fallend
+        ld      (ix+2*CAVE_W),a
+        inc     d
+        inc     d
+        call    mark_dirty
+        dec     d
+        dec     d
+        jp      ph_next
+
+; ---- Amoebe ----
+ph_amoeba:
+        ld      a,(amoeba_mode)
+        or      a
+        jr      z,pa_live
+        cp      1
+        ld      a,T_STONE               ; zu gross: erstarrt zu Steinen
+        jr      z,pa_set
+        ld      a,T_DIAMOND             ; eingeschlossen: wird zu Diamanten
+pa_set: ld      (hl),a
+        call    mark_dirty
+        jp      ph_next
+pa_live:
+        ld      a,(amoeba_cnt)
+        inc     a
+        jr      z,pa_nc                 ; (nicht ueber 255 zaehlen)
+        ld      (amoeba_cnt),a
+pa_nc:  push    hl
+        pop     ix
+        ld      a,(ix-CAVE_W)           ; irgendwo Platz (leer oder Erde)?
+        cp      2
+        jr      c,pa_f
+        ld      a,(ix+CAVE_W)
+        cp      2
+        jr      c,pa_f
+        ld      a,(ix-1)
+        cp      2
+        jr      c,pa_f
+        ld      a,(ix+1)
+        cp      2
+        jr      nc,pa_g
+pa_f:   ld      a,1
+        ld      (amoeba_free),a
+pa_g:   push    hl
+        call    rnd
+        pop     hl
+        ld      b,a
+        and     3
+        jp      nz,ph_next              ; nur jeder 4. Versuch waechst
+        ld      a,b
+        rrca
+        rrca
+        and     3                       ; Richtung
+        ld      b,a
+        call    nbr
+        cp      2
+        jp      nc,ph_next              ; dort ist Platz nur bei leer/Erde
+        ld      c,T_AMOEBA
+        ld      a,b
+        call    nbr_wr
+        ld      a,b
+        call    nbr_dirty
+        jp      ph_next
+
+; ---- wachsende Mauer: jeden 2. Tick eine Zelle nach links und rechts ----
+ph_grow:
+        ld      a,(par)
+        or      a
+        jp      nz,ph_next
+        push    hl
+        pop     ix
+        ld      a,(ix-1)
+        or      a
+        jr      nz,pg_r
+        ld      (ix-1),T_GROW
+        dec     e
+        call    mark_dirty
+        inc     e
+pg_r:   ld      a,(ix+1)
+        or      a
+        jp      nz,ph_next
+        ld      (ix+1),T_GROW
+        inc     e
+        call    mark_dirty
+        inc     hl                      ; das neue Feld nicht nochmal bearbeiten
         jp      ph_next
 
 ; ---- Gegner ----
@@ -582,6 +721,68 @@ ph_next:
         add     hl,bc
         dec     d
         jp      nz,ph_row
+        ld      a,(amoeba_cnt)          ; Ende des Durchlaufs: Amoebe auswerten
+        or      a
+        jr      nz,pe_am
+        ld      (amoeba_mode),a         ; keine Amoebe (mehr): Modus 0
+        ret
+pe_am:  cp      AMOEBA_MAX+1
+        jr      c,pe_am2
+        ld      a,1                     ; zu gross -> Steine
+        ld      (amoeba_mode),a
+        ret
+pe_am2: ld      a,(amoeba_free)
+        or      a
+        jr      z,pe_am3
+        xor     a                       ; waechst noch
+        ld      (amoeba_mode),a
+        ret
+pe_am3: ld      a,2                     ; eingeschlossen -> Diamanten
+        ld      (amoeba_mode),a
+        ret
+
+; magic_activate: die ruhende Zauberwand wird aktiv. Alle Register bleiben erhalten.
+magic_activate:
+        push    af
+        push    de
+        ld      a,MAGIC_TICKS
+        ld      (magic_timer),a
+        ld      a,T_MAGIC
+        ld      e,T_MAGIC_ON
+        call    mw_convert
+        pop     de
+        pop     af
+        ret
+
+; magic_expire: Zeit abgelaufen, die aktive Zauberwand wird zur normalen Mauer
+magic_expire:
+        push    af
+        push    de
+        ld      a,T_MAGIC_ON
+        ld      e,T_MAGIC_OFF
+        call    mw_convert
+        pop     de
+        pop     af
+        ret
+
+; mw_convert: ersetzt in der ganzen Hoehle Kachel A durch E und erzwingt ein
+; komplettes Neuzeichnen. Alle Register ausser AF bleiben erhalten.
+mw_convert:
+        push    hl
+        push    bc
+        ld      hl,cave
+        ld      bc,CAVE_SIZE
+mwc_l:  cpir
+        jr      nz,mwc_end
+        dec     hl
+        ld      (hl),e
+        inc     hl
+        jp      pe,mwc_l
+mwc_end:
+        ld      a,1
+        ld      (dirty_overflow),a
+        pop     bc
+        pop     hl
         ret
 
 ; nbr: A = Richtung (0 hoch, 1 rechts, 2 runter, 3 links) -> A = Kachel dort
@@ -1353,6 +1554,8 @@ gc_w2:  ld      (hl),T_BRICK
         inc     hl
         djnz    gc_w2
 
+        call    gc_stamps               ; Zauberwand, Amoebe, wachsende Mauer
+
         ; Rockford oben links, Ausgang unten rechts
         ld      a,T_ROCKFORD
         ld      (cave+ROCK_START_Y*CAVE_W+ROCK_START_X),a
@@ -1364,8 +1567,37 @@ gc_w2:  ld      (hl),T_BRICK
         ld      (cave+EXIT_Y*CAVE_W+EXIT_X),a
         ret
 
+; gc_stamps: feste Bereiche in die Hoehle setzen (Tabelle: x, y, Anzahl, Kachel)
+gc_stamps:
+        ld      ix,gc_stamp_tab
+gs_l:   ld      a,(ix+0)
+        cp      0FFh
+        ret     z
+        ld      e,a
+        ld      d,(ix+1)
+        call    cave_addr
+        ld      b,(ix+2)
+        ld      a,(ix+3)
+gs_f:   ld      (hl),a
+        inc     hl
+        djnz    gs_f
+        ld      de,4
+        add     ix,de
+        jr      gs_l
+gc_stamp_tab:
+        ; Zauberwand unten links: Steine ueber Erde, darunter die Wand, darunter Hohlraum
+        db      5,14,1,T_STONE, 8,14,1,T_STONE, 11,14,1,T_STONE
+        db      3,15,11,T_DIRT, 3,16,1,T_DIRT, 4,16,9,T_MAGIC, 13,16,1,T_DIRT
+        db      4,17,9,T_EMPTY, 3,18,11,T_DIRT
+        ; Amoebe oben rechts, rundum Erde
+        db      32,5,3,T_DIRT, 33,4,1,T_DIRT, 33,6,1,T_DIRT, 33,5,1,T_AMOEBA
+        ; wachsende Mauer rechts unten in einem leeren Gang
+        db      30,18,4,T_EMPTY, 34,18,1,T_GROW, 35,18,3,T_EMPTY
+        db      0FFh
+
 ; rnd: 16-Bit-Xorshift, Ergebnis in A (und HL)
 rnd:
+        or      a                       ; Carry loeschen: Ergebnis unabhaengig vom Aufrufer
         ld      hl,(seed)
         ld      a,h
         rra
@@ -1566,6 +1798,11 @@ frame_table:
         rept    8                            ; 32..39 Explosionen
         dw      blk_explode, blk_explode
         endm
+        dw      blk_magic0,  blk_magic0      ; 40 Zauberwand ruhend
+        dw      blk_magic_on0,blk_magic_on1  ; 41 aktiv
+        dw      blk_brick,   blk_brick       ; 42 verbraucht = Ziegel
+        dw      blk_amoeba0, blk_amoeba1     ; 43 Amoebe
+        dw      blk_grow,    blk_grow        ; 44 wachsende Mauer
 
 ; Schluessel je Frame fuer den Shadow-Puffer: Frames mit identischer Grafik
 ; (alle ausser den animierten) bekommen denselben Schluessel, damit ein
@@ -1581,6 +1818,7 @@ frame_key:
         rept    8
         db      28,28                   ; Explosionen
         endm
+        db      48,48, 50,51, 4,4, 54,55, 56,56   ; Zauberwand, aktiv, verbraucht, Amoebe, Mauer
 
 ; Leerlauf-Animation Rockford: ein Eintrag je Tick (6 Frames = ca. 0,12 s).
 ; Beliebig aenderbar; die Laenge ergibt sich aus den Labels.
@@ -1901,6 +2139,120 @@ blk_butterfly1:  ; Schmetterling, Fluegel schmal
         db      %00000010,%01000000   ; ......#..#......
         db      %00000000,%00000000   ; ................
 
+blk_magic0:  ; Zauberwand ruhend
+        db      045h,045h,045h,045h
+        db      %11001100,%11001100   ; ##..##..##..##..
+        db      %11001100,%11001100   ; ##..##..##..##..
+        db      %00110011,%00110011   ; ..##..##..##..##
+        db      %00110011,%00110011   ; ..##..##..##..##
+        db      %11001100,%11001100   ; ##..##..##..##..
+        db      %11001100,%11001100   ; ##..##..##..##..
+        db      %00110011,%00110011   ; ..##..##..##..##
+        db      %00110011,%00110011   ; ..##..##..##..##
+        db      %11001100,%11001100   ; ##..##..##..##..
+        db      %11001100,%11001100   ; ##..##..##..##..
+        db      %00110011,%00110011   ; ..##..##..##..##
+        db      %00110011,%00110011   ; ..##..##..##..##
+        db      %11001100,%11001100   ; ##..##..##..##..
+        db      %11001100,%11001100   ; ##..##..##..##..
+        db      %00110011,%00110011   ; ..##..##..##..##
+        db      %00110011,%00110011   ; ..##..##..##..##
+
+blk_magic_on0:  ; Zauberwand aktiv, Phase 0
+        db      043h,045h,045h,043h
+        db      %11001100,%11001100   ; ##..##..##..##..
+        db      %11001100,%11001100   ; ##..##..##..##..
+        db      %00110011,%00110011   ; ..##..##..##..##
+        db      %00110011,%00110011   ; ..##..##..##..##
+        db      %11001100,%11001100   ; ##..##..##..##..
+        db      %11001100,%11001100   ; ##..##..##..##..
+        db      %00110011,%00110011   ; ..##..##..##..##
+        db      %00110011,%00110011   ; ..##..##..##..##
+        db      %11001100,%11001100   ; ##..##..##..##..
+        db      %11001100,%11001100   ; ##..##..##..##..
+        db      %00110011,%00110011   ; ..##..##..##..##
+        db      %00110011,%00110011   ; ..##..##..##..##
+        db      %11001100,%11001100   ; ##..##..##..##..
+        db      %11001100,%11001100   ; ##..##..##..##..
+        db      %00110011,%00110011   ; ..##..##..##..##
+        db      %00110011,%00110011   ; ..##..##..##..##
+
+blk_magic_on1:  ; Zauberwand aktiv, Phase 1
+        db      045h,043h,043h,045h
+        db      %00110011,%00110011   ; ..##..##..##..##
+        db      %00110011,%00110011   ; ..##..##..##..##
+        db      %11001100,%11001100   ; ##..##..##..##..
+        db      %11001100,%11001100   ; ##..##..##..##..
+        db      %00110011,%00110011   ; ..##..##..##..##
+        db      %00110011,%00110011   ; ..##..##..##..##
+        db      %11001100,%11001100   ; ##..##..##..##..
+        db      %11001100,%11001100   ; ##..##..##..##..
+        db      %00110011,%00110011   ; ..##..##..##..##
+        db      %00110011,%00110011   ; ..##..##..##..##
+        db      %11001100,%11001100   ; ##..##..##..##..
+        db      %11001100,%11001100   ; ##..##..##..##..
+        db      %00110011,%00110011   ; ..##..##..##..##
+        db      %00110011,%00110011   ; ..##..##..##..##
+        db      %11001100,%11001100   ; ##..##..##..##..
+        db      %11001100,%11001100   ; ##..##..##..##..
+
+blk_amoeba0:  ; Amoebe, Phase 0
+        db      044h,044h,044h,044h
+        db      %00000000,%00000000   ; ................
+        db      %00001100,%00110000   ; ....##....##....
+        db      %00111100,%11111100   ; ..####..######..
+        db      %01111110,%11111110   ; .######.#######.
+        db      %01111111,%11111110   ; .##############.
+        db      %11111111,%11111111   ; ################
+        db      %11101111,%11111101   ; ###.##########.#
+        db      %11111111,%11111111   ; ################
+        db      %11111111,%11111111   ; ################
+        db      %11011111,%11111101   ; ##.###########.#
+        db      %11111111,%11111111   ; ################
+        db      %01111110,%11111110   ; .######.#######.
+        db      %01111111,%01111110   ; .#######.######.
+        db      %00111100,%11111100   ; ..####..######..
+        db      %00001100,%00110000   ; ....##....##....
+        db      %00000000,%00000000   ; ................
+
+blk_amoeba1:  ; Amoebe, Phase 1
+        db      044h,044h,044h,044h
+        db      %00000000,%00000000   ; ................
+        db      %00011000,%01100000   ; ...##....##.....
+        db      %01111001,%11111100   ; .####..#######..
+        db      %01111110,%11111110   ; .######.#######.
+        db      %01111111,%11111110   ; .##############.
+        db      %11111111,%11111111   ; ################
+        db      %11100111,%11111101   ; ###..#########.#
+        db      %11111111,%11111111   ; ################
+        db      %11111111,%11111111   ; ################
+        db      %11011111,%11111011   ; ##.##########.##
+        db      %11111111,%11111111   ; ################
+        db      %01111110,%11111110   ; .######.#######.
+        db      %01111111,%01111111   ; .#######.#######
+        db      %00111100,%11111100   ; ..####..######..
+        db      %00001100,%00110000   ; ....##....##....
+        db      %00000000,%00000000   ; ................
+
+blk_grow:  ; wachsende Mauer
+        db      056h,056h,056h,056h
+        db      %11111111,%11111111   ; ################
+        db      %10000000,%00000001   ; #..............#
+        db      %10000000,%00000001   ; #..............#
+        db      %10000100,%00100001   ; #....#....#....#
+        db      %10001100,%00110001   ; #...##....##...#
+        db      %10011100,%00111001   ; #..###....###..#
+        db      %10111100,%00111101   ; #.####....####.#
+        db      %10011100,%00111001   ; #..###....###..#
+        db      %10001100,%00110001   ; #...##....##...#
+        db      %10000100,%00100001   ; #....#....#....#
+        db      %10000000,%00000001   ; #..............#
+        db      %10000000,%00000001   ; #..............#
+        db      %10000000,%00000001   ; #..............#
+        db      %10000000,%00000001   ; #..............#
+        db      %10000000,%00000001   ; #..............#
+        db      %11111111,%11111111   ; ################
+
 blk_explode:  ; Explosion (FLASH)
         db      0C6h,0C6h,0C6h,0C6h
         db      %00000001,%10000000   ; .......##.......
@@ -1966,6 +2318,10 @@ time:           db      0               ; Restzeit in Spielsekunden
 time_sub:       db      0
 win:            db      0               ; >0: Ausgang erreicht (Pausen-Ticks)
 over:           db      0               ; >0: GAME OVER (Pausen-Ticks)
+magic_timer:    db      0               ; >0: Zauberwand aktiv (Ticks)
+amoeba_mode:    db      0               ; 0 normal, 1 -> Steine, 2 -> Diamanten
+amoeba_cnt:     db      0               ; Zaehler im laufenden Durchlauf
+amoeba_free:    db      0               ; 1 = Amoebe hat noch Platz
 par:            db      0               ; Tick-Paritaet (0/4) fuer die Gegner
 ex_tile:        db      0               ; erste Kachel der laufenden Explosion
 dead:           db      0               ; >0: Explosion laeuft (Ticks bis Neustart)
