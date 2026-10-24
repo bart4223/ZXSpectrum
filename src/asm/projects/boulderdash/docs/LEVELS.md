@@ -15,7 +15,7 @@ Zum Selbstbauen brauchst du Python 3 und pasmo (Mac: `brew install pasmo`).
 
 ## Bisher gebaute Höhlen
 
-Alle vierzehn wurden im Emulator mit einer aufgezeichneten Lösung durchgespielt. Das beweist, dass sie lösbar sind, nicht dass sie sich gut spielen.
+Alle fünfzehn wurden im Emulator mit einer aufgezeichneten Lösung durchgespielt. Das beweist, dass sie lösbar sind, nicht dass sie sich gut spielen.
 
 | Nr. | Datei | Name | Diamanten (nötig) | Zeit | Besonderheit |
 |---|---|---|---|---|---|
@@ -33,8 +33,9 @@ Alle vierzehn wurden im Emulator mit einer aufgezeichneten Lösung durchgespielt
 | 12 | `Level12.cave` | Schlitz | 8 | 140 s | Erdhöhle mit langem, leerem Ziegelschlitz in der Mitte und Nische oben, Ausgang mittig rechts, 46 verstreute Steine |
 | 13 | `Level13.cave` | Raute | 12 | 230 s | Große Raute mit Ziegeltreppen und weite Halle rechts, Ausgang am Ende eines langen, engen Gangs unten links mit einem Diamanten, ein Stein am Gangeingang |
 | 14 | `Level14.cave` | Höhlenlabyrinth | 12 | 250 s | Langer Gang oben, Steinketten im Gelände, Steinringkammer mit Diamanten, eine Bombe, Schacht mit Diamant und Halle unten, Ausgang unten rechts |
+| 15 | `Level15.cave` | Trichter | 12 | 200 s | Trichterhöhle, unten spitz, Rockford unten, Ausgang oben rechts in einem Ziegeltresor (Bombe nötig). Zwei Ziegelkäfige mit je einem Schmetterling und 4 Diamanten, nur mit Bomben zu öffnen; ohne beide Käfige reichen die Diamanten nicht. 5 Bomben, 3x3-Steinblock mit Diamant |
 
-Vorschaubilder liegen in `levels/preview/` (`LevelNN.png` einfach, `LevelNN_voll.png` mit der echten Spielgrafik). Nach Level 14 folgen Zufallshöhlen.
+Vorschaubilder liegen in `levels/preview/` (`LevelNN.png` einfach, `LevelNN_voll.png` mit der echten Spielgrafik). Nach Level 15 folgen Zufallshöhlen.
 
 ## Dateiformat
 
