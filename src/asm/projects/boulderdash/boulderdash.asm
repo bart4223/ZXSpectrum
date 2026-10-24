@@ -231,6 +231,7 @@ main_loop:
         add     a,FRAMES_PER_TICK       ; Stempel um genau einen Tick weiter:
         ld      (hl),a                  ; feste Tickrate, auch wenn ein Tick laenger dauert
         call    game_tick
+        call    snd_flush
         jp      main_loop
 
 ; ============================================================
@@ -584,6 +585,12 @@ ph_magic:
         cp      T_BOMB_F                ; Bombe geht unveraendert durch
         jr      z,pm_keep
         xor     1                       ; Stein (12) <-> Diamant (13), bleibt fallend
+        bit     0,a
+        jr      z,pm_keep               ; Diamant -> Stein: still
+        push    af
+        ld      a,2
+        call    sndq
+        pop     af
 pm_keep:
         ld      (ix+2*CAVE_W),a
         inc     d
@@ -602,6 +609,10 @@ ph_amoeba:
         ld      a,T_STONE               ; zu gross: erstarrt zu Steinen
         jr      z,pa_set
         ld      a,T_DIAMOND             ; eingeschlossen: wird zu Diamanten
+        push    af
+        ld      a,2
+        call    sndq
+        pop     af
 pa_set: ld      (hl),a
         call    mark_dirty
         jp      ph_next
@@ -897,6 +908,13 @@ nd_d:   inc     d
 ; Ausgang). Liegt Rockford darin, ist er tot. Alle Register bleiben erhalten.
 explode_at:
         ld      (ex_tile),a
+        push    af
+        cp      T_DEXPLODE
+        ld      a,1                     ; Knall
+        jr      c,ex_sq
+        inc     a                       ; Diamantenjingel
+ex_sq:  call    sndq
+        pop     af
         push    hl
         push    de
         push    bc
@@ -932,6 +950,8 @@ ex_nb:
         jr      nc,ex_set
         ld      a,DEAD_TICKS            ; Rockford liegt in der Explosion
         ld      (dead),a
+        ld      a,3
+        call    sndq
 ex_set: ld      a,(ex_tile)
         ld      (hl),a
         call    mark_dirty
@@ -1129,6 +1149,8 @@ mr_lava:                                ; Lava: Rockford verbrennt auf seinem Fe
         ld      (hl),T_EXPLODE
         ld      a,DEAD_TICKS
         ld      (dead),a
+        ld      a,3
+        call    sndq
         pop     de
         call    mark_dirty
         xor     a
@@ -2573,6 +2595,107 @@ play_next:
         halt
         ret
 
+; sndq: A = Prioritaet (1 Knall, 2 Diamanten, 3 Tod); merkt den lautesten Wunsch.
+; Alle Register bleiben erhalten.
+sndq:
+        push    hl
+        ld      hl,snd_req
+        cp      (hl)
+        jr      c,sq_no
+        jr      z,sq_no
+        ld      (hl),a
+sq_no:  pop     hl
+        ret
+
+; snd_flush: spielt den vorgemerkten Effekt (nach dem Tick). Alle Register bleiben erhalten.
+snd_flush:
+        ld      a,(snd_req)
+        or      a
+        ret     z
+        push    af
+        push    bc
+        push    de
+        push    hl
+        ld      c,a
+        xor     a
+        ld      (snd_req),a
+        ld      a,c
+        cp      2
+        jr      c,sf_boom
+        ld      hl,tune_dia
+        jr      z,sf_play
+        ld      hl,tune_dead
+sf_play:
+        ld      (tune_ptr),hl
+        di
+sf_l:   call    play_note
+        jr      nz,sf_l
+        ei
+        jr      sf_end
+sf_boom:
+        di
+        call    snd_boom
+        ei
+sf_end: pop     hl
+        pop     de
+        pop     bc
+        pop     af
+        ret
+
+; play_note: eine Note aus tune_ptr; Z = Melodie zu Ende
+play_note:
+        ld      hl,(tune_ptr)
+        ld      c,(hl)
+        inc     hl
+        ld      b,(hl)
+        inc     hl
+        ld      a,b
+        or      c
+        ret     z
+        ld      e,(hl)
+        inc     hl
+        ld      d,(hl)
+        inc     hl
+        ld      (tune_ptr),hl
+        call    beep
+        or      1                       ; NZ
+        ret
+
+; snd_boom: kurzes Rauschen (Zufall aus dem Refresh-Register)
+snd_boom:
+        ld      de,420
+sb_l:   ld      a,r
+        and     10h
+        out     (0FEh),a
+        ld      b,a
+        ld      a,e
+        and     0Fh
+        add     a,6
+        ld      b,a
+sb_d:   djnz    sb_d
+        dec     de
+        ld      a,d
+        or      e
+        jr      nz,sb_l
+        xor     a
+        out     (0FEh),a
+        ret
+
+tune_dead:
+        dw      127,47                 ; 523 Hz, 0.09 s
+        dw      152,40                 ; 440 Hz, 0.09 s
+        dw      192,31                 ; 349 Hz, 0.09 s
+        dw      256,24                 ; 262 Hz, 0.09 s
+        dw      305,20                 ; 220 Hz, 0.09 s
+        dw      407,50                 ; 165 Hz, 0.3 s
+        dw      0,0
+tune_dia:
+        dw      63,42                 ; 1047 Hz, 0.04 s
+        dw      50,53                 ; 1319 Hz, 0.04 s
+        dw      42,63                 ; 1568 Hz, 0.04 s
+        dw      31,167                 ; 2093 Hz, 0.08 s
+        dw      0,0
+
 ; beep: Rechteckschwingung auf dem Lautsprecher (Port FEh, Bit 4), Rand schwarz
 beep:
 bp_cyc: ld      a,10h
@@ -3492,6 +3615,7 @@ dead:           db      0               ; >0: Explosion laeuft (Ticks bis Neusta
 sp_phase:       db      0               ; Regenbogen-Phase (Titel/Abspann)
 sp_last:        db      0
 tune_ptr:       dw      0
+snd_req:        db      0               ; vorgemerkter Klang (0 keiner)
 dw_r:           db      0
 bonus:          dw      0
 shadow:         ds      VIEW_W*VIEW_H
