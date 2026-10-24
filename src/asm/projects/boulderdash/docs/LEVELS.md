@@ -15,7 +15,7 @@ Zum Selbstbauen brauchst du Python 3 und pasmo (Mac: `brew install pasmo`).
 
 ## Bisher gebaute Höhlen
 
-Alle sechzehn wurden im Emulator mit einer aufgezeichneten Lösung durchgespielt. Das beweist, dass sie lösbar sind, nicht dass sie sich gut spielen.
+Alle siebzehn wurden im Emulator mit einer aufgezeichneten Lösung durchgespielt. Das beweist, dass sie lösbar sind, nicht dass sie sich gut spielen.
 
 | Nr. | Datei | Name | Diamanten (nötig) | Zeit | Besonderheit |
 |---|---|---|---|---|---|
@@ -35,8 +35,9 @@ Alle sechzehn wurden im Emulator mit einer aufgezeichneten Lösung durchgespielt
 | 14 | `Level14.cave` | Höhlenlabyrinth | 12 | 250 s | Langer Gang oben, Steinketten im Gelände, Steinringkammer mit Diamanten, eine Bombe, Schacht mit Diamant und Halle unten, Ausgang unten rechts |
 | 15 | `Level15.cave` | Trichter | 12 | 200 s | Trichterhöhle, unten spitz, Rockford unten, Ausgang oben rechts in einem Ziegeltresor (Bombe nötig). Zwei Ziegelkäfige mit je einem Schmetterling und 4 Diamanten, nur mit Bomben zu öffnen; ohne beide Käfige reichen die Diamanten nicht. 5 Bomben, 3x3-Steinblock mit Diamant |
 | 16 | `Level16.cave` | Gewundene Höhle | 18 | 255 s | Organische Höhle mit mehreren Armen, Kammer mit Glühwürmchen und Ziegelinsel, Ziegelkasten mit 3 Diamanten (Bombe nötig, sonst fehlen Diamanten), Ausgang links, 3 weitere Bomben, Steinreihen |
+| 17 | `Level17.cave` | Kammern | 22 | 200 s | Quadratische Höhle voller Steine und Diamanten, sechs versiegelte Hohlräume (3 Felder breit) mit Glühwürmchen oder Schmetterlingen, an den Enden je ein Diamant, darunter je eine Bombe, die den Gegner in der Kammer erwischt; mindestens vier Kammern müssen geräumt werden |
 
-Vorschaubilder liegen in `levels/preview/` (`LevelNN.png` einfach, `LevelNN_voll.png` mit der echten Spielgrafik). Nach Level 16 folgen Zufallshöhlen.
+Vorschaubilder liegen in `levels/preview/` (`LevelNN.png` einfach, `LevelNN_voll.png` mit der echten Spielgrafik). Nach Level 17 folgen Zufallshöhlen.
 
 ## Dateiformat
 
