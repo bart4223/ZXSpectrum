@@ -68,11 +68,13 @@ def check(name, head, rows):
 
 def reachable(rows):
     """Grobe Pruefung: Rockford kommt ueber begehbare Felder (leer, Erde, Diamant, Stein = schiebbar,
-    Gegner = auch) zum Ausgang. Ziegel, Stahl, Lava, Bomben und Zauberwand sperren."""
+    Gegner = auch) zum Ausgang. Ziegel, Stahl, Lava, Bomben und Zauberwand sperren (Ziegel und Bomben nicht, wenn die Hoehle Bomben enthaelt)."""
     flat = "".join(rows)
     start = flat.index('R')
     ok = set(" .*oXFSAG")
     ok.add('o')
+    if 'B' in flat:
+        ok |= set('WB')   # Bomben koennen Ziegel sprengen
     seen = {start}
     q = deque([start])
     dia = 0
