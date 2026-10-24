@@ -141,6 +141,12 @@ def build(levels_dir, preview_dir=None):
             preview(rows, os.path.join(preview_dir, os.path.splitext(name)[0] + ".png"))
     text = f"LEVEL_COUNT     equ     {len(files)}\nlevel_table:\n"
     text += "".join(f"        dw      {l}\n" for l in table) + "\n" + "\n\n".join(blocks) + "\n"
+    text += "\nlevel_names:                            ; je Hoehle 13 Zeichen fuer die Anzeige\n"
+    for f in files:
+        head, _ = parse(f)
+        nm = str(head.get("name", os.path.basename(f))).upper()
+        nm = "".join(c if 32 <= ord(c) < 127 else "?" for c in nm)[:13].ljust(13)
+        text += f'        db      "{nm}"\n'
     return text, summary
 
 

@@ -46,7 +46,7 @@
 ;  Steuerung:  Q=hoch  A=runter  O=links  P=rechts
 ;              oder Sinclair-Joystick 1 (Tasten 6-0)
 ;              oder Sinclair-Joystick 2 (Tasten 1-5)
-;                       SPACE beendet und kehrt zu BASIC zurueck
+;              (das Spiel laeuft bis zum Abspann; Reset beendet es)
 ; ============================================================
 
         org     32768
@@ -226,21 +226,12 @@ main_loop:
         ld      hl,frame_ctr            ; Zeitstempel des letzten Ticks
         sub     (hl)
         cp      FRAMES_PER_TICK
-        jr      c,ml_keys
+        jr      c,main_loop
         ld      a,(hl)
         add     a,FRAMES_PER_TICK       ; Stempel um genau einen Tick weiter:
         ld      (hl),a                  ; feste Tickrate, auch wenn ein Tick laenger dauert
         call    game_tick
-
-ml_keys:
-        ld      a,7Fh                   ; Halbreihe SPACE..B
-        in      a,(0FEh)
-        rra                             ; Bit 0 = SPACE (0 = gedrueckt)
-        jr      c,main_loop
-        exx
-        ld      hl,2758h                ; HL' fuer die Rueckkehr nach BASIC
-        exx
-        ret
+        jp      main_loop
 
 ; ============================================================
 ;  Spiellogik (Stufe 7: Bomben, Lava, Zauberwand, Amoebe, wachsende Mauer)
@@ -1738,7 +1729,7 @@ lvl_01:                                 ; Einstieg
         db      41,3
         db      0
 
-lvl_02:                                 ; Gluehwuermchen
+lvl_02:                                 ; Gluehwurm
         db      13,150,160,40,2,1,38,20
         db      41,3,1,0,1,6,2,0,34,1,2,3,8,1,9,0
         db      21,1,2,3,5,1,1,4,2,1,4,0,1,16,4,0
@@ -1761,7 +1752,7 @@ lvl_02:                                 ; Gluehwuermchen
         db      1,0,1,15,41,3
         db      0
 
-lvl_03:                                 ; Schmetterlinge
+lvl_03:                                 ; Falter
         db      22,200,160,40,2,1,38,20
         db      41,3,1,0,1,6,2,0,34,1,2,3,14,1,1,5
         db      23,1,2,3,29,1,1,5,6,1,1,4,1,1,2,3
@@ -1856,7 +1847,7 @@ lvl_07:                                 ; Sprengmeister
         db      2,3,36,1,1,0,1,15,41,3
         db      0
 
-lvl_08:                                 ; Kettenreaktion
+lvl_08:                                 ; Zuendkette
         db      14,200,160,40,2,10,37,10
         db      41,3,38,1,2,3,38,1,2,3,10,1,1,5,11,1
         db      1,5,15,1,2,3,4,1,1,5,12,1,1,5,11,1
@@ -1998,7 +1989,7 @@ lvl_13:                                 ; Raute
         db      2,3,1,15,2,1,1,5,34,1,2,3,38,2,41,3
         db      0
 
-lvl_14:                                 ; Hoehlenlabyrinth
+lvl_14:                                 ; Labyrinth
         db      12,250,160,40,8,1,38,20
         db      41,3,1,5,1,4,5,1,1,6,30,1,2,3,14,2
         db      19,1,1,5,4,1,15,3,1,2,5,1,1,5,18,1
@@ -2056,7 +2047,7 @@ lvl_15:                                 ; Trichter
         db      3,2,32,3,2,2,1,6,1,1,2,2,57,3
         db      0
 
-lvl_16:                                 ; Gewundene Hoehle
+lvl_16:                                 ; Windungen
         db      18,255,160,40,18,11,6,13
         db      46,3,12,2,1,3,1,2,10,1,1,4,1,1,1,4
         db      6,1,7,3,1,2,10,0,3,2,5,1,1,5,10,1
@@ -2143,6 +2134,26 @@ lvl_18:                                 ; Regale
         db      1,1,1,5,4,1,1,4,2,3,12,1,1,4,24,1
         db      1,4,2,3,38,1,41,3
         db      0
+
+level_names:                            ; je Hoehle 13 Zeichen fuer die Anzeige
+        db      "EINSTIEG     "
+        db      "GLUEHWURM    "
+        db      "FALTER       "
+        db      "ZAUBERWAND   "
+        db      "AMOEBE       "
+        db      "FEUERPROBE   "
+        db      "SPRENGMEISTER"
+        db      "ZUENDKETTE   "
+        db      "KAEFIG       "
+        db      "LAVASEE      "
+        db      "STEINFELD    "
+        db      "SCHLITZ      "
+        db      "RAUTE        "
+        db      "LABYRINTH    "
+        db      "TRICHTER     "
+        db      "WINDUNGEN    "
+        db      "KAMMERN      "
+        db      "REGALE       "
 
 
 gen_cave:
@@ -2309,7 +2320,8 @@ print_all:
         call    print_dia_score
         call    print_need
         call    print_lives
-        jp      print_level
+        call    print_level
+        jp      print_name
 print_time:
         ld      hl,txt_timepos
         call    print_str
@@ -2342,6 +2354,40 @@ print_level:
         call    print_str
         ld      a,(level)
         jp      print_dec2
+
+; print_name: Hoehlenname (13 Zeichen aus level_names) in Zeile 1, Spalte 19
+print_name:
+        ld      hl,txt_namepos
+        call    print_str
+        ld      a,(level)
+        dec     a
+        cp      LEVEL_COUNT
+        jr      nc,pnm_rnd              ; Zufallshoehlen haben keinen Namen
+        ld      l,a
+        ld      h,0
+        ld      d,h
+        ld      e,l
+        add     hl,hl
+        add     hl,hl                   ; *4
+        ld      b,h
+        ld      c,l
+        add     hl,hl                   ; *8
+        add     hl,bc                   ; *12
+        add     hl,de                   ; *13
+        ld      de,level_names
+        add     hl,de
+        ld      b,13
+pnm_l:  push    bc
+        push    hl
+        ld      a,(hl)
+        rst     10h
+        pop     hl
+        pop     bc
+        inc     hl
+        djnz    pnm_l
+        ret
+pnm_rnd:ld      hl,txt_random
+        jp      print_str
 
 ; print_str: Text ab HL bis Endekennung FFh ueber ROM (RST 10h)
 print_str:
@@ -2670,11 +2716,11 @@ txt_header:
         db      "DIA:"
         db      22,1,15
         db      "/"
-        db      22,1,19
-        db      "SPACE=ENDE"
         db      16,5, 17,0, 19,1        ; Farbe fuer die Zahlen (bleibt gesetzt)
         db      0FFh
 txt_timepos:   db      22,1,5, 0FFh
+txt_namepos:   db      22,1,19, 16,6, 17,0, 19,1, 0FFh
+txt_random:    db      "ZUFALL       ", 0FFh
 txt_diapos:    db      22,1,13, 0FFh
 txt_needpos:   db      22,1,16, 0FFh
 txt_scorepos:  db      22,0,7, 0FFh

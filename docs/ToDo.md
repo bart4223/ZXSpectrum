@@ -82,4 +82,4 @@ Rockford-Animationen, etwa das Fußwippen beim Warten.
 Titelbild, Intro-Sequenz beim Höhlenstart und Highscore.
 
 -3. Meilenstein
--State: InProgress
+-State: Done
