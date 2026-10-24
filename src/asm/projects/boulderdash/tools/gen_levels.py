@@ -39,7 +39,7 @@ def parse(path):
 def check(name, head, rows):
     errs = []
     for k in head:
-        if k not in ("name", "need", "time", "magic", "amoeba"):
+        if k not in ("name", "need", "time", "magic", "amoeba", "extra"):
             errs.append(f"unbekannter Kopfwert '{k}'")
     if len(rows) != H:
         errs.append(f"{len(rows)} Zeilen statt {H}")
@@ -111,6 +111,7 @@ def build(levels_dir, preview_dir=None):
         if errs:
             raise SystemExit(f"{name}: " + "; ".join(errs[:8]))
         h = {k: int(head.get(k, v)) for k, v in DEFAULTS.items()}
+        extra = int(head.get("extra", 0))      # Diamanten, die erst im Spiel entstehen (Sprengung, Zauberwand, Amoebe)
         for k in h:
             if not 0 < h[k] < 256:
                 raise SystemExit(f"{name}: {k} muss zwischen 1 und 255 liegen")
@@ -119,8 +120,8 @@ def build(levels_dir, preview_dir=None):
         ok, dia = reachable(rows)
         if not ok:
             raise SystemExit(f"{name}: Ausgang ist von Rockford aus nicht erreichbar")
-        if dia < h["need"] + 2:
-            raise SystemExit(f"{name}: nur {dia} erreichbare Diamanten, Quote ist {h['need']} (mind. 2 Reserve)")
+        if dia + extra < h["need"] + 2:
+            raise SystemExit(f"{name}: nur {dia}+{extra} Diamanten, Quote ist {h['need']} (mind. 2 Reserve)")
         tiles = [CHARS[c] for c in flat]
         runs = rle(tiles)
         label = f"lvl_{n:02d}"
@@ -132,7 +133,7 @@ def build(levels_dir, preview_dir=None):
         lines.append("        db      0")
         blocks.append("\n".join(lines))
         size = 8 + 2 * len(runs) + 1
-        summary.append(f"  {n:2d} {head.get('name', name):<20} Quote {h['need']:2d} von {dia:2d} Diamanten, {size} Bytes ({len(runs)} Laeufe)")
+        summary.append(f"  {n:2d} {head.get('name', name):<20} Quote {h['need']:2d} von {dia:2d}+{extra} Diamanten, {size} Bytes ({len(runs)} Laeufe)")
         if preview_dir:
             os.makedirs(preview_dir, exist_ok=True)
             preview(rows, os.path.join(preview_dir, os.path.splitext(name)[0] + ".png"))

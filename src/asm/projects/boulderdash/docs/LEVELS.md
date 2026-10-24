@@ -21,13 +21,15 @@ need:   10        ; Diamanten, bis der Ausgang aufgeht
 time:   120       ; Sekunden
 magic:  160       ; Zauberwand-Aktivzeit in Ticks (8 Ticks = 1 Sekunde)
 amoeba: 40        ; ab so vielen Amöbenfeldern erstarrt sie zu Steinen
+extra:  0         ; Diamanten, die erst im Spiel entstehen (Sprengung, Zauberwand, Amöbe)
 map:
 ########################################
 #R.....(22 Zeilen à 40 Zeichen)
 ########################################
 ```
 
-- Alle Kopfwerte sind optional (Standard: need 10, time 150, magic 160, amoeba 40) und liegen zwischen 1 und 255.
+- Alle Kopfwerte sind optional (Standard: need 10, time 150, magic 160, amoeba 40, extra 0). `time`, `magic` und `amoeba` liegen zwischen 1 und 255 (die Zeit also höchstens 255 Sekunden).
+- `extra` sagt dem Werkzeug, wie viele Diamanten erst im Spiel entstehen. Es geht nur in die Prüfung ein (sichtbare + extra Diamanten müssen mindestens `need` + 2 ergeben).
 - Nach `;` beginnt ein Kommentar im Kopf. In der Karte gibt es keine Kommentare.
 - Die Karte hat genau 22 Zeilen mit je genau 40 Zeichen.
 
@@ -59,7 +61,7 @@ Bei einem Fehler bricht der Build mit einer Meldung ab, es entsteht keine `.tap`
 - Rockford und Ausgang kommen genau einmal vor.
 - Stahlrand rundherum vollständig.
 - Der Ausgang ist von Rockford aus erreichbar (Graben und Steine schieben zählen mit; Ziegel, Stahl, Lava, Bomben und Zauberwand sperren).
-- Es gibt mindestens `need` + 2 erreichbare Diamanten (Reserve).
+- Es gibt mindestens `need` + 2 Diamanten (sichtbare erreichbare plus `extra`, als Reserve).
 
 Nicht geprüft werden Spielbarkeit und Schwierigkeit. Das musst du ausprobieren.
 
