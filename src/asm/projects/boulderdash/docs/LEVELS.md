@@ -15,7 +15,7 @@ Zum Selbstbauen brauchst du Python 3 und pasmo (Mac: `brew install pasmo`).
 
 ## Bisher gebaute Höhlen
 
-Alle zehn wurden im Emulator mit einer aufgezeichneten Lösung durchgespielt. Das beweist, dass sie lösbar sind, nicht dass sie sich gut spielen.
+Alle zwölf wurden im Emulator mit einer aufgezeichneten Lösung durchgespielt. Das beweist, dass sie lösbar sind, nicht dass sie sich gut spielen.
 
 | Nr. | Datei | Name | Diamanten (nötig) | Zeit | Besonderheit |
 |---|---|---|---|---|---|
@@ -29,8 +29,10 @@ Alle zehn wurden im Emulator mit einer aufgezeichneten Lösung durchgespielt. Da
 | 8 | `Level08.cave` | Kettenreaktion | 14 | 200 s | 22 Bomben in einer Reihe sprengen den Ziegeltunnel zum Ausgang |
 | 9 | `Level09.cave` | Käfig | 16 | 220 s | Zwei Ziegelkammern mit Glühwürmchen, Bomben sprengen sie auf |
 | 10 | `Level10.cave` | Lavasee | 17 | 230 s | Lavasee mit Erdbrücken und Inseln, Bombe öffnet den Tresor mit dem Ausgang |
+| 11 | `Level11.cave` | Steinfeld | 4 | 100 s | Achteckige Erdhöhle mit 44 verstreuten Steinen und 6 Diamanten, Ausgang am unteren Rand, nachrutschende Steine sind die Gefahr |
+| 12 | `Level12.cave` | Schlitz | 8 | 140 s | Erdhöhle mit langem, leerem Ziegelschlitz in der Mitte und Nische oben, Ausgang mittig rechts, 46 verstreute Steine |
 
-Vorschaubilder liegen in `levels/preview/` (`LevelNN.png` einfach, `LevelNN_voll.png` mit der echten Spielgrafik). Nach Level 10 folgen Zufallshöhlen.
+Vorschaubilder liegen in `levels/preview/` (`LevelNN.png` einfach, `LevelNN_voll.png` mit der echten Spielgrafik). Nach Level 12 folgen Zufallshöhlen.
 
 ## Dateiformat
 
