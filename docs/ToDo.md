@@ -56,7 +56,7 @@ Höhlen als kompakte Beschreibung statt als Bitmap: Seed für den Zufallsfüller
 Dazu ein Decoder im Spiel und mehrere Höhlen mit Levelauswahl.
 Optional ein Compiler oder Editor auf dem PC, der die Leveldaten erzeugt.
 
--State: InProgress
+-State: Done
 
 Stufe 6: Scrolling
 
@@ -65,7 +65,7 @@ Am einfachsten ist Scrolling in Tile-Schritten mit Neuzeichnen des sichtbaren Au
 Weiches Scrolling ist eine eigene, deutlich härtere Baustelle.
 
 -2. Meilenstein
--State: Open
+-State: Done
 
 Stufe 7: Spezialelemente
 
@@ -73,7 +73,7 @@ Amöbe: Sie wächst. Wird sie eingeschlossen, verwandelt sie sich in Diamanten, 
 Magic Wall: Fallende Steine werden zu Diamanten und umgekehrt.
 Dazu Schwierigkeitsgrade pro Höhle.
 
--State: Open
+-State: Done
 
 Stufe 8: Politur
 
@@ -82,4 +82,4 @@ Rockford-Animationen, etwa das Fußwippen beim Warten.
 Titelbild, Intro-Sequenz beim Höhlenstart und Highscore.
 
 -3. Meilenstein
--State: Open
+-State: InProgress

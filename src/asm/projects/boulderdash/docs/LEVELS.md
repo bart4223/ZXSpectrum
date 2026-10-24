@@ -9,7 +9,7 @@ Höhlen sind Textdateien in `levels/`. Das Build-Werkzeug macht daraus die Daten
 3. Vorschau ansehen: `levels/preview/LevelNN.png`.
 4. Die `.tap` auf dem Spectrum laden und spielen.
 
-Die Reihenfolge der Dateien (nach Name sortiert) ist die Reihenfolge der Level: `Level01` ist Level 1, `Level02` Level 2 und so weiter. Nach der letzten Datei folgen Zufallshöhlen.
+Die Reihenfolge der Dateien (nach Name sortiert) ist die Reihenfolge der Level: `Level01` ist Level 1, `Level02` Level 2 und so weiter. Nach der letzten Höhle kommt der Abspann (Outro) und danach wieder das Titelbild.
 
 Zum Selbstbauen brauchst du Python 3 und pasmo (Mac: `brew install pasmo`).
 
@@ -38,7 +38,7 @@ Alle achtzehn wurden im Emulator mit einer aufgezeichneten Lösung durchgespielt
 | 17 | `Level17.cave` | Kammern | 22 | 200 s | Quadratische Höhle voller Steine und Diamanten, sechs versiegelte Hohlräume (3 Felder breit) mit Glühwürmchen oder Schmetterlingen, an den Enden je ein Diamant, darunter je eine Bombe, die den Gegner in der Kammer erwischt; mindestens vier Kammern müssen geräumt werden |
 | 18 | `Level18.cave` | Regale | 14 | 220 s | Vier lange Ziegelregale in der Mitte (man muss außen herum), vier Kammern mit Gegnern (je ein Diamant an den Enden, Bombe darunter), Bomben und freie Diamanten auf den Seiten, Ausgang oben neben dem Start; mindestens zwei Kammern müssen geräumt werden |
 
-Vorschaubilder liegen in `levels/preview/` (`LevelNN.png` einfach, `LevelNN_voll.png` mit der echten Spielgrafik). Nach Level 18 folgen Zufallshöhlen.
+Vorschaubilder liegen in `levels/preview/` (`LevelNN.png` einfach, `LevelNN_voll.png` mit der echten Spielgrafik). Nach Level 18 kommt der Abspann mit Lebensbonus (500 Punkte je Leben) und Endstand, danach wieder das Titelbild. Beim Start zeigt das Spiel zuerst das Titelbild (`levels/preview/splash.png`), eine Taste startet.
 
 ## Dateiformat
 

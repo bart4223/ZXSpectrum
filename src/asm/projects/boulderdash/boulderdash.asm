@@ -71,6 +71,7 @@ FRAMES_PER_TICK equ     6
 DIRTY_MAX       equ     192
 SEED_START      equ     0ACE1h
 CHAN_OPEN       equ     1601h
+SPLASH          equ     1               ; 1 = Titelbild beim Start (Tests setzen 0)
 FRAMES          equ     5C78h           ; ROM-Systemvariable: Bildzaehler
 START_LIVES     equ     3
 TIME_START      equ     150             ; Spielsekunden je Level
@@ -128,6 +129,9 @@ IN_DOWN         equ     8
 
 ; ============================================================
 start:
+        if SPLASH
+        call    splash
+        endif
         ld      a,START_LIVES
         ld      (lives),a
         ld      a,1
@@ -305,7 +309,14 @@ gt_win:                                 ; Ausgang erreicht: kurze Pause, dann Bo
         ld      (score),hl
         ld      hl,level
         inc     (hl)
+        ld      a,LEVEL_COUNT           ; letzte Hoehle geschafft -> Abspann
+        or      a
+        jr      z,gw_next               ; (Testbau ohne Hoehlenliste: weiter)
+        cp      (hl)
+        jr      nc,gw_next
         pop     hl
+        jp      outro
+gw_next:pop     hl
         jp      new_level
 
         ; --- sichtbare Diamanten als "dirty" markieren (Funkeln) ---
@@ -2396,6 +2407,253 @@ pn_loop:
         pop     hl
         ret
 
+
+; ============================================================
+;  Titelbild (Splash) und Abspann (Outro)
+; ============================================================
+; draw_word: HL = Wort (Glyphen-Nummern, Ende FFh), DE = Attributadresse links
+; oben. Jede Glyphe ist 3x5 Zeichenfelder gross, Zeile r bekommt die Farbe
+; (sp_phase + r) -> laufender Regenbogen. Farbe = BRIGHT, PAPER, Pixel leer.
+draw_word:
+dw_next:
+        ld      a,(hl)
+        cp      0FFh
+        ret     z
+        inc     hl
+        push    hl
+        push    de
+        ld      c,a
+        add     a,a
+        add     a,a
+        add     a,c                     ; A = Glyphe * 5
+        ld      c,a
+        ld      b,0
+        ld      ix,font
+        add     ix,bc
+        xor     a
+        ld      (dw_r),a
+dw_row: ld      a,(sp_phase)
+        ld      hl,dw_r
+        add     a,(hl)
+        and     7
+        jr      nz,dw_c
+        ld      a,6                     ; schwarz vermeiden
+dw_c:   add     a,a
+        add     a,a
+        add     a,a
+        or      40h
+        ld      c,a                     ; Farbattribut fuer gesetzte Felder
+        ld      h,(ix+0)
+        inc     ix
+        push    de
+        ld      b,3
+dw_bit: xor     a
+        bit     2,h
+        jr      z,dw_off
+        ld      a,c
+dw_off: ld      (de),a
+        inc     de
+        sla     h
+        djnz    dw_bit
+        pop     de
+        ld      hl,32
+        add     hl,de
+        ex      de,hl                   ; naechste Attributzeile
+        ld      hl,dw_r
+        inc     (hl)
+        ld      a,(hl)
+        cp      5
+        jr      nz,dw_row
+        pop     de
+        pop     hl
+        inc     de                      ; naechster Buchstabe: 3 Felder + 1 Luecke
+        inc     de
+        inc     de
+        inc     de
+        jr      dw_next
+
+; draw_row: HL = 16 Kachel-IDs, C = Kachelzeile (0..10) im Viewport-Raster
+draw_row:
+        ld      b,0
+dr_l:   push    bc
+        push    hl
+        ld      a,(hl)
+        call    draw_tile
+        pop     hl
+        pop     bc
+        inc     hl
+        inc     b
+        ld      a,b
+        cp      16
+        jr      nz,dr_l
+        ret
+
+; key_any: Z = keine Taste gedrueckt
+key_any:
+        xor     a
+        in      a,(0FEh)
+        cpl
+        and     1Fh
+        ret
+
+; Regenbogen-Takt: A = (FRAMES >> 3) & 7
+rainbow_phase:
+        ld      a,(FRAMES)
+        rrca
+        rrca
+        rrca
+        and     7
+        ret
+
+; play_next: spielt die naechste Note der Melodie ab (tune_ptr), falls noch eine
+; da ist. Blockiert nur fuer die Dauer einer Note; danach ein Frame Pause.
+play_next:
+        ld      hl,(tune_ptr)
+        ld      c,(hl)
+        inc     hl
+        ld      b,(hl)                  ; BC = Halbperiode (Zaehlschleifen)
+        inc     hl
+        ld      a,b
+        or      c
+        ret     z                       ; 0 = Melodie zu Ende
+        ld      e,(hl)
+        inc     hl
+        ld      d,(hl)                  ; DE = Anzahl Schwingungen
+        inc     hl
+        ld      (tune_ptr),hl
+        di
+        call    beep
+        ei
+        halt
+        ret
+
+; beep: Rechteckschwingung auf dem Lautsprecher (Port FEh, Bit 4), Rand schwarz
+beep:
+bp_cyc: ld      a,10h
+        out     (0FEh),a
+        ld      h,b
+        ld      l,c
+bp1:    dec     hl
+        ld      a,h
+        or      l
+        jr      nz,bp1
+        xor     a
+        out     (0FEh),a
+        ld      h,b
+        ld      l,c
+bp2:    dec     hl
+        ld      a,h
+        or      l
+        jr      nz,bp2
+        dec     de
+        ld      a,d
+        or      e
+        jr      nz,bp_cyc
+        ret
+
+splash:
+        xor     a
+        out     (0FEh),a
+        call    clear_screen
+        ld      a,2
+        call    CHAN_OPEN
+        ld      hl,txt_splash1
+        call    print_str
+        ld      a,LEVEL_COUNT
+        call    print_dec2
+        ld      hl,txt_splash2
+        call    print_str
+        ld      a,0FFh
+        ld      (sp_last),a
+        ld      hl,tune_title
+        ld      (tune_ptr),hl
+sp_rel: call    key_any                 ; erst Tasten loslassen
+        jr      nz,sp_rel
+sp_loop:
+        call    play_next
+        halt
+        call    rainbow_phase
+        ld      hl,sp_last
+        cp      (hl)
+        jr      z,sp_key
+        ld      (hl),a
+        ld      (sp_phase),a
+        and     1
+        ld      (anim_phase),a
+        ld      hl,word_boulder
+        ld      de,5842h                ; Zeile 2, Spalte 2
+        call    draw_word
+        ld      hl,word_dash
+        ld      de,5908h                ; Zeile 8, Spalte 8
+        call    draw_word
+        ld      hl,tile_row_splash
+        ld      c,6                     ; Bildschirmzeilen 14/15
+        call    draw_row
+sp_key: call    key_any
+        jr      z,sp_loop
+        xor     a
+        ld      (anim_phase),a
+        ret
+
+; outro: Lebensbonus, Abspann, danach zurueck zum Titelbild
+outro:
+        ld      a,(lives)
+        ld      b,a
+        ld      hl,0
+        ld      de,500
+ou_b:   add     hl,de                   ; 500 Punkte je uebrig gebliebenes Leben
+        djnz    ou_b
+        ld      (bonus),hl
+        ld      de,(score)
+        add     hl,de
+        ld      (score),hl
+        xor     a
+        out     (0FEh),a
+        call    clear_screen
+        ld      a,2
+        call    CHAN_OPEN
+        ld      hl,txt_outro1
+        call    print_str
+        ld      hl,(bonus)
+        call    print_num
+        ld      hl,txt_outro2
+        call    print_str
+        ld      hl,(score)
+        call    print_num
+        ld      hl,txt_outro3
+        call    print_str
+        ld      a,0FFh
+        ld      (sp_last),a
+ou_rel: call    key_any
+        jr      nz,ou_rel
+        ld      b,60                    ; kurze Sperre gegen versehentliches Weiter
+ou_w:   halt
+        djnz    ou_w
+        ld      hl,tune_win
+        ld      (tune_ptr),hl
+ou_loop:
+        call    play_next
+        halt
+        call    rainbow_phase
+        ld      hl,sp_last
+        cp      (hl)
+        jr      z,ou_key
+        ld      (hl),a
+        ld      (sp_phase),a
+        and     1
+        ld      (anim_phase),a
+        ld      hl,word_ende
+        ld      de,5868h                ; Zeile 3, Spalte 8
+        call    draw_word
+        ld      hl,tile_row_outro
+        ld      c,8                     ; Bildschirmzeilen 18/19
+        call    draw_row
+ou_key: call    key_any
+        jr      z,ou_loop
+        xor     a
+        ld      (anim_phase),a
+        jp      start
+
 ; ============================================================
 ;  Daten
 ; ============================================================
@@ -2430,6 +2688,88 @@ txt_over:
         db      22,0,0, 16,2, 17,0, 19,1
         db      "           GAME OVER            "
         db      16,5, 17,0, 19,1, 0FFh
+
+
+; ---- Titel / Abspann ----
+; Melodien: je Note Halbperiode (Zaehlschleifen) und Anzahl Schwingungen; Ende 0,0
+tune_title:
+        dw      127,63                 ; 523 Hz, 0.12 s
+        dw      101,79                 ; 659 Hz, 0.12 s
+        dw      85,94                 ; 784 Hz, 0.12 s
+        dw      63,251                 ; 1047 Hz, 0.24 s
+        dw      85,94                 ; 784 Hz, 0.12 s
+        dw      101,79                 ; 659 Hz, 0.12 s
+        dw      85,94                 ; 784 Hz, 0.12 s
+        dw      63,251                 ; 1047 Hz, 0.24 s
+        dw      75,106                 ; 880 Hz, 0.12 s
+        dw      95,84                 ; 698 Hz, 0.12 s
+        dw      75,106                 ; 880 Hz, 0.12 s
+        dw      56,282                 ; 1175 Hz, 0.24 s
+        dw      63,126                 ; 1047 Hz, 0.12 s
+        dw      85,94                 ; 784 Hz, 0.12 s
+        dw      101,79                 ; 659 Hz, 0.12 s
+        dw      127,235                 ; 523 Hz, 0.45 s
+        dw      0,0
+tune_win:
+        dw      85,78                 ; 784 Hz, 0.1 s
+        dw      63,105                 ; 1047 Hz, 0.1 s
+        dw      50,132                 ; 1319 Hz, 0.1 s
+        dw      42,314                 ; 1568 Hz, 0.2 s
+        dw      50,132                 ; 1319 Hz, 0.1 s
+        dw      42,784                 ; 1568 Hz, 0.5 s
+        dw      0,0
+txt_splash1:
+        db      22,0,8, 16,6, 17,0, 19,1
+        db      "* ZX SPECTRUM *"
+        db      22,17,4, 16,5
+        db      0FFh
+txt_splash2:
+        db      " HOEHLEN, BOMBEN, LAVA"
+        db      22,18,3, 16,7
+        db      "Q A O P ODER SINCLAIR 1/2"
+        db      22,19,8
+        db      "FEUER: M / 0 / 5"
+        db      22,21,9, 16,6, 18,1
+        db      "TASTE DRUECKEN"
+        db      18,0, 16,5, 17,0, 19,1, 0FFh
+txt_outro1:
+        db      22,10,9, 16,6, 17,0, 19,1
+        db      "GLUECKWUNSCH!"
+        db      22,12,4, 16,7
+        db      "ALLE HOEHLEN GESCHAFFT!"
+        db      22,14,7, 16,5
+        db      "LEBENSBONUS "
+        db      16,6, 0FFh
+txt_outro2:
+        db      22,16,9, 16,5
+        db      "ENDSTAND "
+        db      16,6, 0FFh
+txt_outro3:
+        db      22,21,9, 16,7, 18,1
+        db      "TASTE DRUECKEN"
+        db      18,0, 16,5, 17,0, 19,1, 0FFh
+word_boulder:   db      0,1,2,3,4,5,6,0FFh
+word_dash:      db      4,7,8,9,0FFh
+word_ende:      db      5,10,4,5,0FFh
+tile_row_splash:
+        db      T_DIRT,T_DIRT,T_ROCKFORD,T_STONE,T_DIAMOND,T_BOMB,T_BUTTERFLY,T_FIREFLY
+        db      T_DIAMOND,T_STONE,T_BOMB,T_DIAMOND,T_ROCKFORD,T_DIRT,T_DIRT,T_DIRT
+tile_row_outro:
+        db      T_DIAMOND,T_DIAMOND,T_DIAMOND,T_DIAMOND,T_DIAMOND,T_DIAMOND,T_DIAMOND,T_ROCKFORD
+        db      T_DIAMOND,T_DIAMOND,T_DIAMOND,T_DIAMOND,T_DIAMOND,T_DIAMOND,T_DIAMOND,T_DIAMOND
+; Schrift 3x5: B O U L D E R A S H N (je 5 Zeilen, Bit 2..0)
+font:
+        db      %110,%101,%110,%101,%110        ; B
+        db      %111,%101,%101,%101,%111        ; O
+        db      %101,%101,%101,%101,%111        ; U
+        db      %100,%100,%100,%100,%111        ; L
+        db      %110,%101,%101,%101,%110        ; D
+        db      %111,%100,%110,%100,%111        ; E
+        db      %110,%101,%110,%101,%101        ; R
+        db      %010,%101,%111,%101,%101        ; A
+        db      %111,%100,%111,%001,%111        ; S
+        db      %101,%101,%111,%101,%101        ; H
+        db      %111,%101,%101,%101,%101        ; N
 
 ; Frame-Tabelle: je Tile zwei Eintraege (Phase 0 und Phase 1)
 frame_table:
@@ -3103,6 +3443,11 @@ amoeba_free:    db      0               ; 1 = Amoebe hat noch Platz
 par:            db      0               ; Tick-Paritaet (0/4) fuer die Gegner
 ex_tile:        db      0               ; erste Kachel der laufenden Explosion
 dead:           db      0               ; >0: Explosion laeuft (Ticks bis Neustart)
+sp_phase:       db      0               ; Regenbogen-Phase (Titel/Abspann)
+sp_last:        db      0
+tune_ptr:       dw      0
+dw_r:           db      0
+bonus:          dw      0
 shadow:         ds      VIEW_W*VIEW_H
 dirty_list:     ds      DIRTY_MAX*2
 cave:           ds      CAVE_SIZE
