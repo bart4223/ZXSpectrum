@@ -342,9 +342,9 @@ MOVEBALL:
         JR NC,MBV1
         LD A,TOPLIM
         JR MBVN
-MBV1:   CP 179
+MBV1:   CP 178
         JR C,MBV2
-        LD A,178
+        LD A,177
 MBVN:   LD B,A
         LD A,2
         LD (sndf),A             ; Wandton
@@ -364,7 +364,7 @@ MBV2:   LD (by),A
         ; --- Ball fliegt nach rechts: Trefferzone am rechten Schlaeger
         ;     bx in [pxr-4, pxr+4]  (Schlaegerbreite 4 + Ballbreite 4 + Spielraum)
         LD A,(pxr)
-        SUB 4
+        SUB 6
         LD E,A
         LD A,D
         CP E
@@ -380,7 +380,7 @@ MBR_Z:  LD A,(pyr)
         CALL HITTEST
         JR NC,MBR_NC
         LD A,(pxr)
-        SUB 5
+        SUB 7
         LD (bx),A               ; Ball sitzt direkt vor dem Schlaeger
         LD A,(pyr)
         CALL PADHIT
@@ -399,7 +399,7 @@ MBR_OUT:LD A,1
         RET
         ; --- Ball fliegt nach links: Trefferzone am linken Schlaeger
 MBLEFT: LD A,(pxl)
-        SUB 4
+        SUB 6
         LD E,A
         LD A,D
         CP E
@@ -435,7 +435,7 @@ MBL_OUT:LD A,2
 ; ---- Trifft der Ball (y) den Schlaeger mit Oberkante A? Carry = Treffer
 HITTEST:LD E,A
         LD A,(by)
-        ADD A,3
+        ADD A,5
         CP E
         JR C,HT_NO              ; Ball-Unterkante ueber dem Schlaeger
         LD A,E
@@ -453,7 +453,7 @@ HT_YES: SCF
 ; ---- Schlaegertreffer: neuer Winkel, Ton, Tempo steigern
 PADHIT: LD E,A
         LD A,(by)
-        ADD A,2
+        ADD A,3
         SUB E
         SUB 12                  ; A = Trefferabstand zur Mitte (-13..13)
         LD D,A
@@ -687,14 +687,14 @@ UPDHIST:LD HL,hist+9
         LD BC,10
         LDDR                    ; Eintraege 0..4 -> 1..5
         LD A,(by)
-        ADD A,2
+        ADD A,3
         RRCA
         RRCA
         RRCA
         AND 0x1F
         LD (hist),A             ; Zeile
         LD A,(bx)
-        ADD A,2
+        ADD A,3
         RRCA
         RRCA
         RRCA
@@ -794,8 +794,7 @@ RN_B:   LD A,(bx)
         LD C,A
         LD A,(by)
         LD (IX+R_BY),A
-        LD B,4
-        CALL DRAWSPR
+        CALL DRAWBALL
         LD A,(bx)
         LD C,A
         LD A,(by)
@@ -813,8 +812,7 @@ ERASEREC:
         JR Z,ER_T
         LD C,(IX+R_BX)
         LD A,(IX+R_BY)
-        LD B,4
-        CALL DRAWSPR
+        CALL DRAWBALL
         LD C,(IX+R_BX)
         LD B,(IX+R_BY)
         LD E,7
@@ -930,6 +928,47 @@ DS1:    LD A,(HL)
         DJNZ DS1
         RET
 
+
+; Runder Ball 6x6, vorverschoben (8 Verschiebungen in BALLSPR), per XOR: A = y, C = x
+DRAWBALL:
+        LD (tmp),A
+        LD A,C
+        AND 7
+        LD L,A
+        LD H,0
+        ADD HL,HL
+        ADD HL,HL               ; x4
+        LD E,L
+        LD D,H
+        ADD HL,HL               ; x8
+        ADD HL,DE               ; x12 Bytes je Verschiebung
+        LD DE,BALLSPR
+        ADD HL,DE
+        PUSH HL
+        LD A,C
+        RRCA
+        RRCA
+        RRCA
+        AND 0x1F
+        LD C,A                  ; C = Spalte
+        LD A,(tmp)
+        CALL ROWADDR
+        POP DE                  ; DE = Muster
+        LD B,6
+DB1:    LD A,(DE)
+        INC DE
+        XOR (HL)
+        LD (HL),A
+        INC HL
+        LD A,(DE)
+        INC DE
+        XOR (HL)
+        LD (HL),A
+        DEC HL
+        CALL DOWNHL
+        DJNZ DB1
+        RET
+
 ; Spielfeld: obere/untere Linie und gestrichelte Mittellinie
 DRAWCOURT:
         LD C,0
@@ -965,7 +1004,7 @@ FR1:    LD (HL),A
 ; ============================================================
 ;  Aufschlag: Ball in die Mitte, kurze Pause
 ; ============================================================
-SERVE:  LD A,126
+SERVE:  LD A,125
         LD (bx),A
         LD A,100
         LD (by),A
@@ -1130,7 +1169,7 @@ PCL:    LD A,(DE)
 ; ============================================================
 ;  Ballfarbe: Attribute der vom Ball beruehrten Zellen setzen
 ; ============================================================
-; B = y, C = x (Ball 4x4), E = Attributwert fuer alle beruehrten Zellen
+; B = y, C = x (Ball 6x6), E = Attributwert fuer alle beruehrten Zellen
 BALLATTR:
         LD A,B
         RRCA
@@ -1139,14 +1178,14 @@ BALLATTR:
         AND 0x1F
         LD (tmp),A              ; Zeile oben
         LD A,B
-        ADD A,3
+        ADD A,5
         RRCA
         RRCA
         RRCA
         AND 0x1F
         LD (tmp2),A             ; Zeile unten
         LD A,C
-        ADD A,3
+        ADD A,5
         RRCA
         RRCA
         RRCA
@@ -1532,11 +1571,11 @@ FILL2:  LD (HL),A
 SPLASH: LD HL,0x4000
         CALL CLSBUF
         LD HL,LETTERS
-        LD DE,0x5844
+        LD DE,0x5842
         LD A,0x17
         LD (tmp),A
         LD C,5
-SPR:    LD B,23
+SPR:    LD B,29
         PUSH DE
 SPC:    LD A,(HL)
         INC HL
@@ -1888,13 +1927,23 @@ TRCOL:  DEFB 0x47,0x17,0x17,0x0F,0x0F,0x0F
 EXP4:   DEFB 0x00,0x03,0x0C,0x0F,0x30,0x33,0x3C,0x3F,0xC0,0xC3,0xCC,0xCF,0xF0,0xF3,0xFC,0xFF
 TAB1:   DEFB 0xF0,0x78,0x3C,0x1E,0x0F,0x07,0x03,0x01
 TAB2:   DEFB 0x00,0x00,0x00,0x00,0x00,0x80,0xC0,0xE0
+; Ball: 6 Zeilen, je 2 Bytes, fuer x mod 8 = 0..7
+BALLSPR:
+        DEFB 0x78,0x00,0xFC,0x00,0xFC,0x00,0xFC,0x00,0xFC,0x00,0x78,0x00
+        DEFB 0x3C,0x00,0x7E,0x00,0x7E,0x00,0x7E,0x00,0x7E,0x00,0x3C,0x00
+        DEFB 0x1E,0x00,0x3F,0x00,0x3F,0x00,0x3F,0x00,0x3F,0x00,0x1E,0x00
+        DEFB 0x0F,0x00,0x1F,0x80,0x1F,0x80,0x1F,0x80,0x1F,0x80,0x0F,0x00
+        DEFB 0x07,0x80,0x0F,0xC0,0x0F,0xC0,0x0F,0xC0,0x0F,0xC0,0x07,0x80
+        DEFB 0x03,0xC0,0x07,0xE0,0x07,0xE0,0x07,0xE0,0x07,0xE0,0x03,0xC0
+        DEFB 0x01,0xE0,0x03,0xF0,0x03,0xF0,0x03,0xF0,0x03,0xF0,0x01,0xE0
+        DEFB 0x00,0xF0,0x01,0xF8,0x01,0xF8,0x01,0xF8,0x01,0xF8,0x00,0xF0
 
 LETTERS:
-        DEFB "1111...111..1...1..1111"
-        DEFB "1...1.1...1.11..1.1...."
-        DEFB "1111..1...1.1.1.1.1..11"
-        DEFB "1.....1...1.1..11.1...1"
-        DEFB "1......111..1...1..111."
+        DEFB "111.111.1.1.111...111.11..111"
+        DEFB "1.1.1.1.111.1.....1.1.1.1.1.1"
+        DEFB "111.1.1.111.1.1...111.11..1.1"
+        DEFB "1...1.1.1.1.1.1...1...1.1.1.1"
+        DEFB "1...111.1.1.111...1...1.1.111"
 
 MSG1:   DEFB 22,8,5,"Pong Pro fuer zwei Spieler"
         DEFB 22,9,5,"mit AY-Musik und Effekten"
