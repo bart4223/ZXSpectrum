@@ -1,11 +1,16 @@
 ; ============================================================
-; XBlast fuer den ZX Spectrum - Stufe 0: Geruest und Spielfeld
+; XBlast fuer den ZX Spectrum - Stufe 1: Zwei Spieler laufen
 ; Assembler: pasmo   (pasmo --tapbas xblast.asm xblast.tap)
 ; ============================================================
 ; Spielfeld 15 x 11 Kacheln a 16x16 Pixel (2x2 Zeichenzellen)
 ; Feste Waende am Rand und auf jeder zweiten Kachel,
 ; zufaellige Bloecke, die vier Ecken bleiben frei.
-; Eine beliebige Taste erzeugt ein neues Feld.
+;
+; Steuerung (Sinclair IF2):
+;   Spieler 1 (oben links)  : Joystick 1 = Tasten 6 7 8 9 0
+;   Spieler 2 (unten rechts): Joystick 2 = Tasten 1 2 3 4 5
+;   LEERTASTE               : neue Runde (neues Feld)
+; Bewegung in Kachelschritten, Waende und Bloecke blockieren.
 ; ============================================================
 
         org 32768
@@ -24,12 +29,40 @@ BLOCK_CHANCE equ 170            ; Blockwahrscheinlichkeit (von 256)
 
 ATTR_TITLE  equ 0x46            ; hell gelb auf schwarz
 ATTR_TEXT   equ 0x07            ; weiss auf schwarz
+ATTR_P1     equ 0x47            ; Spieler 1: hell weiss auf schwarz
+ATTR_P2     equ 0x43            ; Spieler 2: hell magenta auf schwarz
+
+; Richtungen (Index in dir_dx / dir_dy und in spr_gfx)
+DIR_UP      equ 0
+DIR_RIGHT   equ 1
+DIR_DOWN    equ 2
+DIR_LEFT    equ 3
+
+; Joystick-Bits (Ergebnis von read_joy1 / read_joy2, aktiv = 1)
+J_FIRE      equ 0
+J_UP        equ 1
+J_DOWN      equ 2
+J_RIGHT     equ 3
+J_LEFT      equ 4
+
+; Spieler-Struktur (PS_SIZE Bytes je Spieler)
+PX          equ 0               ; Kachel x
+PY          equ 1               ; Kachel y
+PDIR        equ 2               ; Blickrichtung
+PALIVE      equ 3               ; 1 = lebt
+PDELAY      equ 4               ; Frames bis zum naechsten Schritt
+PATTR       equ 5               ; Farbattribut des Sprites
+PS_SIZE     equ 8
+
+MOVE_DELAY  equ 8               ; Frames pro Schritt (50 Hz / 8 = 6,25 Schritte/s)
 
 ; ---- Variablen (freier RAM, nicht im TAP) -----------------
 VARS        equ 0xA000
 seed        equ VARS            ; 2 Bytes
 cur_attr    equ VARS + 2        ; 1 Byte: Attribut fuer draw_cell
 field       equ VARS + 16       ; FW*FH Bytes: Kacheltypen
+pl1         equ VARS + 0x100    ; Spieler 1
+pl2         equ pl1 + PS_SIZE   ; Spieler 2
 
 ; ============================================================
 ; Programmstart
@@ -51,21 +84,162 @@ start:
         ld (cur_attr),a
         ld hl,txt_hint
         ld b,0
-        ld c,14
+        ld c,16
         call print_at
 
-new_field:
+new_round:
         call init_field
         call draw_field
+        call init_players
+        call draw_players
 
-wait_release:
-        call anykey
-        jr nz,wait_release
-wait_press:
-        call rnd                ; Zufallszahlen mitlaufen lassen
-        call anykey
-        jr z,wait_press
-        jr new_field
+; ---- Hauptschleife: ein Durchlauf pro Frame (50 Hz) -------
+game_loop:
+        halt
+        call rnd                ; Zufallsgenerator weiterdrehen
+        ld a,0x7F
+        in a,(0xFE)             ; Reihe B-N-M-Symbol-Leertaste
+        rra                     ; Carry = Leertaste (0 = gedrueckt)
+        jr nc,reset_round
+        ld ix,pl1
+        call read_joy1
+        call update_player
+        ld ix,pl2
+        call read_joy2
+        call update_player
+        jr game_loop
+
+reset_round:
+        ld a,0x7F               ; warten bis die Leertaste losgelassen ist
+        in a,(0xFE)
+        rra
+        jr nc,reset_round
+        jr new_round
+
+; ============================================================
+; Joystick lesen (Sinclair IF2)
+; out: A = Bits J_FIRE, J_UP, J_DOWN, J_RIGHT, J_LEFT (aktiv = 1)
+; ============================================================
+; Joystick 1 = Tasten 6 7 8 9 0 (Port 0xEFFE):
+;   Bit0 = 0 (Feuer), Bit1 = 9 (hoch), Bit2 = 8 (runter),
+;   Bit3 = 7 (rechts), Bit4 = 6 (links)  -> passt direkt
+read_joy1:
+        ld bc,0xEFFE
+        in a,(c)
+        cpl
+        and 0x1F
+        ret
+
+; Joystick 2 = Tasten 1 2 3 4 5 (Port 0xF7FE):
+;   Bit0 = 1 (links), Bit1 = 2 (rechts), Bit2 = 3 (runter),
+;   Bit3 = 4 (hoch), Bit4 = 5 (Feuer)    -> Bits umdrehen
+read_joy2:
+        ld bc,0xF7FE
+        in a,(c)
+        cpl
+        and 0x1F
+        ld e,a
+        ld d,0
+        ld b,5
+rj2_rev:
+        rr e
+        rl d
+        djnz rj2_rev
+        ld a,d
+        ret
+
+; ============================================================
+; Spieler
+; ============================================================
+init_players:
+        ld hl,pl_init
+        ld de,pl1
+        ld bc,PS_SIZE*2
+        ldir
+        ret
+
+; zeichnet beide Spieler
+draw_players:
+        ld ix,pl1
+        call draw_player
+        ld ix,pl2
+        jp draw_player
+
+; in: IX = Spieler
+draw_player:
+        ld a,(ix+PALIVE)
+        or a
+        ret z
+        ld a,(ix+PATTR)
+        ld (cur_attr),a
+        ld a,(ix+PY)
+        add a,a
+        add a,FIELD_ROW
+        ld b,a                  ; Zeichenzeile
+        ld a,(ix+PX)
+        add a,a
+        add a,FIELD_COL
+        ld c,a                  ; Zeichenspalte
+        ld a,(ix+PDIR)
+        jp draw_sprite
+
+; in: IX = Spieler, A = Joystick-Bits
+update_player:
+        ld e,a                  ; Joystick-Bits merken
+        ld a,(ix+PALIVE)
+        or a
+        ret z
+        ld a,(ix+PDELAY)
+        or a
+        jr z,up_ready
+        dec (ix+PDELAY)
+        ret
+up_ready:
+        ld a,e
+        ; Richtung bestimmen: hoch vor runter vor links vor rechts
+        ld d,DIR_UP
+        bit J_UP,a
+        jr nz,up_dir
+        ld d,DIR_DOWN
+        bit J_DOWN,a
+        jr nz,up_dir
+        ld d,DIR_LEFT
+        bit J_LEFT,a
+        jr nz,up_dir
+        ld d,DIR_RIGHT
+        bit J_RIGHT,a
+        ret z                   ; nichts gedrueckt
+up_dir:
+        ld (ix+PDIR),d          ; Blickrichtung uebernehmen
+        ; Zielkachel berechnen
+        ld e,d
+        ld d,0
+        ld hl,dir_dx
+        add hl,de
+        ld a,(ix+PX)
+        add a,(hl)
+        ld b,a                  ; neues x
+        ld hl,dir_dy
+        add hl,de
+        ld a,(ix+PY)
+        add a,(hl)
+        ld c,a                  ; neues y
+        call field_addr
+        ld a,(hl)
+        or a                    ; T_EMPTY?
+        jr nz,up_blocked
+        ; Schritt: alte Kachel neu zeichnen, Position setzen
+        push bc
+        ld b,(ix+PX)
+        ld c,(ix+PY)
+        call redraw_tile
+        pop bc
+        ld (ix+PX),b
+        ld (ix+PY),c
+        ld (ix+PDELAY),MOVE_DELAY
+        jp draw_players
+up_blocked:
+        jp draw_player          ; nur die Blickrichtung hat sich evtl. geaendert
 
 ; ============================================================
 ; anykey: Z gesetzt = keine Taste gedrueckt
@@ -203,6 +377,28 @@ tf_wall:
         ld a,T_WALL
         ret
 
+; in:  B = x, C = y (Kachelkoordinaten)
+; out: HL = Adresse der Kachel im Feld (field + y*15 + x)
+; veraendert: A, HL (BC und DE bleiben erhalten)
+field_addr:
+        push de
+        ld l,c
+        ld h,0
+        add hl,hl
+        add hl,hl
+        add hl,hl
+        add hl,hl               ; y*16
+        ld e,c
+        ld d,0
+        or a
+        sbc hl,de               ; y*15
+        ld e,b
+        add hl,de               ; + x
+        ld de,field
+        add hl,de
+        pop de
+        ret
+
 ; ============================================================
 ; Spielfeld zeichnen
 ; ============================================================
@@ -233,13 +429,35 @@ df_col:
         jr nz,df_row
         ret
 
+; in: B = x, C = y (Kachelkoordinaten)
+; zeichnet die Kachel aus dem Spielfeld neu (ohne Spieler)
+; erhaelt BC, DE; veraendert A, HL
+redraw_tile:
+        push bc
+        push de
+        call field_addr
+        ld e,(hl)               ; Kacheltyp
+        ld a,c
+        add a,a
+        add a,FIELD_ROW
+        ld d,a                  ; Zeichenzeile
+        ld a,b
+        add a,a
+        add a,FIELD_COL
+        ld c,a                  ; Zeichenspalte
+        ld b,d
+        ld a,e
+        call draw_tile
+        pop de
+        pop bc
+        ret
+
 ; ============================================================
 ; draw_tile: eine 16x16-Kachel zeichnen
 ; in: A = Kacheltyp, B = Zeichenzeile, C = Zeichenspalte
 ; erhaelt BC, DE, HL
 ; ============================================================
 draw_tile:
-        push bc
         push de
         push hl
         ld e,a
@@ -257,6 +475,39 @@ draw_tile:
         add hl,hl               ; *32
         ld de,tile_gfx
         add hl,de               ; HL = Grafik der Kachel
+        call draw_gfx
+        pop hl
+        pop de
+        ret
+
+; ============================================================
+; draw_sprite: Spieler-Sprite zeichnen (Attribut in cur_attr)
+; in: A = Richtung, B = Zeichenzeile, C = Zeichenspalte
+; erhaelt BC, DE, HL
+; ============================================================
+draw_sprite:
+        push de
+        push hl
+        ld l,a
+        ld h,0
+        add hl,hl               ; *2
+        add hl,hl               ; *4
+        add hl,hl               ; *8
+        add hl,hl               ; *16
+        add hl,hl               ; *32
+        ld de,spr_gfx
+        add hl,de
+        call draw_gfx
+        pop hl
+        pop de
+        ret
+
+; ============================================================
+; draw_gfx: 16x16-Grafik aus 4 Zellen (OL, OR, UL, UR) zeichnen
+; in: HL = 32 Bytes Grafik, B = Zeile, C = Spalte, (cur_attr)
+; erhaelt BC; HL zeigt danach hinter die Grafik
+; ============================================================
+draw_gfx:
         call draw_cell          ; oben links
         inc c
         call draw_cell          ; oben rechts
@@ -265,9 +516,8 @@ draw_tile:
         call draw_cell          ; unten links
         inc c
         call draw_cell          ; unten rechts
-        pop hl
-        pop de
-        pop bc
+        dec c
+        dec b
         ret
 
 ; ============================================================
@@ -343,7 +593,18 @@ print_at:
 txt_title:
         db "XBLAST",0
 txt_hint:
-        db "TASTE: NEUES FELD",0
+        db "LEERTASTE: NEU",0
+
+; Startwerte der Spieler: x, y, Richtung, lebt, Verzoegerung, Attribut
+pl_init:
+        db 1,1,DIR_DOWN,1,0,ATTR_P1,0,0
+        db FW-2,FH-2,DIR_UP,1,0,ATTR_P2,0,0
+
+; Schrittweite je Richtung (hoch, rechts, runter, links)
+dir_dx:
+        db 0,1,0,255
+dir_dy:
+        db 255,0,1,0
 
 ; Attribute je Kacheltyp
 tile_attr:
@@ -369,5 +630,28 @@ tile_gfx:
         db 0xFE,0xFE,0xFE,0x00,0xEF,0xEF,0xEF,0x00
         db 0xFE,0xFE,0xFE,0x00,0xEF,0xEF,0xEF,0x00
         db 0xFE,0xFE,0xFE,0x00,0xEF,0xEF,0xEF,0x00
+
+; Spieler-Sprites (Blick hoch, rechts, runter, links), je 32 Bytes
+spr_gfx:
+        ; Blick hoch
+        db 0x00,0x01,0x03,0x07,0x0F,0x1F,0x1F,0x1F
+        db 0x00,0x80,0xC0,0xE0,0xF0,0xF8,0xF8,0xF8
+        db 0x1F,0x1F,0x1F,0x0F,0x0D,0x1D,0x19,0x39
+        db 0xF8,0xF8,0xF8,0xF0,0xB0,0xB8,0x98,0x9C
+        ; Blick rechts
+        db 0x00,0x01,0x03,0x07,0x0F,0x1F,0x18,0x19
+        db 0x00,0x80,0xC0,0xE0,0xF0,0xF8,0x18,0x38
+        db 0x19,0x18,0x1F,0x0F,0x0D,0x1D,0x19,0x39
+        db 0x38,0x18,0xF8,0xF0,0xB0,0xB8,0x98,0x9C
+        ; Blick runter
+        db 0x00,0x01,0x03,0x07,0x0F,0x1F,0x18,0x1A
+        db 0x00,0x80,0xC0,0xE0,0xF0,0xF8,0x18,0x58
+        db 0x1A,0x18,0x1F,0x0F,0x0D,0x1D,0x19,0x39
+        db 0x58,0x18,0xF8,0xF0,0xB0,0xB8,0x98,0x9C
+        ; Blick links
+        db 0x00,0x01,0x03,0x07,0x0F,0x1F,0x18,0x1C
+        db 0x00,0x80,0xC0,0xE0,0xF0,0xF8,0x18,0x98
+        db 0x1C,0x18,0x1F,0x0F,0x0D,0x1D,0x19,0x39
+        db 0x98,0x18,0xF8,0xF0,0xB0,0xB8,0x98,0x9C
 
         end start

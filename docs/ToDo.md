@@ -50,7 +50,7 @@ Spieler und Gegner liegen nicht im Feld, sondern in eigenen Strukturen (Position
 - Kachel-Grafiken als Tabelle, Zeichenroutine `draw_tile`
 - **Test:** Feld erscheint, Ecken sind frei
 
--State: InProgress
+-State: Done
 
 ## Stufe 1 – Zwei Spieler laufen
 
@@ -60,7 +60,7 @@ Spieler und Gegner liegen nicht im Feld, sondern in eigenen Strukturen (Position
 - Sprites der Spieler (16x16, Maske oder einfach per XOR)
 - **Test:** Beide Figuren laufen unabhängig durchs Feld
 
--State: Open
+-State: InProgress
 
 ## Stufe 2 – Bomben legen und explodieren
 
