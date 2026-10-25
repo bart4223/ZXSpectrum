@@ -89,7 +89,7 @@ Spieler und Gegner liegen nicht im Feld, sondern in eigenen Strukturen (Position
 - Power-Ups können durch Flammen zerstört werden
 - **Test:** jedes Power-Up wirkt sichtbar
 
--State: InProgress
+-State: Done
 
 ## Stufe 5 – Runden und Spielablauf
 
@@ -101,7 +101,7 @@ Spieler und Gegner liegen nicht im Feld, sondern in eigenen Strukturen (Position
 - **Test:** komplette Partie von Titel bis Sieger
 
 -1. Meilenstein
--State: Open
+-State: InProgress
 
 ## Stufe 6 – Gegner für den Einzelspieler
 

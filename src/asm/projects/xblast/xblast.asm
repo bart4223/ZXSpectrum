@@ -1,5 +1,5 @@
 ; ============================================================
-; XBlast fuer den ZX Spectrum - Stufe 4: Power-Ups
+; XBlast fuer den ZX Spectrum - Stufe 5: Runden und Spielablauf
 ; Assembler: pasmo   (pasmo --tapbas xblast.asm xblast.tap)
 ; ============================================================
 ; Spielfeld 15 x 11 Kacheln a 16x16 Pixel (2x2 Zeichenzellen)
@@ -9,8 +9,13 @@
 ; Steuerung (Sinclair IF2):
 ;   Spieler 1 (oben links)  : Joystick 1 = Tasten 6 7 8 9 0
 ;   Spieler 2 (unten rechts): Joystick 2 = Tasten 1 2 3 4 5
-;   LEERTASTE               : neue Runde (neues Feld)
 ;   Feuer                   : Bombe legen (1 Bombe pro Spieler)
+;   LEERTASTE               : Spiel abbrechen, zurueck zum Titel
+;
+; Ablauf: Titelbild (Siege pro Spiel waehlen: Stick links/rechts, Feuer
+; startet) -> Runden bis ein Spieler genug Siege hat. Eine Runde gewinnt,
+; wer als Letzter lebt (beide tot = Unentschieden). Laeuft die Rundenzeit
+; ab, schliesst sich das Feld von aussen mit Waenden (Endspiel).
 ; Bewegung in Kachelschritten, Waende, Bloecke und Bomben blockieren.
 ; Eine Bombe explodiert nach 3 Sekunden: kreuzfoermige Flamme,
 ; Reichweite 2. Feste Waende halten die Flamme auf. Ein Block brennt
@@ -50,6 +55,16 @@ FLAME_VAL   equ 0x80 + FLAME_TICKS
 BOMB_FUSE   equ 150             ; Zuenddauer in Frames (3 Sekunden)
 BOMB_URGENT equ 50              ; unter dieser Restzeit pulsiert die Bombe schneller
 T_BOMB2     equ 5               ; Grafikindex: Bombe, zweiter Animationsframe
+; Spielablauf
+ROUND_TIME  equ 120             ; Rundenzeit in Sekunden
+DECIDE_FRAMES equ 30            ; Wartezeit, bis eine Runde entschieden wird
+OVER_FRAMES equ 100             ; Mindestanzeige des Ergebnisses
+SD_RATE     equ 6               ; Frames je Endspiel-Wand
+DEFAULT_WINS equ 2              ; Siege bis zum Spielgewinn (Voreinstellung)
+MAX_WINS    equ 5
+RS_RUN      equ 0               ; Rundenzustaende
+RS_DECIDE   equ 1
+RS_OVER     equ 2
 MAX_BOMBS   equ 8               ; Bombenplaetze insgesamt
 BS_SIZE     equ 8               ; Bytes je Bombenplatz
 
@@ -108,6 +123,30 @@ bomb_frame  equ VARS + 10       ; Bombenanimation: 0 oder 2 (Grafik 3 oder 5)
 field       equ VARS + 16       ; FW*FH Bytes: Kacheltypen
 hidden      equ VARS + 0x200    ; FW*FH Bytes: in Bloecken versteckte Power-Ups
 HIDDEN_OFF  equ hidden - field
+; Spielablauf-Variablen
+numbuf      equ VARS + 0x2B0    ; 4 Bytes: Textpuffer fuer Zahlen
+rstate      equ VARS + 0x2B4    ; Rundenzustand (RS_...)
+rcnt        equ VARS + 0x2B5    ; Zaehler fuer Entscheidung / Anzeige
+armed       equ VARS + 0x2B6    ; 1 = Feuer wurde losgelassen
+match_over  equ VARS + 0x2B7    ; 1 = jemand hat das Spiel gewonnen
+score1      equ VARS + 0x2B8
+score2      equ VARS + 0x2B9
+wins_needed equ VARS + 0x2BA
+time_left   equ VARS + 0x2BB    ; Restzeit in Sekunden
+tcnt        equ VARS + 0x2BC    ; Frames innerhalb der Sekunde
+sd_active   equ VARS + 0x2BD    ; Endspiel laeuft
+sd_cnt      equ VARS + 0x2BE
+sd_x        equ VARS + 0x2BF    ; naechste Endspiel-Wand
+sd_y        equ VARS + 0x2C0
+sd_dir      equ VARS + 0x2C1    ; 0 rechts, 1 runter, 2 links, 3 hoch
+sd_l        equ VARS + 0x2C2    ; verbleibende Grenzen der Spirale
+sd_r        equ VARS + 0x2C3
+sd_t        equ VARS + 0x2C4
+sd_b        equ VARS + 0x2C5
+sd_done     equ VARS + 0x2C6    ; Spirale ist fertig
+menu_prev   equ VARS + 0x2C7    ; Menue: Joystickstand im letzten Frame
+menu_cur    equ VARS + 0x2C8
+bigbuf      equ VARS + 0x300    ; 32 Bytes: grosses Zeichen (2x2 Zellen)
 bombs       equ VARS + 0xC0     ; MAX_BOMBS * BS_SIZE Bytes
 pl1         equ VARS + 0x100    ; Spieler 1
 pl2         equ pl1 + PS_SIZE   ; Spieler 2
@@ -118,31 +157,26 @@ pl2         equ pl1 + PS_SIZE   ; Spieler 2
 start:
         xor a
         out (0xFE),a            ; Rand schwarz
-        call cls
         call seed_init
+        ld a,DEFAULT_WINS
+        ld (wins_needed),a
 
-        ; Kopfzeile
-        ld a,ATTR_TITLE
-        ld (cur_attr),a
-        ld hl,txt_title
-        ld b,0                  ; Zeile
-        ld c,1                  ; Spalte
-        call print_at
-        ld a,ATTR_TEXT
-        ld (cur_attr),a
-        ld hl,txt_hint
-        ld b,0
-        ld c,16
-        call print_at
+title:
+        call title_screen       ; kehrt zurueck, wenn FEUER gedrueckt wurde
+        xor a
+        ld (score1),a
+        ld (score2),a
 
-new_round:
+next_round:
+        call init_round
+        call cls
+        call draw_header
         call init_field
         call draw_field
         call init_players
         call init_bombs
         xor a
         ld (dirty),a
-        call clear_msgs
         call draw_players
 
 ; ---- Hauptschleife: ein Durchlauf pro Frame (50 Hz) -------
@@ -152,31 +186,34 @@ game_loop:
         ld a,0x7F
         in a,(0xFE)             ; Reihe B-N-M-Symbol-Leertaste
         rra                     ; Carry = Leertaste (0 = gedrueckt)
-        jr nc,reset_round
+        jp nc,title             ; Leertaste: abbrechen
+        ld a,(rstate)
+        cp RS_OVER
+        jr nc,gl_world          ; Runde vorbei: Spieler eingefroren
         ld ix,pl1
         call read_joy1
         call update_player
         ld ix,pl2
         call read_joy2
         call update_player
+gl_world:
         call update_bombs
         call check_hits
         call animate_bombs
         call update_flames
         ld a,(dirty)
         or a
-        jr z,game_loop
+        jr z,gl_logic
         xor a
         ld (dirty),a
         call draw_players       ; Spieler nach Flammen-Zeichnen wieder oben
-        jr game_loop
-
-reset_round:
-        ld a,0x7F               ; warten bis die Leertaste losgelassen ist
-        in a,(0xFE)
-        rra
-        jr nc,reset_round
-        jr new_round
+gl_logic:
+        call round_logic        ; Carry = Runde ist endgueltig vorbei
+        jr nc,game_loop
+        ld a,(match_over)
+        or a
+        jp nz,title
+        jp next_round
 
 ; ============================================================
 ; Joystick lesen (Sinclair IF2)
@@ -628,8 +665,12 @@ ex_stop:
         ret
 
 ; in: B = x, C = y; zuendet die Bombe auf dieser Kachel (Rest = 1 Frame)
-; erhaelt BC; veraendert A, D, HL
+; erhaelt BC; veraendert A, D, E, HL
 trigger_bomb:
+        ld e,1
+; in: B = x, C = y, E = neue Restzeit der Bombe auf dieser Kachel
+; (0 = Bombe entfernen); erhaelt BC; veraendert A, D, HL
+set_bomb_timer:
         ld hl,bombs
         ld d,MAX_BOMBS
 tb_loop:
@@ -646,7 +687,7 @@ tb_loop:
         cp c
         jr nz,tb_no
         pop hl
-        ld (hl),1               ; explodiert beim naechsten Durchlauf
+        ld (hl),e               ; 1 = explodiert beim naechsten Durchlauf
         ret
 tb_no:
         pop hl
@@ -669,6 +710,9 @@ set_flame:
 
 ; Steht ein lebender Spieler in einer Flamme, stirbt er
 check_hits:
+        ld a,(rstate)
+        cp RS_OVER
+        ret nc                  ; nach dem Rundenende ist niemand mehr verwundbar
         ld ix,pl1
         call hit_check
         ld ix,pl2
@@ -683,19 +727,7 @@ hit_check:
         cp 0x80
         ret c                   ; keine Flamme auf der Kachel
         ld (ix+PALIVE),0        ; getroffen
-        call redraw_tile        ; Figur wegzeichnen
-        ld a,ATTR_DEAD
-        ld (cur_attr),a
-        ld b,1                  ; Meldung in Zeile 1
-        ld c,1
-        ld hl,txt_dead1
-        ld a,(ix+POWNER)
-        or a
-        jr z,hc_print
-        ld c,17
-        ld hl,txt_dead2
-hc_print:
-        jp print_at
+        jp redraw_tile          ; Figur wegzeichnen
 
 ; Meldungszeile (Zeile 1) leeren
 clear_msgs:
@@ -746,6 +778,617 @@ uf_next:
         ld a,d
         cp FH
         jr nz,uf_row
+        ret
+
+; ============================================================
+; Spielablauf: Runden, Zeit, Endspiel
+; ============================================================
+init_round:
+        xor a
+        ld (rstate),a
+        ld (armed),a
+        ld (match_over),a
+        ld (sd_active),a
+        ld (sd_done),a
+        ld (tcnt),a
+        ld (sd_dir),a
+        ld a,ROUND_TIME
+        ld (time_left),a
+        ld a,1
+        ld (sd_x),a
+        ld (sd_y),a
+        ld (sd_l),a
+        ld (sd_t),a
+        ld a,FW-2
+        ld (sd_r),a
+        ld a,FH-2
+        ld (sd_b),a
+        ld a,SD_RATE
+        ld (sd_cnt),a
+        ret
+
+; out: Carry gesetzt = die Runde ist endgueltig vorbei (naechste Runde / Titel)
+round_logic:
+        ld a,(rstate)
+        cp RS_DECIDE
+        jr z,rl_decide
+        jr nc,rl_over
+        ; --- Runde laeuft
+        call update_time
+        call update_sudden
+        call count_alive
+        cp 2
+        jr nc,rl_nc             ; beide leben noch
+        ld a,RS_DECIDE          ; einer ist tot: kurz warten, ob der zweite folgt
+        ld (rstate),a
+        ld a,DECIDE_FRAMES
+        ld (rcnt),a
+rl_nc:
+        and a                   ; Carry = 0
+        ret
+
+rl_decide:
+        ld hl,rcnt
+        dec (hl)
+        jr nz,rl_nc
+        call count_alive
+        or a
+        jr z,rl_draw
+        ld a,(pl1+PALIVE)
+        or a
+        jr z,rl_p2win
+        ld hl,score1            ; Spieler 1 hat gewonnen
+        ld de,txt_p1pt
+        ld bc,txt_p1win
+        jr rl_win
+rl_p2win:
+        ld hl,score2
+        ld de,txt_p2pt
+        ld bc,txt_p2win
+rl_win:
+        inc (hl)
+        ld a,(hl)
+        ld hl,wins_needed
+        cp (hl)
+        jr c,rl_round           ; noch nicht genug Siege
+        ld a,1
+        ld (match_over),a
+        ld h,b                  ; Text: "SPIELER n SIEGT!"
+        ld l,c
+        jr rl_show
+rl_round:
+        ex de,hl                ; Text: "SPIELER n PUNKT"
+        jr rl_show
+rl_draw:
+        ld hl,txt_draw
+rl_show:
+        push hl
+        call clear_msgs
+        pop hl
+        ld a,ATTR_P1
+        ld (cur_attr),a
+        ld b,1
+        ld c,1
+        call print_at
+        call show_scores
+        ld a,RS_OVER
+        ld (rstate),a
+        ld a,OVER_FRAMES
+        ld (rcnt),a
+        and a
+        ret
+
+; Runde vorbei: Ergebnis stehen lassen, dann auf FEUER warten
+rl_over:
+        ld a,(rcnt)
+        or a
+        jr z,rl_wait
+        dec a
+        ld (rcnt),a
+        jr nz,rl_nc
+        ld hl,txt_prompt        ; Mindestzeit um: Hinweis zeigen
+        ld bc,1*256+19
+        ld a,ATTR_TITLE
+        call put_text
+        and a
+        ret
+rl_wait:
+        call any_fire
+        jr nz,rl_pressed
+        ld a,1
+        ld (armed),a            ; Feuer losgelassen: jetzt wird es erkannt
+        and a
+        ret
+rl_pressed:
+        ld a,(armed)
+        or a
+        ret z                   ; (Carry = 0) Feuer wird noch von vorhin gehalten
+        scf
+        ret
+
+; out: A = Anzahl lebender Spieler
+count_alive:
+        xor a
+        ld hl,pl1+PALIVE
+        add a,(hl)
+        ld hl,pl2+PALIVE
+        add a,(hl)
+        ret
+
+; out: NZ = ein Feuerknopf ist gedrueckt
+any_fire:
+        call read_joy1
+        and JM_FIRE
+        ret nz
+        call read_joy2
+        and JM_FIRE
+        ret
+
+; Restzeit herunterzaehlen und anzeigen
+update_time:
+        ld a,(sd_active)
+        or a
+        ret nz
+        ld hl,tcnt
+        inc (hl)
+        ld a,(hl)
+        cp 50
+        ret c
+        ld (hl),0
+        ld hl,time_left
+        dec (hl)
+        call show_time
+        ld a,(time_left)
+        or a
+        ret nz
+        ld a,1                  ; Zeit abgelaufen: Endspiel beginnt
+        ld (sd_active),a
+        ld hl,txt_sd
+        ld bc,1*256+1
+        ld a,ATTR_DEAD
+        jp put_text
+
+show_time:
+        ld a,ATTR_TEXT
+        ld (cur_attr),a
+        ld a,(time_left)
+        ld b,0
+        ld c,14
+        jp print_num3
+
+show_scores:
+        ld a,ATTR_P1
+        ld (cur_attr),a
+        ld a,(score1)
+        ld b,0
+        ld c,22
+        call print_digit
+        ld a,ATTR_P2
+        ld (cur_attr),a
+        ld a,(score2)
+        ld b,0
+        ld c,28
+        jp print_digit
+
+; Endspiel: im Takt SD_RATE eine Wand mehr, spiralfoermig von aussen
+update_sudden:
+        ld a,(sd_active)
+        or a
+        ret z
+        ld a,(sd_done)
+        or a
+        ret nz
+        ld hl,sd_cnt
+        dec (hl)
+        ret nz
+        ld (hl),SD_RATE
+us_next:
+        ld a,(sd_done)
+        or a
+        ret nz
+        ld a,(sd_x)
+        ld b,a
+        ld a,(sd_y)
+        ld c,a
+        call field_addr
+        ld a,(hl)
+        cp T_WALL
+        jr nz,us_wall
+        call sd_advance         ; ist schon Wand (Saeule): ohne Pause weiter
+        jr us_next
+us_wall:
+        ld (hl),T_WALL
+        push hl
+        ld de,HIDDEN_OFF
+        add hl,de
+        ld (hl),0               ; verstecktes Power-Up geht verloren
+        pop hl
+        ld e,0
+        call set_bomb_timer     ; eine Bombe auf der Kachel wird entfernt
+        call kill_at            ; wer dort steht, wird zerquetscht
+        call redraw_tile
+        call sd_advance
+        ld a,1
+        ld (dirty),a
+        ret
+
+; in: B = x, C = y; Spieler auf dieser Kachel sterben
+kill_at:
+        ld ix,pl1
+        call ka_one
+        ld ix,pl2
+ka_one:
+        ld a,(ix+PALIVE)
+        or a
+        ret z
+        ld a,(ix+PX)
+        cp b
+        ret nz
+        ld a,(ix+PY)
+        cp c
+        ret nz
+        ld (ix+PALIVE),0
+        ret
+
+; naechste Kachel der Spirale (sd_x, sd_y) bestimmen
+sd_advance:
+        ld a,(sd_dir)
+        or a
+        jr z,sa_right
+        cp 1
+        jr z,sa_down
+        cp 2
+        jr z,sa_left
+        ; hoch
+        ld a,(sd_y)
+        ld hl,sd_t
+        cp (hl)
+        jr z,sa_up_turn
+        dec a
+        ld (sd_y),a
+        ret
+sa_up_turn:
+        ld hl,sd_l
+        inc (hl)
+        xor a                   ; Richtung rechts
+        ld (sd_dir),a
+        ld a,(sd_x)
+        inc a
+        ld (sd_x),a
+        jr sa_check
+sa_right:
+        ld a,(sd_x)
+        ld hl,sd_r
+        cp (hl)
+        jr z,sa_right_turn
+        inc a
+        ld (sd_x),a
+        ret
+sa_right_turn:
+        ld hl,sd_t
+        inc (hl)
+        ld a,1                  ; Richtung runter
+        ld (sd_dir),a
+        ld a,(sd_y)
+        inc a
+        ld (sd_y),a
+        jr sa_check
+sa_down:
+        ld a,(sd_y)
+        ld hl,sd_b
+        cp (hl)
+        jr z,sa_down_turn
+        inc a
+        ld (sd_y),a
+        ret
+sa_down_turn:
+        ld hl,sd_r
+        dec (hl)
+        ld a,2                  ; Richtung links
+        ld (sd_dir),a
+        ld a,(sd_x)
+        dec a
+        ld (sd_x),a
+        jr sa_check
+sa_left:
+        ld a,(sd_x)
+        ld hl,sd_l
+        cp (hl)
+        jr z,sa_left_turn
+        dec a
+        ld (sd_x),a
+        ret
+sa_left_turn:
+        ld hl,sd_b
+        dec (hl)
+        ld a,3                  ; Richtung hoch
+        ld (sd_dir),a
+        ld a,(sd_y)
+        dec a
+        ld (sd_y),a
+sa_check:                       ; fertig, wenn sich die Grenzen kreuzen
+        ld a,(sd_r)
+        ld hl,sd_l
+        cp (hl)
+        jr c,sa_finish
+        ld a,(sd_b)
+        ld hl,sd_t
+        cp (hl)
+        ret nc
+sa_finish:
+        ld a,1
+        ld (sd_done),a
+        ret
+
+; ============================================================
+; Titelbild und Menue
+; ============================================================
+; kehrt zurueck, sobald FEUER gedrueckt wird
+title_screen:
+        call cls
+        call draw_title_static
+        call show_wins
+ts_rel:
+        call any_fire           ; erst warten, bis kein Feuer mehr gehalten wird
+        jr nz,ts_rel
+        xor a
+        ld (menu_prev),a
+ts_loop:
+        halt
+        call rnd
+        call read_joy1
+        ld (menu_cur),a
+        call read_joy2
+        ld hl,menu_cur
+        or (hl)                 ; Joystick 1 oder 2
+        ld hl,menu_prev
+        ld b,(hl)
+        ld (hl),a
+        ld c,a
+        ld a,b
+        cpl
+        and c                   ; A = neu gedrueckte Richtungen/Feuer
+        ld e,a
+        bit J_FIRE,e
+        ret nz                  ; Start
+        ld a,(wins_needed)
+        bit J_LEFT,e
+        jr z,ts_right
+        cp 1
+        jr z,ts_loop
+        dec a
+        jr ts_set
+ts_right:
+        bit J_RIGHT,e
+        jr z,ts_loop
+        cp MAX_WINS
+        jr nc,ts_loop
+        inc a
+ts_set:
+        ld (wins_needed),a
+        call show_wins
+        jr ts_loop
+
+show_wins:
+        ld a,ATTR_TITLE
+        ld (cur_attr),a
+        ld a,(wins_needed)
+        ld b,20
+        ld c,28
+        jp print_digit
+
+draw_title_static:
+        ; grosser Titel, jeder Buchstabe in anderer Farbe
+        ld hl,title_big
+        ld d,6
+        ld c,10                 ; Spalte
+tt_loop:
+        ld a,(hl)               ; Zeichen
+        inc hl
+        ld e,(hl)               ; Farbe
+        inc hl
+        push hl
+        push de
+        ld b,a
+        ld a,e
+        ld (cur_attr),a
+        ld a,b
+        ld b,2                  ; Zeile
+        call big_char
+        pop de
+        pop hl
+        inc c
+        inc c
+        dec d
+        jr nz,tt_loop
+        ; Bombe und Flamme neben dem Titel
+        ld a,T_BOMB
+        ld bc,2*256+6
+        call draw_tile
+        ld a,T_FLAME
+        ld bc,2*256+24
+        call draw_tile
+        ld hl,txt_t1
+        ld bc,6*256+2
+        ld a,ATTR_TEXT
+        call put_text
+        ; Legende der Power-Ups
+        ld a,T_PU_RANGE
+        ld bc,9*256+3
+        call draw_tile
+        ld hl,txt_t2
+        ld bc,9*256+6
+        ld a,ATTR_TEXT
+        call put_text
+        ld a,T_PU_BOMB
+        ld bc,11*256+3
+        call draw_tile
+        ld hl,txt_t3
+        ld bc,11*256+6
+        ld a,ATTR_TEXT
+        call put_text
+        ld a,T_PU_SPEED
+        ld bc,13*256+3
+        call draw_tile
+        ld hl,txt_t4
+        ld bc,13*256+6
+        ld a,ATTR_TEXT
+        call put_text
+        ; Steuerung
+        ld hl,txt_t5
+        ld bc,16*256+2
+        ld a,ATTR_P1
+        call put_text
+        ld hl,txt_t6
+        ld bc,17*256+2
+        ld a,ATTR_P2
+        call put_text
+        ld hl,txt_t7
+        ld bc,18*256+2
+        ld a,ATTR_TEXT
+        call put_text
+        ; Menue
+        ld hl,txt_t8
+        ld bc,20*256+3
+        ld a,ATTR_TEXT
+        call put_text
+        ld hl,txt_t9
+        ld bc,21*256+4
+        ld a,0x05               ; cyan
+        call put_text
+        ld hl,txt_t10
+        ld bc,23*256+9
+        ld a,0xC6               ; blinkend, hell gelb
+        jp put_text
+
+; Spielkopf: Titel, Zeit, Spielstand
+draw_header:
+        ld hl,txt_title
+        ld bc,0*256+1
+        ld a,ATTR_TITLE
+        call put_text
+        ld hl,txt_zeit
+        ld bc,0*256+9
+        ld a,ATTR_TEXT
+        call put_text
+        ld hl,txt_p1
+        ld bc,0*256+19
+        ld a,ATTR_P1
+        call put_text
+        ld hl,txt_p2
+        ld bc,0*256+25
+        ld a,ATTR_P2
+        call put_text
+        call show_time
+        jp show_scores
+
+; ============================================================
+; Text: Zahlen und grosse Zeichen
+; ============================================================
+; in: HL = Text, B = Zeile, C = Spalte, A = Attribut
+put_text:
+        ld (cur_attr),a
+        jp print_at
+
+; in: A = Ziffer 0..9, B = Zeile, C = Spalte, (cur_attr)
+print_digit:
+        add a,'0'
+        ld (numbuf),a
+        xor a
+        ld (numbuf+1),a
+        ld hl,numbuf
+        jp print_at
+
+; in: A = Zahl 0..255 (dreistellig), B = Zeile, C = Spalte, (cur_attr)
+print_num3:
+        ld hl,numbuf
+        ld d,'0'
+pn_h:
+        cp 100
+        jr c,pn_h_done
+        sub 100
+        inc d
+        jr pn_h
+pn_h_done:
+        ld (hl),d
+        inc hl
+        ld d,'0'
+pn_t:
+        cp 10
+        jr c,pn_t_done
+        sub 10
+        inc d
+        jr pn_t
+pn_t_done:
+        ld (hl),d
+        inc hl
+        add a,'0'
+        ld (hl),a
+        inc hl
+        ld (hl),0
+        ld hl,numbuf
+        jp print_at
+
+; in: A = Zeichencode, B = Zeile, C = Spalte, (cur_attr)
+; zeichnet das Zeichen doppelt gross (16x16 aus dem ROM-Zeichensatz)
+; erhaelt BC; veraendert A, DE, HL
+big_char:
+        push bc
+        ld l,a
+        ld h,0
+        add hl,hl
+        add hl,hl
+        add hl,hl
+        ld de,0x3C00
+        add hl,de               ; HL = Glyphe im ROM (8 Bytes)
+        ld de,bigbuf
+        ld c,8                  ; 8 Quellzeilen
+bg_row:
+        ld a,(hl)
+        inc hl
+        ld b,a                  ; B = Quellzeile
+        push hl
+        rrca
+        rrca
+        rrca
+        rrca
+        and 15
+        call nib_expand         ; A = linke Haelfte, 8 Bit breit
+        ld (de),a               ; oben links, Zeile 2i
+        inc de
+        ld (de),a               ; Zeile 2i+1
+        dec de
+        ld a,b
+        and 15
+        call nib_expand         ; A = rechte Haelfte
+        ld hl,8
+        add hl,de
+        ld (hl),a               ; oben rechts, Zeile 2i
+        inc hl
+        ld (hl),a               ; Zeile 2i+1
+        inc de
+        inc de
+        ld a,e
+        cp 8                    ; nach 4 Quellzeilen weiter bei der unteren Haelfte
+        jr nz,bg_nxt
+        ld e,16
+bg_nxt:
+        pop hl
+        dec c
+        jr nz,bg_row
+        pop bc
+        ld hl,bigbuf
+        jp draw_gfx
+
+; in: A = Nibble 0..15; out: A = jedes Bit verdoppelt (8 Bit); veraendert HL
+nib_expand:
+        ld hl,nib_tab
+        add a,l
+        ld l,a
+        jr nc,ne_ok
+        inc h
+ne_ok:
+        ld a,(hl)
         ret
 
 ; ============================================================
@@ -1141,14 +1784,57 @@ print_at:
 ; ============================================================
 txt_title:
         db "XBLAST",0
-txt_hint:
-        db "LEERTASTE: NEU",0
-txt_dead1:
-        db "SPIELER 1 TOT",0
-txt_dead2:
-        db "SPIELER 2 TOT",0
+txt_zeit:
+        db "ZEIT",0
+txt_p1:
+        db "P1",0
+txt_p2:
+        db "P2",0
+txt_p1pt:
+        db "SPIELER 1 PUNKT",0
+txt_p2pt:
+        db "SPIELER 2 PUNKT",0
+txt_p1win:
+        db "SPIELER 1 SIEGT!",0
+txt_p2win:
+        db "SPIELER 2 SIEGT!",0
+txt_draw:
+        db "UNENTSCHIEDEN",0
+txt_sd:
+        db "ENDSPIEL!",0
+txt_prompt:
+        db "FEUER: WEITER",0
+txt_t1:
+        db "BOMBEN-DUELL FUER 2 SPIELER",0
+txt_t2:
+        db "MEHR REICHWEITE",0
+txt_t3:
+        db "MEHR BOMBEN",0
+txt_t4:
+        db "SCHNELLER LAUFEN",0
+txt_t5:
+        db "SPIELER 1: JOYSTICK 1 (6-0)",0
+txt_t6:
+        db "SPIELER 2: JOYSTICK 2 (1-5)",0
+txt_t7:
+        db "FEUER = BOMBE LEGEN",0
+txt_t8:
+        db "SIEGE ZUM SPIELGEWINN:",0
+txt_t9:
+        db "(STICK LINKS / RECHTS)",0
+txt_t10:
+        db "FEUER = START",0
 txt_blank:
         db "                              ",0
+
+; Titelbuchstaben (Zeichen, Farbe)
+title_big:
+        db 'X',0x42,'B',0x46,'L',0x44,'A',0x45,'S',0x43,'T',0x47
+
+; Verdopplung der Bits eines Nibbles (fuer big_char)
+nib_tab:
+        db 0x00,0x03,0x0C,0x0F,0x30,0x33,0x3C,0x3F
+        db 0xC0,0xC3,0xCC,0xCF,0xF0,0xF3,0xFC,0xFF
 
 ; Startwerte der Spieler: x, y, Richtung, lebt, Verzoegerung, Attribut
 ; dazu: Reichweite, max. Bomben, Feuer, Spielernummer, Schrittpause
