@@ -60,7 +60,7 @@ Spieler und Gegner liegen nicht im Feld, sondern in eigenen Strukturen (Position
 - Sprites der Spieler (16x16, Maske oder einfach per XOR)
 - **Test:** Beide Figuren laufen unabhängig durchs Feld
 
--State: InProgress
+-State: Done
 
 ## Stufe 2 – Bomben legen und explodieren
 
@@ -71,7 +71,7 @@ Spieler und Gegner liegen nicht im Feld, sondern in eigenen Strukturen (Position
 - Spieler darf von der eigenen Bombe weglaufen, danach ist sie eine Wand
 - **Test:** Bombe legen, weglaufen, Explosion sieht richtig aus
 
--State: Open
+-State: InProgress
 
 ## Stufe 3 – Zerstören und Treffer
 

@@ -1,5 +1,5 @@
 ; ============================================================
-; XBlast fuer den ZX Spectrum - Stufe 1: Zwei Spieler laufen
+; XBlast fuer den ZX Spectrum - Stufe 2: Bomben legen und explodieren
 ; Assembler: pasmo   (pasmo --tapbas xblast.asm xblast.tap)
 ; ============================================================
 ; Spielfeld 15 x 11 Kacheln a 16x16 Pixel (2x2 Zeichenzellen)
@@ -10,7 +10,10 @@
 ;   Spieler 1 (oben links)  : Joystick 1 = Tasten 6 7 8 9 0
 ;   Spieler 2 (unten rechts): Joystick 2 = Tasten 1 2 3 4 5
 ;   LEERTASTE               : neue Runde (neues Feld)
-; Bewegung in Kachelschritten, Waende und Bloecke blockieren.
+;   Feuer                   : Bombe legen (1 Bombe pro Spieler)
+; Bewegung in Kachelschritten, Waende, Bloecke und Bomben blockieren.
+; Eine Bombe explodiert nach 3 Sekunden: kreuzfoermige Flamme,
+; Reichweite 2, gestoppt von Wand, Block und Bombe.
 ; ============================================================
 
         org 32768
@@ -24,6 +27,14 @@ FIELD_ROW   equ 2               ; Zeichenzeile der oberen Feldkante
 T_EMPTY     equ 0               ; Kachel-Typen
 T_WALL      equ 1               ; feste Wand
 T_BLOCK     equ 2               ; zerstoerbarer Block
+T_BOMB      equ 3               ; Bombe
+T_FLAME     equ 4               ; Flamme (Grafikindex)
+; Flammen stehen als 0x80 + Restdauer im Feld (Bit 7 = Flamme)
+FLAME_TICKS equ 25              ; Flammendauer in Frames
+FLAME_VAL   equ 0x80 + FLAME_TICKS
+BOMB_FUSE   equ 150             ; Zuenddauer in Frames (3 Sekunden)
+MAX_BOMBS   equ 8               ; Bombenplaetze insgesamt
+BS_SIZE     equ 8               ; Bytes je Bombenplatz
 
 BLOCK_CHANCE equ 170            ; Blockwahrscheinlichkeit (von 256)
 
@@ -44,6 +55,7 @@ J_UP        equ 1
 J_DOWN      equ 2
 J_RIGHT     equ 3
 J_LEFT      equ 4
+JM_FIRE     equ 1               ; Maske von J_FIRE
 
 ; Spieler-Struktur (PS_SIZE Bytes je Spieler)
 PX          equ 0               ; Kachel x
@@ -52,7 +64,13 @@ PDIR        equ 2               ; Blickrichtung
 PALIVE      equ 3               ; 1 = lebt
 PDELAY      equ 4               ; Frames bis zum naechsten Schritt
 PATTR       equ 5               ; Farbattribut des Sprites
-PS_SIZE     equ 8
+PRANGE      equ 6               ; Flammenreichweite
+PMAXB       equ 7               ; maximale Anzahl gleichzeitiger Bomben
+PFIRE       equ 8               ; Feuertaste im letzten Frame (0/1)
+POWNER      equ 9               ; Spielernummer (0/1)
+PS_SIZE     equ 10
+
+; Bombenplatz (BS_SIZE Bytes): Zeit (0 = frei), x, y, Besitzer, Reichweite
 
 MOVE_DELAY  equ 8               ; Frames pro Schritt (50 Hz / 8 = 6,25 Schritte/s)
 
@@ -60,7 +78,14 @@ MOVE_DELAY  equ 8               ; Frames pro Schritt (50 Hz / 8 = 6,25 Schritte/
 VARS        equ 0xA000
 seed        equ VARS            ; 2 Bytes
 cur_attr    equ VARS + 2        ; 1 Byte: Attribut fuer draw_cell
+dirty       equ VARS + 3        ; 1 = Spieler muessen neu gezeichnet werden
+ex_cx       equ VARS + 4        ; Explosion: Zentrum x
+ex_cy       equ VARS + 5        ; Explosion: Zentrum y
+ex_range    equ VARS + 6        ; Explosion: Reichweite
+ex_dir      equ VARS + 7        ; Explosion: aktuelle Richtung
+ex_cnt      equ VARS + 8        ; Explosion: verbleibende Schritte
 field       equ VARS + 16       ; FW*FH Bytes: Kacheltypen
+bombs       equ VARS + 0xC0     ; MAX_BOMBS * BS_SIZE Bytes
 pl1         equ VARS + 0x100    ; Spieler 1
 pl2         equ pl1 + PS_SIZE   ; Spieler 2
 
@@ -91,6 +116,9 @@ new_round:
         call init_field
         call draw_field
         call init_players
+        call init_bombs
+        xor a
+        ld (dirty),a
         call draw_players
 
 ; ---- Hauptschleife: ein Durchlauf pro Frame (50 Hz) -------
@@ -107,6 +135,14 @@ game_loop:
         ld ix,pl2
         call read_joy2
         call update_player
+        call update_bombs
+        call update_flames
+        ld a,(dirty)
+        or a
+        jr z,game_loop
+        xor a
+        ld (dirty),a
+        call draw_players       ; Spieler nach Flammen-Zeichnen wieder oben
         jr game_loop
 
 reset_round:
@@ -189,6 +225,21 @@ update_player:
         ld a,(ix+PALIVE)
         or a
         ret z
+        ; Feuer-Flanke: Bombe legen
+        ld a,e
+        and JM_FIRE
+        ld d,a                  ; D = Feuer jetzt (0 oder 1)
+        ld a,(ix+PFIRE)
+        ld (ix+PFIRE),d
+        or a
+        jr nz,up_move           ; Taste war schon gedrueckt
+        ld a,d
+        or a
+        jr z,up_move
+        push de
+        call place_bomb
+        pop de
+up_move:
         ld a,(ix+PDELAY)
         or a
         jr z,up_ready
@@ -240,6 +291,216 @@ up_dir:
         jp draw_players
 up_blocked:
         jp draw_player          ; nur die Blickrichtung hat sich evtl. geaendert
+
+; ============================================================
+; Bomben
+; ============================================================
+init_bombs:
+        ld hl,bombs
+        ld de,bombs+1
+        ld bc,MAX_BOMBS*BS_SIZE-1
+        ld (hl),0
+        ldir
+        ret
+
+; in: IX = Spieler; legt eine Bombe auf seine Kachel, falls erlaubt
+place_bomb:
+        ld b,(ix+PX)
+        ld c,(ix+PY)
+        call field_addr
+        ld a,(hl)
+        or a
+        ret nz                  ; Kachel nicht frei
+        ; eigene Bomben zaehlen (C) und freien Platz suchen (DE)
+        ld hl,bombs
+        ld b,MAX_BOMBS
+        ld c,0
+        ld de,0
+pb_scan:
+        ld a,(hl)
+        or a
+        jr nz,pb_used
+        ld a,d                  ; Platz ist frei: den ersten merken
+        or e
+        jr nz,pb_next
+        ld d,h
+        ld e,l
+        jr pb_next
+pb_used:
+        push hl
+        inc hl
+        inc hl
+        inc hl
+        ld a,(hl)               ; Besitzer
+        pop hl
+        cp (ix+POWNER)
+        jr nz,pb_next
+        inc c
+pb_next:
+        ld a,l
+        add a,BS_SIZE
+        ld l,a
+        jr nc,pb_cont
+        inc h
+pb_cont:
+        djnz pb_scan
+        ld a,c
+        cp (ix+PMAXB)
+        ret nc                  ; schon genug Bomben gelegt
+        ld a,d
+        or e
+        ret z                   ; kein freier Platz
+        ex de,hl                ; HL = Bombenplatz
+        ld (hl),BOMB_FUSE
+        inc hl
+        ld a,(ix+PX)
+        ld (hl),a
+        inc hl
+        ld a,(ix+PY)
+        ld (hl),a
+        inc hl
+        ld a,(ix+POWNER)
+        ld (hl),a
+        inc hl
+        ld a,(ix+PRANGE)
+        ld (hl),a
+        ld b,(ix+PX)
+        ld c,(ix+PY)
+        call field_addr
+        ld (hl),T_BOMB          ; die Spielerfigur verdeckt die Bombe,
+        ret                     ; bis sie die Kachel verlaesst
+
+; Zuendschnuere herunterzaehlen, abgelaufene Bomben sprengen
+update_bombs:
+        ld hl,bombs
+        ld b,MAX_BOMBS
+ub_loop:
+        ld a,(hl)
+        or a
+        jr z,ub_next
+        dec a
+        ld (hl),a
+        jr nz,ub_next
+        push bc
+        push hl
+        call explode
+        pop hl
+        pop bc
+ub_next:
+        ld a,l
+        add a,BS_SIZE
+        ld l,a
+        jr nc,ub_cont
+        inc h
+ub_cont:
+        djnz ub_loop
+        ret
+
+; in: HL = Bombenplatz (Zeit ist schon 0)
+; setzt die Flammen: Zentrum und je Richtung bis Reichweite,
+; gestoppt von Wand, Block oder Bombe
+explode:
+        inc hl
+        ld a,(hl)
+        ld (ex_cx),a
+        inc hl
+        ld a,(hl)
+        ld (ex_cy),a
+        inc hl
+        inc hl
+        ld a,(hl)
+        ld (ex_range),a
+        ld a,(ex_cx)
+        ld b,a
+        ld a,(ex_cy)
+        ld c,a
+        call set_flame          ; Zentrum
+        xor a
+        ld (ex_dir),a
+ex_dir_loop:
+        ld a,(ex_cx)
+        ld b,a
+        ld a,(ex_cy)
+        ld c,a
+        ld a,(ex_range)
+        ld (ex_cnt),a
+ex_step:
+        ld a,(ex_dir)
+        ld e,a
+        ld d,0
+        ld hl,dir_dx
+        add hl,de
+        ld a,b
+        add a,(hl)
+        ld b,a
+        ld hl,dir_dy
+        add hl,de
+        ld a,c
+        add a,(hl)
+        ld c,a                  ; naechste Kachel in dieser Richtung
+        call field_addr
+        ld a,(hl)
+        or a
+        jr z,ex_flame           ; leer: Flamme
+        cp 0x80
+        jr c,ex_stop            ; Wand, Block, Bombe: hier ist Schluss
+ex_flame:
+        call set_flame          ; leer oder schon Flamme: (neu) setzen
+        ld hl,ex_cnt
+        dec (hl)
+        jr nz,ex_step
+ex_stop:
+        ld hl,ex_dir
+        inc (hl)
+        ld a,(hl)
+        cp 4
+        jr c,ex_dir_loop
+        ld a,1
+        ld (dirty),a
+        ret
+
+; in: B = x, C = y; setzt die Kachel auf Flamme und zeichnet sie
+set_flame:
+        call field_addr
+        ld (hl),FLAME_VAL
+        jp redraw_tile
+
+; Flammen herunterzaehlen, erloschene werden wieder leer
+update_flames:
+        ld hl,field
+        ld d,0                  ; y
+uf_row:
+        ld e,0                  ; x
+uf_col:
+        ld a,(hl)
+        bit 7,a
+        jr z,uf_next
+        dec a
+        cp 0x80
+        jr nz,uf_store
+        xor a
+        ld (hl),a               ; Flamme erloschen
+        push hl
+        ld b,e
+        ld c,d
+        call redraw_tile
+        pop hl
+        ld a,1
+        ld (dirty),a
+        jr uf_next
+uf_store:
+        ld (hl),a
+uf_next:
+        inc hl
+        inc e
+        ld a,e
+        cp FW
+        jr nz,uf_col
+        inc d
+        ld a,d
+        cp FH
+        jr nz,uf_row
+        ret
 
 ; ============================================================
 ; anykey: Z gesetzt = keine Taste gedrueckt
@@ -460,6 +721,10 @@ redraw_tile:
 draw_tile:
         push de
         push hl
+        bit 7,a
+        jr z,dt_type
+        ld a,T_FLAME            ; Flammen-Bytes (0x80+Restdauer) -> Grafik 4
+dt_type:
         ld e,a
         ld d,0
         ld hl,tile_attr
@@ -596,9 +861,10 @@ txt_hint:
         db "LEERTASTE: NEU",0
 
 ; Startwerte der Spieler: x, y, Richtung, lebt, Verzoegerung, Attribut
+; dazu: Reichweite, max. Bomben, Feuer, Spielernummer
 pl_init:
-        db 1,1,DIR_DOWN,1,0,ATTR_P1,0,0
-        db FW-2,FH-2,DIR_UP,1,0,ATTR_P2,0,0
+        db 1,1,DIR_DOWN,1,0,ATTR_P1,2,1,0,0
+        db FW-2,FH-2,DIR_UP,1,0,ATTR_P2,2,1,0,1
 
 ; Schrittweite je Richtung (hoch, rechts, runter, links)
 dir_dx:
@@ -611,6 +877,8 @@ tile_attr:
         db 0x01                 ; leer:  blaue Punkte auf schwarz
         db 0x4D                 ; Wand:  hell cyan auf blau
         db 0x7A                 ; Block: rot auf hellweiss (Ziegel)
+        db 0x42                 ; Bombe: hell rot auf schwarz
+        db 0x56                 ; Flamme: hell gelb auf rot
 
 ; Kachelgrafiken: je 4 Zellen (oben links, oben rechts,
 ; unten links, unten rechts) zu 8 Bytes = 32 Bytes
@@ -630,6 +898,16 @@ tile_gfx:
         db 0xFE,0xFE,0xFE,0x00,0xEF,0xEF,0xEF,0x00
         db 0xFE,0xFE,0xFE,0x00,0xEF,0xEF,0xEF,0x00
         db 0xFE,0xFE,0xFE,0x00,0xEF,0xEF,0xEF,0x00
+        ; Bombe
+        db 0x00,0x00,0x00,0x00,0x01,0x07,0x0F,0x19
+        db 0x04,0x0A,0x0C,0x30,0xC0,0xE0,0xF0,0xF8
+        db 0x1B,0x3B,0x3F,0x1F,0x1F,0x0F,0x07,0x01
+        db 0xF8,0xFC,0xFC,0xF8,0xF8,0xF0,0xE0,0x80
+        ; Flamme
+        db 0x00,0x01,0x01,0x07,0x0B,0x1F,0x37,0x7E
+        db 0x00,0x80,0xC0,0xA0,0xF0,0x78,0xEC,0xFC
+        db 0x6F,0x3D,0x1F,0x0B,0x07,0x03,0x00,0x00
+        db 0xDE,0xF8,0xB8,0xF0,0x60,0xC0,0x80,0x00
 
 ; Spieler-Sprites (Blick hoch, rechts, runter, links), je 32 Bytes
 spr_gfx:
