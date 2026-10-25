@@ -1,5 +1,5 @@
 ; ============================================================
-; XBlast fuer den ZX Spectrum - Stufe 3: Bloecke zerstoeren, Treffer, Kettenreaktion
+; XBlast fuer den ZX Spectrum - Stufe 4: Power-Ups
 ; Assembler: pasmo   (pasmo --tapbas xblast.asm xblast.tap)
 ; ============================================================
 ; Spielfeld 15 x 11 Kacheln a 16x16 Pixel (2x2 Zeichenzellen)
@@ -16,6 +16,11 @@
 ; Reichweite 2. Feste Waende halten die Flamme auf. Ein Block brennt
 ; ab und stoppt die Flamme. Trifft die Flamme eine andere Bombe, zuendet
 ; sie diese (Kettenreaktion). Wer in einer Flamme steht, stirbt.
+; In Bloecken stecken Power-Ups, die nach dem Abbrennen erscheinen:
+;   Stern  = Flammenreichweite +1
+;   Bombe  = eine Bombe mehr gleichzeitig
+;   Blitz  = schneller laufen
+; Flammen zerstoeren liegende Power-Ups.
 ; ============================================================
 
         org 32768
@@ -31,6 +36,14 @@ T_WALL      equ 1               ; feste Wand
 T_BLOCK     equ 2               ; zerstoerbarer Block
 T_BOMB      equ 3               ; Bombe
 T_FLAME     equ 4               ; Flamme (Grafikindex)
+; Power-Ups (Kacheltyp = Grafikindex)
+T_PU_RANGE  equ 6               ; Flammenreichweite +1
+T_PU_BOMB   equ 7               ; eine Bombe mehr
+T_PU_SPEED  equ 8               ; schneller laufen
+PU_CHANCE   equ 64              ; Anteil der Bloecke mit Power-Up (von 256)
+MAX_RANGE   equ 6               ; Obergrenzen
+MAX_PBOMBS  equ 5
+MIN_DELAY   equ 4               ; schnellster Schritt (Frames Pause)
 ; Flammen stehen als 0x80 + Restdauer im Feld (Bit 7 = Flamme)
 FLAME_TICKS equ 25              ; Flammendauer in Frames
 FLAME_VAL   equ 0x80 + FLAME_TICKS
@@ -73,7 +86,8 @@ PRANGE      equ 6               ; Flammenreichweite
 PMAXB       equ 7               ; maximale Anzahl gleichzeitiger Bomben
 PFIRE       equ 8               ; Feuertaste im letzten Frame (0/1)
 POWNER      equ 9               ; Spielernummer (0/1)
-PS_SIZE     equ 10
+PSPEED      equ 10              ; Frames Pause nach einem Schritt
+PS_SIZE     equ 12
 
 ; Bombenplatz (BS_SIZE Bytes): Zeit (0 = frei), x, y, Besitzer, Reichweite
 
@@ -92,6 +106,8 @@ ex_cnt      equ VARS + 8        ; Explosion: verbleibende Schritte
 anim        equ VARS + 9        ; Frame-Zaehler fuer Animationen
 bomb_frame  equ VARS + 10       ; Bombenanimation: 0 oder 2 (Grafik 3 oder 5)
 field       equ VARS + 16       ; FW*FH Bytes: Kacheltypen
+hidden      equ VARS + 0x200    ; FW*FH Bytes: in Bloecken versteckte Power-Ups
+HIDDEN_OFF  equ hidden - field
 bombs       equ VARS + 0xC0     ; MAX_BOMBS * BS_SIZE Bytes
 pl1         equ VARS + 0x100    ; Spieler 1
 pl2         equ pl1 + PS_SIZE   ; Spieler 2
@@ -289,9 +305,9 @@ up_dir:
         ld a,(hl)
         or a                    ; T_EMPTY?
         jr z,up_free
-        cp 0x80
+        cp T_BOMB+1
         jr c,up_blocked         ; Wand, Block, Bombe: gesperrt
-up_free:                        ; leer oder Flamme (die ist toedlich)
+up_free:                        ; leer, Power-Up oder Flamme (die ist toedlich)
         ; Schritt: alte Kachel neu zeichnen, Position setzen
         push bc
         ld b,(ix+PX)
@@ -300,10 +316,44 @@ up_free:                        ; leer oder Flamme (die ist toedlich)
         pop bc
         ld (ix+PX),b
         ld (ix+PY),c
-        ld (ix+PDELAY),MOVE_DELAY
+        ld a,(ix+PSPEED)
+        ld (ix+PDELAY),a
+        ; Power-Up aufnehmen?
+        call field_addr
+        ld a,(hl)
+        cp T_PU_RANGE
+        jr c,up_done
+        cp 0x80
+        jr nc,up_done           ; Flamme
+        ld (hl),T_EMPTY         ; Power-Up verschwindet von der Kachel
+        call take_powerup
+up_done:
         jp draw_players
 up_blocked:
         jp draw_player          ; nur die Blickrichtung hat sich evtl. geaendert
+
+; in: IX = Spieler, A = Power-Up-Typ
+take_powerup:
+        cp T_PU_BOMB
+        jr z,tp_bomb
+        jr nc,tp_speed
+        ld a,(ix+PRANGE)        ; Stern: Reichweite +1
+        cp MAX_RANGE
+        ret nc
+        inc (ix+PRANGE)
+        ret
+tp_bomb:
+        ld a,(ix+PMAXB)         ; Bombe: eine mehr gleichzeitig
+        cp MAX_PBOMBS
+        ret nc
+        inc (ix+PMAXB)
+        ret
+tp_speed:
+        ld a,(ix+PSPEED)        ; Blitz: kuerzere Pause zwischen Schritten
+        cp MIN_DELAY+1
+        ret c
+        dec (ix+PSPEED)
+        ret
 
 ; ============================================================
 ; Bomben
@@ -503,7 +553,7 @@ thp_yes:
 
 ; in: HL = Bombenplatz (Zeit ist schon 0)
 ; setzt die Flammen: Zentrum und je Richtung bis Reichweite;
-; Wand stoppt, Block brennt ab (und stoppt), Bombe wird gezuendet
+; Wand stoppt, Block und Power-Up brennen ab (und stoppen), Bombe wird gezuendet
 explode:
         inc hl
         ld a,(hl)
@@ -553,9 +603,11 @@ ex_step:
         jr z,ex_block
         cp T_BOMB
         jr z,ex_bomb
+        cp T_PU_RANGE
+        jr nc,ex_block          ; ein Power-Up verbrennt wie ein Block
         jr ex_stop              ; feste Wand: hier ist Schluss
 ex_block:
-        call set_flame          ; der Block brennt ab, die Flamme endet hier
+        call set_flame          ; Block/Power-Up brennt, die Flamme endet hier
         jr ex_stop
 ex_bomb:
         call trigger_bomb       ; Kettenreaktion: die Bombe dort zuenden
@@ -667,8 +719,13 @@ uf_col:
         dec a
         cp 0x80
         jr nz,uf_store
-        xor a
-        ld (hl),a               ; Flamme erloschen
+        push hl                 ; Flamme erloschen: verstecktes Power-Up
+        ld bc,HIDDEN_OFF        ; (oder leer) wird sichtbar
+        add hl,bc
+        ld a,(hl)
+        ld (hl),0
+        pop hl
+        ld (hl),a
         push hl
         ld b,e
         ld c,d
@@ -766,6 +823,18 @@ if_row:
 if_col:
         call tile_for
         ld (hl),a
+        cp T_BLOCK
+        jr z,if_block
+        xor a                   ; nichts versteckt
+        jr if_hid
+if_block:
+        call pick_powerup       ; A = 0 oder Power-Up-Typ
+if_hid:
+        ld de,HIDDEN_OFF
+        add hl,de
+        ld (hl),a
+        or a
+        sbc hl,de
         inc hl
         inc b
         ld a,b
@@ -775,6 +844,27 @@ if_col:
         ld a,c
         cp FH
         jr nz,if_row
+        ret
+
+; out: A = 0 (kein Power-Up) oder Typ des Power-Ups in einem Block
+; veraendert: A, E
+pick_powerup:
+        call rnd
+        cp PU_CHANCE
+        jr nc,pp_none
+        call rnd
+        ld e,a
+        cp 86
+        ld a,T_PU_RANGE
+        ret c
+        ld a,e
+        cp 172
+        ld a,T_PU_BOMB
+        ret c
+        ld a,T_PU_SPEED
+        ret
+pp_none:
+        xor a
         ret
 
 ; in:  B = x, C = y
@@ -1061,10 +1151,10 @@ txt_blank:
         db "                              ",0
 
 ; Startwerte der Spieler: x, y, Richtung, lebt, Verzoegerung, Attribut
-; dazu: Reichweite, max. Bomben, Feuer, Spielernummer
+; dazu: Reichweite, max. Bomben, Feuer, Spielernummer, Schrittpause
 pl_init:
-        db 1,1,DIR_DOWN,1,0,ATTR_P1,2,1,0,0
-        db FW-2,FH-2,DIR_UP,1,0,ATTR_P2,2,1,0,1
+        db 1,1,DIR_DOWN,1,0,ATTR_P1,2,1,0,0,MOVE_DELAY,0
+        db FW-2,FH-2,DIR_UP,1,0,ATTR_P2,2,1,0,1,MOVE_DELAY,0
 
 ; Schrittweite je Richtung (hoch, rechts, runter, links)
 dir_dx:
@@ -1080,6 +1170,9 @@ tile_attr:
         db 0x42                 ; Bombe: hell rot auf schwarz
         db 0x56                 ; Flamme: hell gelb auf rot
         db 0x42                 ; Bombe, Frame 2: hell rot auf schwarz
+        db 0x4E                 ; Power-Up Reichweite: gelb auf blau
+        db 0x57                 ; Power-Up Bombe: weiss auf rot
+        db 0x67                 ; Power-Up Tempo: weiss auf gruen
 
 ; Kachelgrafiken: je 4 Zellen (oben links, oben rechts,
 ; unten links, unten rechts) zu 8 Bytes = 32 Bytes
@@ -1114,6 +1207,21 @@ tile_gfx:
         db 0x14,0x0C,0x3A,0x40,0xE0,0xF0,0xF8,0xFC
         db 0x37,0x37,0x3F,0x3F,0x3F,0x1F,0x1F,0x07
         db 0xFC,0xFC,0xFC,0xFC,0xFC,0xF8,0xF8,0xE0
+        ; Power-Up Reichweite (Stern)
+        db 0xFF,0x80,0x81,0x81,0x81,0x83,0x87,0xBF
+        db 0xFF,0x01,0x81,0x81,0x81,0xC1,0xE1,0xFD
+        db 0xBF,0x87,0x83,0x81,0x81,0x81,0x80,0xFF
+        db 0xFD,0xE1,0xC1,0x81,0x81,0x81,0x01,0xFF
+        ; Power-Up Bombe
+        db 0xFF,0x80,0x80,0x80,0x80,0x80,0x87,0x8F
+        db 0xFF,0x01,0x1D,0x19,0x61,0x81,0xC1,0xE1
+        db 0x8B,0x8B,0x8F,0x8F,0x87,0x80,0x80,0xFF
+        db 0xE1,0xE1,0xE1,0xE1,0xC1,0x01,0x01,0xFF
+        ; Power-Up Tempo (Blitz)
+        db 0xFF,0x80,0x80,0x80,0x80,0x81,0x83,0x83
+        db 0xFF,0x01,0x3D,0x79,0xF1,0xE1,0xFD,0xF9
+        db 0x80,0x80,0x80,0x81,0x83,0x86,0x80,0xFF
+        db 0x39,0x71,0xE1,0xC1,0x01,0x01,0x01,0xFF
 
 ; Spieler-Sprites (Blick hoch, rechts, runter, links), je 32 Bytes
 spr_gfx:

@@ -80,7 +80,7 @@ Spieler und Gegner liegen nicht im Feld, sondern in eigenen Strukturen (Position
 - Kettenreaktion: Flamme trifft eine Bombe, diese explodiert sofort
 - **Test:** Kettenreaktionen, Tod, mehrere Bomben gleichzeitig
 
--State: InProgress
+-State: Done
 
 ## Stufe 4 – Power-Ups
 
@@ -89,7 +89,7 @@ Spieler und Gegner liegen nicht im Feld, sondern in eigenen Strukturen (Position
 - Power-Ups können durch Flammen zerstört werden
 - **Test:** jedes Power-Up wirkt sichtbar
 
--State: Open
+-State: InProgress
 
 ## Stufe 5 – Runden und Spielablauf
 
@@ -100,6 +100,7 @@ Spieler und Gegner liegen nicht im Feld, sondern in eigenen Strukturen (Position
 - Rundenzeit mit Ablauf (optional: das Feld füllt sich am Ende mit Wänden von außen)
 - **Test:** komplette Partie von Titel bis Sieger
 
+-1. Meilenstein
 -State: Open
 
 ## Stufe 6 – Gegner für den Einzelspieler
@@ -119,6 +120,7 @@ Spieler und Gegner liegen nicht im Feld, sondern in eigenen Strukturen (Position
 - 128K: AY-Musik im Interrupt, Effekte als Kanal mitlaufen lassen (wie bei Pong Pro, sjasmplus, `xblastpro.*`)
 - **Test:** Sound stört die Spielgeschwindigkeit nicht
 
+-2. Meilenstein
 -State: Open
 
 ## Stufe 8 – Feinschliff
@@ -128,6 +130,7 @@ Spieler und Gegner liegen nicht im Feld, sondern in eigenen Strukturen (Position
 - Zusätzliche Feldlayouts
 - Balance: Zünddauer, Flammendauer, Laufgeschwindigkeit
 
+-3. Meilenstein
 -State: Open
 
 ---
