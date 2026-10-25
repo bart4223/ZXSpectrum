@@ -4,7 +4,144 @@
 # Games
 - Pacman
 - Super Mario
-- XBlast
+
+# XBlast
+
+Ziel: Ein Bomberman-artiges Spiel für zwei Spieler in Z80-Assembler, in Stufen aufgebaut wie bei Boulder Dash. Jede Stufe ist lauffähig und wird einzeln getestet.
+
+- **Artefakte:** `xblast.asm` und `xblast.tap`
+- **Assembler:** pasmo (48K) – sjasmplus erst in Stufe 7 für die 128K-Fassung
+- **Steuerung:** Sinclair IF2, Joystick 1 und 2 (je Richtung + Feuer = Bombe legen)
+- **Test:** Retro The Spectrum, TAP vom USB-Stick
+
+---
+
+## Grundentscheidungen
+
+| Thema | Vorschlag |
+|---|---|
+| Kachelgröße | 16x16 Pixel (wie bei Boulder Dash), also 2x2 Zeichenzellen |
+| Spielfeld | 15 x 11 Kacheln = 240 x 176 Pixel, passt ohne Scrolling auf den Bildschirm |
+| Seitenleiste / Kopfzeile | Restplatz für Punkte, Rundenstand, Zeit |
+| Spielfeld-Daten | 1 Byte pro Kachel in einem Array (165 Bytes), getrennt von der Darstellung |
+| Spielschleife | feste Tick-Rate über HALT (50 Hz), Logik jeden n-ten Frame |
+| Zeichnen | nur geänderte Kacheln neu zeichnen (Dirty-Flags), kein Vollbild-Redraw |
+| Farben | eine Attributfarbe pro Kachel, passend zu den 2x2 Zellen |
+
+### Kachel-Typen (Byte im Spielfeld)
+
+| Wert | Bedeutung |
+|---|---|
+| 0 | leer |
+| 1 | feste Wand (unzerstörbar) |
+| 2 | Block (zerstörbar) |
+| 3 | Bombe |
+| 4 | Flamme |
+| 5+ | Power-Ups (Reichweite, Bombenanzahl, Tempo) |
+
+Spieler und Gegner liegen nicht im Feld, sondern in eigenen Strukturen (Position, Richtung, Zustand), damit Bewegung unabhängig vom Raster laufen kann.
+
+---
+
+## Stufe 0 – Gerüst und Spielfeld
+
+- Bildschirm löschen, Raster mit festen Wänden (jede zweite Kachel in Zeile und Spalte, Rand außen) zeichnen
+- Zufällig Blöcke verteilen, die Startecken bleiben frei (je ein 3er-Eck-Bereich)
+- Kachel-Grafiken als Tabelle, Zeichenroutine `draw_tile`
+- **Test:** Feld erscheint, Ecken sind frei
+
+-State: InProgress
+
+## Stufe 1 – Zwei Spieler laufen
+
+- Spieler-Struktur: x, y (in Kacheln), Richtung, Lebend-Flag
+- IF2-Abfrage für beide Joysticks
+- Bewegung in Kachelschritten, Blockieren durch Wand und Block
+- Sprites der Spieler (16x16, Maske oder einfach per XOR)
+- **Test:** Beide Figuren laufen unabhängig durchs Feld
+
+-State: Open
+
+## Stufe 2 – Bomben legen und explodieren
+
+- Feuertaste legt Bombe auf die aktuelle Kachel (eine Bombe pro Spieler zu Beginn)
+- Bombe hat einen Zähler, nach einigen Sekunden explodiert sie
+- Explosion breitet sich kreuzförmig aus, Reichweite 2, stoppt an festen Wänden
+- Flammen halten wenige Ticks, danach wird die Kachel wieder leer
+- Spieler darf von der eigenen Bombe weglaufen, danach ist sie eine Wand
+- **Test:** Bombe legen, weglaufen, Explosion sieht richtig aus
+
+-State: Open
+
+## Stufe 3 – Zerstören und Treffer
+
+- Flammen zerstören Blöcke (Block wird zu leer oder zu Power-Up)
+- Flammen treffen Spieler: Spieler stirbt (oder verliert ein Leben)
+- Kettenreaktion: Flamme trifft eine Bombe, diese explodiert sofort
+- **Test:** Kettenreaktionen, Tod, mehrere Bomben gleichzeitig
+
+-State: Open
+
+## Stufe 4 – Power-Ups
+
+- Zerstörte Blöcke lassen mit fester Wahrscheinlichkeit Power-Ups fallen
+- Aufsammeln durch Betreten: mehr Reichweite, mehr Bomben gleichzeitig, schneller laufen
+- Power-Ups können durch Flammen zerstört werden
+- **Test:** jedes Power-Up wirkt sichtbar
+
+-State: Open
+
+## Stufe 5 – Runden und Spielablauf
+
+- Siegbedingung: Wer als Letzter lebt, gewinnt die Runde
+- Unentschieden, wenn beide in derselben Explosion sterben
+- Rundenzähler (z. B. best of 3), Anzeige in der Seitenleiste
+- Titelbild / Menü: Spielerzahl wählen, Start per Feuer
+- Rundenzeit mit Ablauf (optional: das Feld füllt sich am Ende mit Wänden von außen)
+- **Test:** komplette Partie von Titel bis Sieger
+
+-State: Open
+
+## Stufe 6 – Gegner für den Einzelspieler
+
+- Einfache Gegner (Monster), die zufällig laufen und bei Berührung töten
+- Danach klügere Variante: weicht Flammen aus, folgt dem Spieler
+- Einzelspielermodus: Level geschafft, wenn alle Gegner besiegt sind
+- Mehrere Level mit steigender Gegnerzahl
+- **Test:** Gegner laufen, sterben durch Flammen, töten den Spieler
+
+-State: Open
+
+## Stufe 7 – Sound und 128K-Fassung (optional)
+
+- 48K: Beeper-Effekte für Bombe legen, Explosion, Power-Up, Tod
+- Titelmelodie per Beeper (wie bei Boulder Dash)
+- 128K: AY-Musik im Interrupt, Effekte als Kanal mitlaufen lassen (wie bei Pong Pro, sjasmplus, `xblastpro.*`)
+- **Test:** Sound stört die Spielgeschwindigkeit nicht
+
+-State: Open
+
+## Stufe 8 – Feinschliff
+
+- Highscore bzw. Rundenstatistik pro Sitzung (kein Speichern auf dem Stick)
+- Animierte Flammen und Bomben (2 Frames)
+- Zusätzliche Feldlayouts
+- Balance: Zünddauer, Flammendauer, Laufgeschwindigkeit
+
+-State: Open
+
+---
+
+## Risiken und offene Punkte
+
+- **Rechenzeit:** Explosionen mit Kettenreaktionen sind der aufwendigste Teil; Ausbreitung in Ticks verteilen statt in einem Frame
+- **Attribute Clash:** zwei Spieler mit unterschiedlichen Farben auf derselben Kachel; Lösung: feste Farbe pro Spielerfigur und Hintergrund der Kachel einheitlich
+- **Eingabe:** IF2-Port 1 und 2 lesen; Diagonalen sperren, damit nur eine Richtung gilt
+- **Zufallszahlen:** einfache LFSR-Routine, Seed vom R-Register oder Frame-Zähler beim Start
+
+## Vorschlag für die Reihenfolge
+
+Stufen 0 bis 5 ergeben ein vollständig spielbares Zwei-Spieler-XBlast. Stufe 6 bis 8 sind Ausbau und können einzeln nachgezogen werden.
 
 # Boulderdash
 
