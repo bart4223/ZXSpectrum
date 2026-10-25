@@ -1,5 +1,5 @@
 ; ============================================================
-; XBlast fuer den ZX Spectrum - Stufe 2: Bomben legen und explodieren
+; XBlast fuer den ZX Spectrum - Stufe 2: Bomben legen, explodieren, animiert
 ; Assembler: pasmo   (pasmo --tapbas xblast.asm xblast.tap)
 ; ============================================================
 ; Spielfeld 15 x 11 Kacheln a 16x16 Pixel (2x2 Zeichenzellen)
@@ -33,6 +33,8 @@ T_FLAME     equ 4               ; Flamme (Grafikindex)
 FLAME_TICKS equ 25              ; Flammendauer in Frames
 FLAME_VAL   equ 0x80 + FLAME_TICKS
 BOMB_FUSE   equ 150             ; Zuenddauer in Frames (3 Sekunden)
+BOMB_URGENT equ 50              ; unter dieser Restzeit pulsiert die Bombe schneller
+T_BOMB2     equ 5               ; Grafikindex: Bombe, zweiter Animationsframe
 MAX_BOMBS   equ 8               ; Bombenplaetze insgesamt
 BS_SIZE     equ 8               ; Bytes je Bombenplatz
 
@@ -84,6 +86,8 @@ ex_cy       equ VARS + 5        ; Explosion: Zentrum y
 ex_range    equ VARS + 6        ; Explosion: Reichweite
 ex_dir      equ VARS + 7        ; Explosion: aktuelle Richtung
 ex_cnt      equ VARS + 8        ; Explosion: verbleibende Schritte
+anim        equ VARS + 9        ; Frame-Zaehler fuer Animationen
+bomb_frame  equ VARS + 10       ; Bombenanimation: 0 oder 2 (Grafik 3 oder 5)
 field       equ VARS + 16       ; FW*FH Bytes: Kacheltypen
 bombs       equ VARS + 0xC0     ; MAX_BOMBS * BS_SIZE Bytes
 pl1         equ VARS + 0x100    ; Spieler 1
@@ -136,6 +140,7 @@ game_loop:
         call read_joy2
         call update_player
         call update_bombs
+        call animate_bombs
         call update_flames
         ld a,(dirty)
         or a
@@ -301,6 +306,8 @@ init_bombs:
         ld bc,MAX_BOMBS*BS_SIZE-1
         ld (hl),0
         ldir
+        xor a
+        ld (bomb_frame),a
         ret
 
 ; in: IX = Spieler; legt eine Bombe auf seine Kachel, falls erlaubt
@@ -394,6 +401,96 @@ ub_next:
         inc h
 ub_cont:
         djnz ub_loop
+        ret
+
+; Bombenanimation: alle Bomben pulsieren im gleichen Takt (2 Frames),
+; alle 8 Bildschirmframes; ist eine Zuendschnur fast durch (unter
+; BOMB_URGENT), doppelt so schnell. Bomben unter einer Spielerfigur
+; werden nicht neu gezeichnet; die Figur verdeckt sie ohnehin.
+animate_bombs:
+        ld hl,anim
+        inc (hl)
+        ld d,(hl)               ; D = Frame-Zaehler
+        ld hl,bombs
+        ld b,MAX_BOMBS
+        ld e,8                  ; normaler Takt
+ab_scan:
+        ld a,(hl)
+        or a
+        jr z,ab_next
+        cp BOMB_URGENT
+        jr nc,ab_next
+        ld e,4                  ; eine Bombe geht bald hoch: schneller
+ab_next:
+        ld a,l
+        add a,BS_SIZE
+        ld l,a
+        jr nc,ab_cont
+        inc h
+ab_cont:
+        djnz ab_scan
+        ld a,d
+        and e
+        jr z,ab_set
+        ld a,2
+ab_set:
+        ld hl,bomb_frame
+        cp (hl)
+        ret z                   ; Frame hat sich nicht geaendert
+        ld (hl),a
+        ld hl,bombs
+        ld d,MAX_BOMBS
+ab_loop:
+        ld a,(hl)
+        or a
+        jr z,ab_skip
+        push hl
+        inc hl
+        ld b,(hl)               ; x
+        inc hl
+        ld c,(hl)               ; y
+        call tile_has_player
+        call z,redraw_tile
+        pop hl
+ab_skip:
+        ld a,l
+        add a,BS_SIZE
+        ld l,a
+        jr nc,ab_next2
+        inc h
+ab_next2:
+        dec d
+        jr nz,ab_loop
+        ret
+
+; in: B = x, C = y; out: NZ = ein lebender Spieler steht auf der Kachel
+; erhaelt BC, DE, HL
+tile_has_player:
+        ld a,(pl1+PALIVE)
+        or a
+        jr z,thp_p2
+        ld a,(pl1+PX)
+        cp b
+        jr nz,thp_p2
+        ld a,(pl1+PY)
+        cp c
+        jr z,thp_yes
+thp_p2:
+        ld a,(pl2+PALIVE)
+        or a
+        jr z,thp_no
+        ld a,(pl2+PX)
+        cp b
+        jr nz,thp_no
+        ld a,(pl2+PY)
+        cp c
+        jr z,thp_yes
+thp_no:
+        xor a                   ; Z: niemand da
+        ret
+thp_yes:
+        ld a,1
+        or a                    ; NZ: Spieler steht darauf
         ret
 
 ; in: HL = Bombenplatz (Zeit ist schon 0)
@@ -725,6 +822,11 @@ draw_tile:
         jr z,dt_type
         ld a,T_FLAME            ; Flammen-Bytes (0x80+Restdauer) -> Grafik 4
 dt_type:
+        cp T_BOMB
+        jr nz,dt_go
+        ld a,(bomb_frame)       ; Bombe: Animationsframe 0 oder 2
+        add a,T_BOMB            ; -> Grafik 3 oder 5
+dt_go:
         ld e,a
         ld d,0
         ld hl,tile_attr
@@ -879,6 +981,7 @@ tile_attr:
         db 0x7A                 ; Block: rot auf hellweiss (Ziegel)
         db 0x42                 ; Bombe: hell rot auf schwarz
         db 0x56                 ; Flamme: hell gelb auf rot
+        db 0x42                 ; Bombe, Frame 2: hell rot auf schwarz
 
 ; Kachelgrafiken: je 4 Zellen (oben links, oben rechts,
 ; unten links, unten rechts) zu 8 Bytes = 32 Bytes
@@ -908,6 +1011,11 @@ tile_gfx:
         db 0x00,0x80,0xC0,0xA0,0xF0,0x78,0xEC,0xFC
         db 0x6F,0x3D,0x1F,0x0B,0x07,0x03,0x00,0x00
         db 0xDE,0xF8,0xB8,0xF0,0x60,0xC0,0x80,0x00
+        ; Bombe, Frame 2 (aufgeblaeht, Funken anders)
+        db 0x00,0x00,0x00,0x00,0x07,0x0F,0x1F,0x31
+        db 0x14,0x0C,0x3A,0x40,0xE0,0xF0,0xF8,0xFC
+        db 0x37,0x37,0x3F,0x3F,0x3F,0x1F,0x1F,0x07
+        db 0xFC,0xFC,0xFC,0xFC,0xFC,0xF8,0xF8,0xE0
 
 ; Spieler-Sprites (Blick hoch, rechts, runter, links), je 32 Bytes
 spr_gfx:
