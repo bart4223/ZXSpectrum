@@ -1,5 +1,5 @@
 ; ============================================================
-;  PONG 128  fuer ZX Spectrum 128K / +2 / +2A / +3  -  Maschinencode
+;  PONG PRO  fuer ZX Spectrum 128K / +2 / +2A / +3  -  Maschinencode
 ;  Zwei Spieler, Sinclair-Interface-2-Joysticks
 ;    Stick 1 (Tasten 6-0): rechter Schlaeger, Feuer = Taste 0
 ;    Stick 2 (Tasten 1-5): linker Schlaeger,  Feuer = Taste 5
@@ -16,8 +16,8 @@
 ;    - Eigene Textausgabe, keine ROM-Aufrufe (nur der Zeichensatz
 ;      bei $3D00 wird gelesen, dazu bleibt das 48K-ROM eingeblendet)
 ;
-;  Assembliert mit sjasmplus:  sjasmplus --nologo pong128.asm
-;  (erzeugt pong128.sna und pong128.bin, siehe SAVE-Zeilen am Ende)
+;  Assembliert mit sjasmplus:  sjasmplus --nologo pongpro.asm
+;  (erzeugt pongpro.sna und pongpro.bin, siehe SAVE-Zeilen am Ende)
 ; ============================================================
         DEVICE ZXSPECTRUM128
         ORG 0x8000
@@ -1896,7 +1896,7 @@ LETTERS:
         DEFB "1.....1...1.1..11.1...1"
         DEFB "1......111..1...1..111."
 
-MSG1:   DEFB 22,8,5,"Pong fuer zwei Spieler"
+MSG1:   DEFB 22,8,5,"Pong Pro fuer zwei Spieler"
         DEFB 22,9,5,"mit AY-Musik und Effekten"
         DEFB 22,10,5,"Stick 1: rechter Schlaeger"
         DEFB 22,11,5,"Stick 2: linker Schlaeger"
@@ -2050,6 +2050,6 @@ VOLTAB:
 CODEEND:
         ASSERT CODEEND < 0xB000
 
-        SAVESNA "pong128.sna",START
-        SAVEBIN "pong128.bin",0x8000,CODEEND-0x8000
+        SAVESNA "pongpro.sna",START
+        SAVEBIN "pongpro.bin",0x8000,CODEEND-0x8000
         END
