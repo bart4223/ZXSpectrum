@@ -71,7 +71,7 @@ Spieler und Gegner liegen nicht im Feld, sondern in eigenen Strukturen (Position
 - Spieler darf von der eigenen Bombe weglaufen, danach ist sie eine Wand
 - **Test:** Bombe legen, weglaufen, Explosion sieht richtig aus
 
--State: InProgress
+-State: Done
 
 ## Stufe 3 – Zerstören und Treffer
 
@@ -80,7 +80,7 @@ Spieler und Gegner liegen nicht im Feld, sondern in eigenen Strukturen (Position
 - Kettenreaktion: Flamme trifft eine Bombe, diese explodiert sofort
 - **Test:** Kettenreaktionen, Tod, mehrere Bomben gleichzeitig
 
--State: Open
+-State: InProgress
 
 ## Stufe 4 – Power-Ups
 

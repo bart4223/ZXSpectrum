@@ -1,5 +1,5 @@
 ; ============================================================
-; XBlast fuer den ZX Spectrum - Stufe 2: Bomben legen, explodieren, animiert
+; XBlast fuer den ZX Spectrum - Stufe 3: Bloecke zerstoeren, Treffer, Kettenreaktion
 ; Assembler: pasmo   (pasmo --tapbas xblast.asm xblast.tap)
 ; ============================================================
 ; Spielfeld 15 x 11 Kacheln a 16x16 Pixel (2x2 Zeichenzellen)
@@ -13,7 +13,9 @@
 ;   Feuer                   : Bombe legen (1 Bombe pro Spieler)
 ; Bewegung in Kachelschritten, Waende, Bloecke und Bomben blockieren.
 ; Eine Bombe explodiert nach 3 Sekunden: kreuzfoermige Flamme,
-; Reichweite 2, gestoppt von Wand, Block und Bombe.
+; Reichweite 2. Feste Waende halten die Flamme auf. Ein Block brennt
+; ab und stoppt die Flamme. Trifft die Flamme eine andere Bombe, zuendet
+; sie diese (Kettenreaktion). Wer in einer Flamme steht, stirbt.
 ; ============================================================
 
         org 32768
@@ -44,6 +46,7 @@ ATTR_TITLE  equ 0x46            ; hell gelb auf schwarz
 ATTR_TEXT   equ 0x07            ; weiss auf schwarz
 ATTR_P1     equ 0x47            ; Spieler 1: hell weiss auf schwarz
 ATTR_P2     equ 0x43            ; Spieler 2: hell magenta auf schwarz
+ATTR_DEAD   equ 0x42            ; Todesmeldung: hell rot auf schwarz
 
 ; Richtungen (Index in dir_dx / dir_dy und in spr_gfx)
 DIR_UP      equ 0
@@ -123,6 +126,7 @@ new_round:
         call init_bombs
         xor a
         ld (dirty),a
+        call clear_msgs
         call draw_players
 
 ; ---- Hauptschleife: ein Durchlauf pro Frame (50 Hz) -------
@@ -140,6 +144,7 @@ game_loop:
         call read_joy2
         call update_player
         call update_bombs
+        call check_hits
         call animate_bombs
         call update_flames
         ld a,(dirty)
@@ -283,7 +288,10 @@ up_dir:
         call field_addr
         ld a,(hl)
         or a                    ; T_EMPTY?
-        jr nz,up_blocked
+        jr z,up_free
+        cp 0x80
+        jr c,up_blocked         ; Wand, Block, Bombe: gesperrt
+up_free:                        ; leer oder Flamme (die ist toedlich)
         ; Schritt: alte Kachel neu zeichnen, Position setzen
         push bc
         ld b,(ix+PX)
@@ -494,8 +502,8 @@ thp_yes:
         ret
 
 ; in: HL = Bombenplatz (Zeit ist schon 0)
-; setzt die Flammen: Zentrum und je Richtung bis Reichweite,
-; gestoppt von Wand, Block oder Bombe
+; setzt die Flammen: Zentrum und je Richtung bis Reichweite;
+; Wand stoppt, Block brennt ab (und stoppt), Bombe wird gezuendet
 explode:
         inc hl
         ld a,(hl)
@@ -540,7 +548,18 @@ ex_step:
         or a
         jr z,ex_flame           ; leer: Flamme
         cp 0x80
-        jr c,ex_stop            ; Wand, Block, Bombe: hier ist Schluss
+        jr nc,ex_flame          ; schon Flamme: weiter
+        cp T_BLOCK
+        jr z,ex_block
+        cp T_BOMB
+        jr z,ex_bomb
+        jr ex_stop              ; feste Wand: hier ist Schluss
+ex_block:
+        call set_flame          ; der Block brennt ab, die Flamme endet hier
+        jr ex_stop
+ex_bomb:
+        call trigger_bomb       ; Kettenreaktion: die Bombe dort zuenden
+        jr ex_stop
 ex_flame:
         call set_flame          ; leer oder schon Flamme: (neu) setzen
         ld hl,ex_cnt
@@ -556,11 +575,84 @@ ex_stop:
         ld (dirty),a
         ret
 
+; in: B = x, C = y; zuendet die Bombe auf dieser Kachel (Rest = 1 Frame)
+; erhaelt BC; veraendert A, D, HL
+trigger_bomb:
+        ld hl,bombs
+        ld d,MAX_BOMBS
+tb_loop:
+        ld a,(hl)
+        or a
+        jr z,tb_next
+        push hl
+        inc hl
+        ld a,(hl)
+        cp b
+        jr nz,tb_no
+        inc hl
+        ld a,(hl)
+        cp c
+        jr nz,tb_no
+        pop hl
+        ld (hl),1               ; explodiert beim naechsten Durchlauf
+        ret
+tb_no:
+        pop hl
+tb_next:
+        ld a,l
+        add a,BS_SIZE
+        ld l,a
+        jr nc,tb_cont
+        inc h
+tb_cont:
+        dec d
+        jr nz,tb_loop
+        ret
+
 ; in: B = x, C = y; setzt die Kachel auf Flamme und zeichnet sie
 set_flame:
         call field_addr
         ld (hl),FLAME_VAL
         jp redraw_tile
+
+; Steht ein lebender Spieler in einer Flamme, stirbt er
+check_hits:
+        ld ix,pl1
+        call hit_check
+        ld ix,pl2
+hit_check:
+        ld a,(ix+PALIVE)
+        or a
+        ret z
+        ld b,(ix+PX)
+        ld c,(ix+PY)
+        call field_addr
+        ld a,(hl)
+        cp 0x80
+        ret c                   ; keine Flamme auf der Kachel
+        ld (ix+PALIVE),0        ; getroffen
+        call redraw_tile        ; Figur wegzeichnen
+        ld a,ATTR_DEAD
+        ld (cur_attr),a
+        ld b,1                  ; Meldung in Zeile 1
+        ld c,1
+        ld hl,txt_dead1
+        ld a,(ix+POWNER)
+        or a
+        jr z,hc_print
+        ld c,17
+        ld hl,txt_dead2
+hc_print:
+        jp print_at
+
+; Meldungszeile (Zeile 1) leeren
+clear_msgs:
+        ld a,ATTR_TEXT
+        ld (cur_attr),a
+        ld hl,txt_blank
+        ld b,1
+        ld c,1
+        jp print_at
 
 ; Flammen herunterzaehlen, erloschene werden wieder leer
 update_flames:
@@ -961,6 +1053,12 @@ txt_title:
         db "XBLAST",0
 txt_hint:
         db "LEERTASTE: NEU",0
+txt_dead1:
+        db "SPIELER 1 TOT",0
+txt_dead2:
+        db "SPIELER 2 TOT",0
+txt_blank:
+        db "                              ",0
 
 ; Startwerte der Spieler: x, y, Richtung, lebt, Verzoegerung, Attribut
 ; dazu: Reichweite, max. Bomben, Feuer, Spielernummer
