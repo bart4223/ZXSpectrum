@@ -111,7 +111,7 @@ Spieler und Gegner liegen nicht im Feld, sondern in eigenen Strukturen (Position
 - Mehrere Level mit steigender Gegnerzahl
 - **Test:** Gegner laufen, sterben durch Flammen, töten den Spieler
 
--State: InProgress
+-State: Done
 
 ## Stufe 7 – Sound und 128K-Fassung (optional)
 
@@ -121,7 +121,7 @@ Spieler und Gegner liegen nicht im Feld, sondern in eigenen Strukturen (Position
 - **Test:** Sound stört die Spielgeschwindigkeit nicht
 
 -2. Meilenstein
--State: Open
+-State: InProgress
 
 ## Stufe 8 – Feinschliff
 
