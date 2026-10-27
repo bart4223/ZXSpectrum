@@ -2834,6 +2834,16 @@ au_vol:
         ld a,(snd_att)
         add a,c
         ld c,a                  ; Abzug = Song + Gesamtlautstaerke
+        ld a,(sfx_cnt)
+        or a
+        jr z,au_noduck
+        ld a,(sfx_pri)
+        cp SFX_EXPLODE
+        jr c,au_noduck
+        ld a,c                  ; Explosion/Tod: Musik 4 Stufen leiser, der Peng steht vorn
+        add a,4
+        ld c,a
+au_noduck:
         ld a,(ay_vol_a)
         sub c
         jr nc,au_va
@@ -3464,23 +3474,28 @@ sfx_4:
         db 185,0,0,9   ; Ton 600 Hz, Rauschen 0, Lautstaerke 9
         db 21,1,0,6   ; Ton 400 Hz, Rauschen 0, Lautstaerke 6
 sfx_5:
-        db 16
-        db 47,6,6,15   ; Ton 70 Hz, Rauschen 6, Lautstaerke 15
-        db 94,6,8,14   ; Ton 68 Hz, Rauschen 8, Lautstaerke 14
-        db 143,6,10,13   ; Ton 66 Hz, Rauschen 10, Lautstaerke 13
-        db 196,6,12,12   ; Ton 64 Hz, Rauschen 12, Lautstaerke 12
-        db 252,6,14,11   ; Ton 62 Hz, Rauschen 14, Lautstaerke 11
-        db 55,7,16,10   ; Ton 60 Hz, Rauschen 16, Lautstaerke 10
-        db 119,7,18,9   ; Ton 58 Hz, Rauschen 18, Lautstaerke 9
-        db 187,7,20,8   ; Ton 56 Hz, Rauschen 20, Lautstaerke 8
-        db 5,8,22,7   ; Ton 54 Hz, Rauschen 22, Lautstaerke 7
-        db 84,8,24,6   ; Ton 52 Hz, Rauschen 24, Lautstaerke 6
-        db 169,8,26,5   ; Ton 50 Hz, Rauschen 26, Lautstaerke 5
-        db 5,9,28,4   ; Ton 48 Hz, Rauschen 28, Lautstaerke 4
-        db 106,9,30,3   ; Ton 46 Hz, Rauschen 30, Lautstaerke 3
-        db 215,9,32,2   ; Ton 44 Hz, Rauschen 32, Lautstaerke 2
-        db 79,10,34,1   ; Ton 42 Hz, Rauschen 34, Lautstaerke 1
-        db 211,10,36,0   ; Ton 40 Hz, Rauschen 36, Lautstaerke 0
+        db 21
+        db 85,3,1,15   ; Ton 130 Hz, Rauschen 1, Lautstaerke 15
+        db 240,3,2,15   ; Ton 110 Hz, Rauschen 2, Lautstaerke 15
+        db 47,6,8,15   ; Ton 70 Hz, Rauschen 8, Lautstaerke 15
+        db 196,6,9,15   ; Ton 64 Hz, Rauschen 9, Lautstaerke 15
+        db 55,7,10,14   ; Ton 60 Hz, Rauschen 10, Lautstaerke 14
+        db 119,7,12,13   ; Ton 58 Hz, Rauschen 12, Lautstaerke 13
+        db 5,8,14,12   ; Ton 54 Hz, Rauschen 14, Lautstaerke 12
+        db 43,8,16,11   ; Ton 53 Hz, Rauschen 16, Lautstaerke 11
+        db 84,8,18,10   ; Ton 52 Hz, Rauschen 18, Lautstaerke 10
+        db 125,8,20,9   ; Ton 51 Hz, Rauschen 20, Lautstaerke 9
+        db 169,8,22,8   ; Ton 50 Hz, Rauschen 22, Lautstaerke 8
+        db 214,8,24,7   ; Ton 49 Hz, Rauschen 24, Lautstaerke 7
+        db 5,9,26,6   ; Ton 48 Hz, Rauschen 26, Lautstaerke 6
+        db 54,9,28,5   ; Ton 47 Hz, Rauschen 28, Lautstaerke 5
+        db 106,9,30,4   ; Ton 46 Hz, Rauschen 30, Lautstaerke 4
+        db 159,9,31,3   ; Ton 45 Hz, Rauschen 31, Lautstaerke 3
+        db 215,9,31,3   ; Ton 44 Hz, Rauschen 31, Lautstaerke 3
+        db 18,10,31,2   ; Ton 43 Hz, Rauschen 31, Lautstaerke 2
+        db 79,10,31,2   ; Ton 42 Hz, Rauschen 31, Lautstaerke 2
+        db 143,10,31,1   ; Ton 41 Hz, Rauschen 31, Lautstaerke 1
+        db 211,10,31,1   ; Ton 40 Hz, Rauschen 31, Lautstaerke 1
 sfx_6:
         db 14
         db 139,0,0,14   ; Ton 800 Hz, Rauschen 0, Lautstaerke 14
@@ -3685,7 +3700,13 @@ sfx_4:
         dw 167
         db 2   ; 400 Hz
 sfx_5:
-        db 16
+        db 21
+        dw 0
+        db 9   ; Rauschen
+        dw 0
+        db 9   ; Rauschen
+        dw 0
+        db 9   ; Rauschen
         dw 0
         db 9   ; Rauschen
         dw 0
@@ -3712,6 +3733,10 @@ sfx_5:
         db 2   ; Rauschen
         dw 0
         db 2   ; Rauschen
+        dw 0
+        db 2   ; Rauschen
+        dw 0
+        db 1   ; Rauschen
         dw 0
         db 1   ; Rauschen
         dw 0
