@@ -101,7 +101,7 @@ Spieler und Gegner liegen nicht im Feld, sondern in eigenen Strukturen (Position
 - **Test:** komplette Partie von Titel bis Sieger
 
 -1. Meilenstein
--State: InProgress
+-State: Done
 
 ## Stufe 6 – Gegner für den Einzelspieler
 
@@ -111,7 +111,7 @@ Spieler und Gegner liegen nicht im Feld, sondern in eigenen Strukturen (Position
 - Mehrere Level mit steigender Gegnerzahl
 - **Test:** Gegner laufen, sterben durch Flammen, töten den Spieler
 
--State: Open
+-State: InProgress
 
 ## Stufe 7 – Sound und 128K-Fassung (optional)
 

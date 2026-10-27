@@ -1,5 +1,5 @@
 ; ============================================================
-; XBlast fuer den ZX Spectrum - Stufe 5: Runden und Spielablauf
+; XBlast fuer den ZX Spectrum - Stufe 6: Monster und Einzelspieler
 ; Assembler: pasmo   (pasmo --tapbas xblast.asm xblast.tap)
 ; ============================================================
 ; Spielfeld 15 x 11 Kacheln a 16x16 Pixel (2x2 Zeichenzellen)
@@ -11,6 +11,7 @@
 ;   Spieler 2 (unten rechts): Joystick 2 = Tasten 1 2 3 4 5
 ;   Feuer                   : Bombe legen (1 Bombe pro Spieler)
 ;   LEERTASTE               : Spiel abbrechen, zurueck zum Titel
+; Einzelspieler: Spieler 1 wird mit Joystick 1 ODER 2 gesteuert.
 ;
 ; Ablauf: Titelbild (Siege pro Spiel waehlen: Stick links/rechts, Feuer
 ; startet) -> Runden bis ein Spieler genug Siege hat. Eine Runde gewinnt,
@@ -26,6 +27,10 @@
 ;   Bombe  = eine Bombe mehr gleichzeitig
 ;   Blitz  = schneller laufen
 ; Flammen zerstoeren liegende Power-Ups.
+; Einzelspieler: Monster laufen durchs Feld und toeten bei Beruehrung.
+; Gruene Monster laufen zufaellig, gelbe (ab Level 3) verfolgen den
+; Spieler und meiden Flammen. Flammen toeten Monster. Sind alle tot,
+; ist das Level geschafft (mehr Monster im naechsten Level). 3 Leben.
 ; ============================================================
 
         org 32768
@@ -65,6 +70,19 @@ MAX_WINS    equ 5
 RS_RUN      equ 0               ; Rundenzustaende
 RS_DECIDE   equ 1
 RS_OVER     equ 2
+; Monster (Einzelspieler)
+MAX_MON     equ 6               ; Monsterplaetze
+MS_SIZE     equ 8               ; Bytes je Monster
+MX          equ 0               ; Kachel x
+MY          equ 1               ; Kachel y
+MDIR        equ 2               ; Laufrichtung
+MALIVE      equ 3               ; 1 = lebt
+MDELAY      equ 4               ; Frames bis zum naechsten Schritt
+MTYPE       equ 5               ; 0 = zufaellig, 1 = verfolgt den Spieler
+MON_DELAY_DUMB  equ 18          ; Frames je Schritt
+MON_DELAY_SMART equ 12
+START_LIVES equ 3
+MAX_LEVEL   equ 9
 MAX_BOMBS   equ 8               ; Bombenplaetze insgesamt
 BS_SIZE     equ 8               ; Bytes je Bombenplatz
 
@@ -146,6 +164,11 @@ sd_b        equ VARS + 0x2C5
 sd_done     equ VARS + 0x2C6    ; Spirale ist fertig
 menu_prev   equ VARS + 0x2C7    ; Menue: Joystickstand im letzten Frame
 menu_cur    equ VARS + 0x2C8
+game_mode   equ VARS + 0x2C9    ; 0 = Einzelspieler (Monster), 1 = zwei Spieler
+level       equ VARS + 0x2CA    ; Einzelspieler: aktuelles Level 1..9
+lives       equ VARS + 0x2CB    ; Einzelspieler: Leben
+mon_idx     equ VARS + 0x2CC    ; Hilfsvariable beim Aufstellen der Monster
+mons        equ VARS + 0x330    ; MAX_MON * MS_SIZE Bytes
 bigbuf      equ VARS + 0x300    ; 32 Bytes: grosses Zeichen (2x2 Zellen)
 bombs       equ VARS + 0xC0     ; MAX_BOMBS * BS_SIZE Bytes
 pl1         equ VARS + 0x100    ; Spieler 1
@@ -160,12 +183,18 @@ start:
         call seed_init
         ld a,DEFAULT_WINS
         ld (wins_needed),a
+        ld a,1
+        ld (game_mode),a        ; Voreinstellung: zwei Spieler
 
 title:
         call title_screen       ; kehrt zurueck, wenn FEUER gedrueckt wurde
         xor a
         ld (score1),a
         ld (score2),a
+        ld a,1
+        ld (level),a
+        ld a,START_LIVES
+        ld (lives),a
 
 next_round:
         call init_round
@@ -177,7 +206,8 @@ next_round:
         call init_bombs
         xor a
         ld (dirty),a
-        call draw_players
+        call init_monsters      ; Einzelspieler: Monster aufstellen, Spieler 2 weg
+        call draw_actors
 
 ; ---- Hauptschleife: ein Durchlauf pro Frame (50 Hz) -------
 game_loop:
@@ -192,13 +222,23 @@ game_loop:
         jr nc,gl_world          ; Runde vorbei: Spieler eingefroren
         ld ix,pl1
         call read_joy1
+        ld h,a
+        ld a,(game_mode)
+        or a
+        ld a,h
+        jr nz,gl_p1
+        call read_joy2          ; Einzelspieler: beide Sticks steuern Spieler 1
+        or h
+gl_p1:
         call update_player
         ld ix,pl2
         call read_joy2
         call update_player
+        call update_monsters
 gl_world:
         call update_bombs
         call check_hits
+        call check_mon_hits
         call animate_bombs
         call update_flames
         ld a,(dirty)
@@ -206,7 +246,7 @@ gl_world:
         jr z,gl_logic
         xor a
         ld (dirty),a
-        call draw_players       ; Spieler nach Flammen-Zeichnen wieder oben
+        call draw_actors        ; Monster und Spieler nach Flammen wieder oben
 gl_logic:
         call round_logic        ; Carry = Runde ist endgueltig vorbei
         jr nc,game_loop
@@ -263,6 +303,11 @@ draw_players:
         call draw_player
         ld ix,pl2
         jp draw_player
+
+; zeichnet Monster, dann Spieler (Spieler liegen oben)
+draw_actors:
+        call draw_monsters
+        jp draw_players
 
 ; in: IX = Spieler
 draw_player:
@@ -780,6 +825,418 @@ uf_next:
         jr nz,uf_row
         ret
 
+
+; ============================================================
+; Monster (Einzelspieler)
+; ============================================================
+; Monster liegen wie die Spieler nicht im Feld, sondern in eigenen
+; Strukturen (mons). Zufalls-Monster laufen geradeaus und biegen
+; zufaellig ab; Verfolger laufen auf den Spieler zu und meiden Flammen.
+
+; Monster loeschen und aufstellen; im Einzelspieler ist Spieler 2 nicht dabei
+init_monsters:
+        ld hl,mons
+        ld de,mons+1
+        ld bc,MAX_MON*MS_SIZE-1
+        ld (hl),0
+        ldir
+        ld a,(game_mode)
+        or a
+        ret nz                  ; zwei Spieler: keine Monster
+        ld (pl2+PALIVE),a       ; A = 0: Spieler 2 spielt nicht mit
+        ld a,(level)
+        inc a                   ; Level n: n+1 Monster
+        cp MAX_MON+1
+        jr c,im_n
+        ld a,MAX_MON
+im_n:
+        ld b,a                  ; Anzahl
+        xor a
+        ld (mon_idx),a
+        ld ix,mons
+im_loop:
+        push bc
+im_find:
+        call rnd
+        and 15
+        jr z,im_find
+        cp FW-1
+        jr nc,im_find           ; x = 1..13
+        ld d,a
+im_fy:
+        call rnd
+        and 15
+        jr z,im_fy
+        cp FH-1
+        jr nc,im_fy             ; y = 1..9
+        ld e,a
+        add a,d
+        cp 8
+        jr c,im_find            ; zu nah am Start von Spieler 1
+        ld b,d
+        ld c,e
+        call field_addr
+        ld a,(hl)
+        or a
+        jr nz,im_find           ; Kachel nicht leer
+        call mon_at
+        jr nz,im_find           ; schon ein Monster dort
+        ld (ix+MX),b
+        ld (ix+MY),c
+        ld (ix+MALIVE),1
+        ld (ix+MDELAY),30       ; kurze Schonfrist zum Start
+        call rnd
+        and 3
+        ld (ix+MDIR),a
+        ld (ix+MTYPE),0
+        ld a,(level)
+        cp 3
+        jr c,im_next            ; unter Level 3: nur Zufalls-Monster
+        ld a,(mon_idx)
+        and 1
+        ld (ix+MTYPE),a         ; jedes zweite Monster verfolgt den Spieler
+im_next:
+        ld a,(mon_idx)
+        inc a
+        ld (mon_idx),a
+        ld de,MS_SIZE
+        add ix,de
+        pop bc
+        djnz im_loop
+        jp show_status1         ; Gegneranzeige in der Kopfzeile
+
+; in: B = x, C = y; out: NZ = dort steht ein lebendes Monster
+; erhaelt BC, DE, HL
+mon_at:
+        push hl
+        push de
+        ld hl,mons
+        ld d,MAX_MON
+ma_loop:
+        ld a,(hl)
+        cp b
+        jr nz,ma_next
+        inc hl
+        ld a,(hl)
+        inc hl
+        inc hl
+        ld e,(hl)               ; lebt?
+        dec hl
+        dec hl
+        dec hl
+        cp c
+        jr nz,ma_next
+        ld a,e
+        or a
+        jr nz,ma_yes
+ma_next:
+        ld a,l
+        add a,MS_SIZE
+        ld l,a
+        jr nc,ma_cont
+        inc h
+ma_cont:
+        dec d
+        jr nz,ma_loop
+        xor a                   ; Z: keins
+        pop de
+        pop hl
+        ret
+ma_yes:
+        ld a,1
+        or a                    ; NZ
+        pop de
+        pop hl
+        ret
+
+; out: A = Anzahl lebender Monster
+count_monsters:
+        ld hl,mons+MALIVE
+        ld de,MS_SIZE
+        ld b,MAX_MON
+        ld c,0
+cmn_loop:
+        ld a,(hl)
+        add a,c
+        ld c,a
+        add hl,de
+        djnz cmn_loop
+        ld a,c
+        ret
+
+; alle Monster einen Schritt weiter (jedes mit eigener Pause)
+update_monsters:
+        ld a,(game_mode)
+        or a
+        ret nz
+        ld ix,mons
+        ld b,MAX_MON
+um_loop:
+        push bc
+        ld a,(ix+MALIVE)
+        or a
+        call nz,move_monster
+        pop bc
+        ld de,MS_SIZE
+        add ix,de
+        djnz um_loop
+        ld a,(anim)             ; alle 8 Frames Beinchen wechseln
+        and 7
+        ret nz
+        jp draw_monsters
+
+; in: IX = Monster
+move_monster:
+        ld a,(ix+MDELAY)
+        or a
+        jr z,mm_go
+        dec (ix+MDELAY)
+        ret
+mm_go:
+        ld a,(ix+MTYPE)
+        or a
+        jr z,mm_dumb
+        call rnd
+        and 3
+        jr z,mm_dumb            ; Verfolger wird manchmal zufaellig
+        ; Richtung zum Spieler: H = dx, L = dy
+        ld a,(pl1+PX)
+        sub (ix+MX)
+        ld h,a
+        ld a,(pl1+PY)
+        sub (ix+MY)
+        ld l,a
+        ld a,h
+        ld d,0xFF               ; D = waagerechte Richtung (FF = keine)
+        or a
+        jr z,ms_h_done
+        ld d,DIR_RIGHT
+        jp p,ms_h_done
+        ld d,DIR_LEFT
+ms_h_done:
+        ld a,l
+        ld e,0xFF               ; E = senkrechte Richtung
+        or a
+        jr z,ms_v_done
+        ld e,DIR_DOWN
+        jp p,ms_v_done
+        ld e,DIR_UP
+ms_v_done:
+        ld a,h                  ; Betraege vergleichen
+        or a
+        jp p,ms_ah
+        neg
+ms_ah:
+        ld h,a
+        ld a,l
+        or a
+        jp p,ms_al
+        neg
+ms_al:
+        cp h                    ; |dy| < |dx| ?
+        jr c,ms_order_ok        ; ja: waagerecht zuerst
+        ld a,d                  ; sonst senkrecht zuerst
+        ld d,e
+        ld e,a
+ms_order_ok:
+        ld a,d
+        cp 0xFF
+        jr z,ms_try_e
+        call mon_try
+        jr c,mm_step
+ms_try_e:
+        ld a,e
+        cp 0xFF
+        jr z,mm_dumb
+        ld d,e
+        call mon_try
+        jr c,mm_step
+mm_dumb:
+        call rnd
+        and 3
+        jr z,mm_rand            ; manchmal einfach abbiegen
+        ld d,(ix+MDIR)
+        call mon_try
+        jr c,mm_step
+mm_rand:
+        call rnd
+        and 3
+        ld d,a
+        ld e,4                  ; alle vier Richtungen ab einer zufaelligen
+mr_loop:
+        call mon_try
+        jr c,mm_step
+        ld a,d
+        inc a
+        and 3
+        ld d,a
+        dec e
+        jr nz,mr_loop
+        ld (ix+MDELAY),6        ; eingesperrt: kurz warten
+        ret
+mm_step:
+        ld (ix+MDIR),d
+        push bc
+        ld b,(ix+MX)
+        ld c,(ix+MY)
+        call redraw_tile        ; alte Kachel wiederherstellen
+        pop bc
+        ld (ix+MX),b
+        ld (ix+MY),c
+        ld a,(ix+MTYPE)
+        or a
+        ld a,MON_DELAY_DUMB
+        jr z,mm_dl
+        ld a,MON_DELAY_SMART
+mm_dl:
+        ld (ix+MDELAY),a
+        jp draw_monster
+
+; in: IX = Monster, D = Richtung
+; out: Carry = Schritt moeglich, dann B = x, C = y der Zielkachel
+; erhaelt DE
+mon_try:
+        push de
+        ld e,d
+        ld d,0
+        ld hl,dir_dx
+        add hl,de
+        ld a,(ix+MX)
+        add a,(hl)
+        ld b,a
+        ld hl,dir_dy
+        add hl,de
+        ld a,(ix+MY)
+        add a,(hl)
+        ld c,a
+        call field_addr
+        ld a,(hl)
+        or a
+        jr z,mt_ok              ; leer
+        cp 0x80
+        jr nc,mt_flame
+        cp T_PU_RANGE
+        jr c,mt_no              ; Wand, Block, Bombe
+        jr mt_ok                ; Power-Up
+mt_flame:
+        ld a,(ix+MTYPE)
+        or a
+        jr nz,mt_no             ; Verfolger meidet Flammen
+mt_ok:
+        call mon_at
+        jr nz,mt_no             ; anderes Monster im Weg
+        pop de
+        scf
+        ret
+mt_no:
+        pop de
+        and a
+        ret
+
+; Flammen toeten Monster, Beruehrung toetet den Spieler
+check_mon_hits:
+        ld a,(game_mode)
+        or a
+        ret nz
+        ld a,(rstate)
+        cp RS_OVER
+        ret nc
+        ld ix,mons
+        ld d,MAX_MON
+cmh_loop:
+        ld a,(ix+MALIVE)
+        or a
+        jr z,cmh_next
+        ld b,(ix+MX)
+        ld c,(ix+MY)
+        call field_addr
+        ld a,(hl)
+        cp 0x80
+        jr c,cmh_contact
+        ld (ix+MALIVE),0        ; in der Flamme gestorben
+        call redraw_tile
+        ld a,1
+        ld (dirty),a
+        push de
+        call show_status1
+        pop de
+        jr cmh_next
+cmh_contact:
+        ld a,(pl1+PALIVE)
+        or a
+        jr z,cmh_next
+        ld a,(pl1+PX)
+        cp b
+        jr nz,cmh_next
+        ld a,(pl1+PY)
+        cp c
+        jr nz,cmh_next
+        xor a
+        ld (pl1+PALIVE),a       ; vom Monster erwischt
+        call redraw_tile
+        ld a,1
+        ld (dirty),a
+cmh_next:
+        push de
+        ld de,MS_SIZE
+        add ix,de
+        pop de
+        dec d
+        jr nz,cmh_loop
+        ret
+
+draw_monsters:
+        ld ix,mons
+        ld b,MAX_MON
+dms_loop:
+        push bc
+        call draw_monster
+        pop bc
+        ld de,MS_SIZE
+        add ix,de
+        djnz dms_loop
+        ret
+
+; in: IX = Monster
+draw_monster:
+        ld a,(ix+MALIVE)
+        or a
+        ret z
+        ld a,(ix+MTYPE)
+        ld e,a
+        ld d,0
+        ld hl,mon_attr
+        add hl,de
+        ld a,(hl)
+        ld (cur_attr),a
+        ld a,(ix+MTYPE)
+        add a,a
+        ld e,a                  ; Typ * 2
+        ld a,(anim)
+        rrca
+        rrca
+        rrca
+        and 1                   ; Bit 3 der Frames: Beinchen
+        add a,e
+        ld l,a
+        ld h,0
+        add hl,hl
+        add hl,hl
+        add hl,hl
+        add hl,hl
+        add hl,hl               ; * 32
+        ld de,mon_gfx
+        add hl,de
+        ld a,(ix+MY)
+        add a,a
+        add a,FIELD_ROW
+        ld b,a
+        ld a,(ix+MX)
+        add a,a
+        add a,FIELD_COL
+        ld c,a
+        jp draw_gfx
+
 ; ============================================================
 ; Spielablauf: Runden, Zeit, Endspiel
 ; ============================================================
@@ -809,6 +1266,9 @@ init_round:
 
 ; out: Carry gesetzt = die Runde ist endgueltig vorbei (naechste Runde / Titel)
 round_logic:
+        ld a,(game_mode)
+        or a
+        jp z,round_logic1       ; Einzelspieler
         ld a,(rstate)
         cp RS_DECIDE
         jr z,rl_decide
@@ -906,6 +1366,50 @@ rl_pressed:
         scf
         ret
 
+; Einzelspieler: Level geschafft oder Leben verloren
+round_logic1:
+        ld a,(rstate)
+        cp RS_DECIDE
+        jr z,r1_decide
+        jp nc,rl_over
+        ld a,(pl1+PALIVE)
+        or a
+        jr z,r1_start           ; Spieler tot
+        call count_monsters
+        or a
+        jp nz,rl_nc             ; es gibt noch Gegner
+r1_start:
+        ld a,RS_DECIDE
+        ld (rstate),a
+        ld a,DECIDE_FRAMES
+        ld (rcnt),a
+        and a
+        ret
+r1_decide:
+        ld hl,rcnt
+        dec (hl)
+        jp nz,rl_nc
+        ld a,(pl1+PALIVE)
+        or a
+        jr z,r1_dead
+        ld a,(level)            ; alle Monster tot: naechstes Level
+        cp MAX_LEVEL
+        jr nc,r1_ok
+        inc a
+        ld (level),a
+r1_ok:
+        ld hl,txt_lvl_ok
+        jp rl_show
+r1_dead:
+        ld hl,lives
+        dec (hl)
+        ld hl,txt_lost
+        jp nz,rl_show
+        ld a,1
+        ld (match_over),a       ; alle Leben weg: Spiel vorbei
+        ld hl,txt_gameover
+        jp rl_show
+
 ; out: A = Anzahl lebender Spieler
 count_alive:
         xor a
@@ -957,6 +1461,9 @@ show_time:
         jp print_num3
 
 show_scores:
+        ld a,(game_mode)
+        or a
+        jp z,show_status1
         ld a,ATTR_P1
         ld (cur_attr),a
         ld a,(score1)
@@ -968,6 +1475,23 @@ show_scores:
         ld a,(score2)
         ld b,0
         ld c,28
+        jp print_digit
+
+; Einzelspieler: Level, Leben und Gegner in der Kopfzeile
+show_status1:
+        ld a,ATTR_TEXT
+        ld (cur_attr),a
+        ld a,(level)
+        ld b,0
+        ld c,14
+        call print_digit
+        ld a,(lives)
+        ld b,0
+        ld c,22
+        call print_digit
+        call count_monsters
+        ld b,0
+        ld c,31
         jp print_digit
 
 ; Endspiel: im Takt SD_RATE eine Wand mehr, spiralfoermig von aussen
@@ -1127,7 +1651,7 @@ sa_finish:
 title_screen:
         call cls
         call draw_title_static
-        call show_wins
+        call show_menu
 ts_rel:
         call any_fire           ; erst warten, bis kein Feuer mehr gehalten wird
         jr nz,ts_rel
@@ -1151,6 +1675,17 @@ ts_loop:
         ld e,a
         bit J_FIRE,e
         ret nz                  ; Start
+        bit J_UP,e
+        jr nz,ts_mode
+        bit J_DOWN,e
+        jr z,ts_wins
+ts_mode:
+        ld a,(game_mode)        ; hoch / runter: Einzelspieler <-> zwei Spieler
+        xor 1
+        ld (game_mode),a
+        call show_menu
+        jr ts_loop
+ts_wins:
         ld a,(wins_needed)
         bit J_LEFT,e
         jr z,ts_right
@@ -1166,10 +1701,40 @@ ts_right:
         inc a
 ts_set:
         ld (wins_needed),a
-        call show_wins
+        call show_menu
         jr ts_loop
 
-show_wins:
+; Spielart (Zeile 19) und Siege bzw. Hinweis (Zeile 20) anzeigen
+show_menu:
+        ld hl,txt_t11
+        ld bc,19*256+3
+        ld a,ATTR_TEXT
+        call put_text
+        ld hl,txt_m2
+        ld a,(game_mode)
+        or a
+        jr nz,sm_txt
+        ld hl,txt_m1
+sm_txt:
+        ld bc,19*256+13
+        ld a,ATTR_TITLE
+        call put_text
+        ld hl,txt_blank
+        ld bc,20*256+1
+        ld a,ATTR_TEXT
+        call put_text
+        ld a,(game_mode)
+        or a
+        jr nz,sm_wins
+        ld hl,txt_t12
+        ld bc,20*256+3
+        ld a,ATTR_TEXT
+        jp put_text
+sm_wins:
+        ld hl,txt_t8
+        ld bc,20*256+3
+        ld a,ATTR_TEXT
+        call put_text
         ld a,ATTR_TITLE
         ld (cur_attr),a
         ld a,(wins_needed)
@@ -1236,22 +1801,18 @@ tt_loop:
         call put_text
         ; Steuerung
         ld hl,txt_t5
-        ld bc,16*256+2
+        ld bc,15*256+2
         ld a,ATTR_P1
         call put_text
         ld hl,txt_t6
-        ld bc,17*256+2
+        ld bc,16*256+2
         ld a,ATTR_P2
         call put_text
         ld hl,txt_t7
-        ld bc,18*256+2
+        ld bc,17*256+2
         ld a,ATTR_TEXT
         call put_text
-        ; Menue
-        ld hl,txt_t8
-        ld bc,20*256+3
-        ld a,ATTR_TEXT
-        call put_text
+        ; Menue (Zeilen 19/20 zeichnet show_menu)
         ld hl,txt_t9
         ld bc,21*256+4
         ld a,0x05               ; cyan
@@ -1267,6 +1828,23 @@ draw_header:
         ld bc,0*256+1
         ld a,ATTR_TITLE
         call put_text
+        ld a,(game_mode)
+        or a
+        jr nz,dh_two
+        ld hl,txt_level
+        ld bc,0*256+8
+        ld a,ATTR_TEXT
+        call put_text
+        ld hl,txt_lives
+        ld bc,0*256+16
+        ld a,ATTR_P1
+        call put_text
+        ld hl,txt_enemy
+        ld bc,0*256+24
+        ld a,ATTR_P2
+        call put_text
+        jp show_status1
+dh_two:
         ld hl,txt_zeit
         ld bc,0*256+9
         ld a,ATTR_TEXT
@@ -1805,7 +2383,7 @@ txt_sd:
 txt_prompt:
         db "FEUER: WEITER",0
 txt_t1:
-        db "BOMBEN-DUELL FUER 2 SPIELER",0
+        db "BOMBEN-DUELL UND MONSTERJAGD",0
 txt_t2:
         db "MEHR REICHWEITE",0
 txt_t3:
@@ -1821,9 +2399,29 @@ txt_t7:
 txt_t8:
         db "SIEGE ZUM SPIELGEWINN:",0
 txt_t9:
-        db "(STICK LINKS / RECHTS)",0
+        db "STICK: HOCH/RUNTER=SPIELART",0
 txt_t10:
         db "FEUER = START",0
+txt_t11:
+        db "SPIELART:",0
+txt_t12:
+        db "ALLE MONSTER BESIEGEN!",0
+txt_m1:
+        db "1 SPIELER",0
+txt_m2:
+        db "2 SPIELER",0
+txt_level:
+        db "LEVEL",0
+txt_lives:
+        db "LEBEN",0
+txt_enemy:
+        db "GEGNER",0
+txt_lvl_ok:
+        db "LEVEL GESCHAFFT!",0
+txt_lost:
+        db "LEBEN VERLOREN",0
+txt_gameover:
+        db "SPIEL VORBEI!",0
 txt_blank:
         db "                              ",0
 
@@ -1931,5 +2529,30 @@ spr_gfx:
         db 0x00,0x80,0xC0,0xE0,0xF0,0xF8,0x18,0x98
         db 0x1C,0x18,0x1F,0x0F,0x0D,0x1D,0x19,0x39
         db 0x98,0x18,0xF8,0xF0,0xB0,0xB8,0x98,0x9C
+
+; Monster-Sprites: Zufalls-Monster (2 Frames), Verfolger (2 Frames)
+mon_attr:
+        db 0x44,0x46            ; gruen, gelb
+mon_gfx:
+        ; Zufalls-Monster, Frame 1
+        db 0x00,0x00,0x03,0x0F,0x1F,0x3F,0x39,0x39
+        db 0x00,0x00,0xC0,0xF0,0xF8,0xFC,0x9C,0x9C
+        db 0x3F,0x3F,0x3F,0x3F,0x1F,0x1B,0x31,0x31
+        db 0xFC,0xFC,0xFC,0xFC,0xF8,0xD8,0x8C,0x8C
+        ; Zufalls-Monster, Frame 2
+        db 0x00,0x00,0x03,0x0F,0x1F,0x3F,0x39,0x39
+        db 0x00,0x00,0xC0,0xF0,0xF8,0xFC,0x9C,0x9C
+        db 0x3F,0x3F,0x3F,0x3F,0x1F,0x1E,0x0C,0x18
+        db 0xFC,0xFC,0xFC,0xFC,0xF8,0x78,0x30,0x18
+        ; Verfolger, Frame 1
+        db 0x21,0x33,0x3F,0x7F,0x7F,0x77,0x63,0x77
+        db 0x84,0xCC,0xFC,0xFE,0xFE,0xDE,0x8E,0xDE
+        db 0x7F,0x7F,0x7F,0x7F,0x7F,0x6E,0x46,0x00
+        db 0xFE,0xFE,0xFE,0xFE,0xFE,0x76,0x62,0x00
+        ; Verfolger, Frame 2
+        db 0x21,0x33,0x3F,0x7F,0x7F,0x77,0x63,0x77
+        db 0x84,0xCC,0xFC,0xFE,0xFE,0xDE,0x8E,0xDE
+        db 0x7F,0x7F,0x7F,0x7F,0x7F,0x76,0x22,0x00
+        db 0xFE,0xFE,0xFE,0xFE,0xFE,0x6E,0x44,0x00
 
         end start
