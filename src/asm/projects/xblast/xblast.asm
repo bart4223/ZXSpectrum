@@ -55,7 +55,7 @@ MAX_RANGE   equ 6               ; Obergrenzen
 MAX_PBOMBS  equ 5
 MIN_DELAY   equ 4               ; schnellster Schritt (Frames Pause)
 ; Flammen stehen als 0x80 + Restdauer im Feld (Bit 7 = Flamme)
-FLAME_TICKS equ 25              ; Flammendauer in Frames
+FLAME_TICKS equ 15              ; Flammendauer in Frames (0,3 Sekunden)
 FLAME_VAL   equ 0x80 + FLAME_TICKS
 BOMB_FUSE   equ 150             ; Zuenddauer in Frames (3 Sekunden)
 BOMB_URGENT equ 50              ; unter dieser Restzeit pulsiert die Bombe schneller
