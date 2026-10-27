@@ -3295,45 +3295,9 @@ song_title:
         db 29,12,2
         db 0,0,3
         db 255,0,0
-        IF AY128
-song_game:
-        db 34,10,1
-        db 0,0,0
-        db 0,22,3
-        db 37,0,0
-        db 0,10,2
-        db 0,0,0
-        db 41,22,3
-        db 0,0,0
-        db 42,10,1
-        db 0,0,0
-        db 41,22,3
-        db 0,0,0
-        db 37,10,2
-        db 0,0,0
-        db 34,22,3
-        db 0,0,0
-        db 39,15,1
-        db 0,0,0
-        db 0,27,3
-        db 42,0,0
-        db 0,15,2
-        db 0,0,0
-        db 46,27,3
-        db 0,0,0
-        db 41,5,1
-        db 0,0,0
-        db 0,17,3
-        db 36,0,0
-        db 0,5,2
-        db 0,0,0
-        db 33,17,3
-        db 0,0,0
-        db 255,0,0
-        ELSE
+; Spielmusik: bewusst keine (Song 1 ist leer, im Spiel bleiben nur Effekte)
 song_game:
         db 255,0,0
-        ENDIF
 song_win:
         db 37,25,0
         db 41,29,0
@@ -3364,13 +3328,8 @@ song_tab:
         ELSE
         db 6,1,0
         ENDIF
-        IF AY128
-        dw song_game
-        db 5,1,3
-        ELSE
         dw song_game
         db 5,0,0
-        ENDIF
         dw song_win
         IF AY128
         db 5,0,0
