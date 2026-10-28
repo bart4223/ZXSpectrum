@@ -121,7 +121,7 @@ Spieler und Gegner liegen nicht im Feld, sondern in eigenen Strukturen (Position
 - **Test:** Sound stört die Spielgeschwindigkeit nicht
 
 -2. Meilenstein
--State: InProgress
+-State: Done
 
 ## Stufe 8 – Feinschliff
 
@@ -131,7 +131,7 @@ Spieler und Gegner liegen nicht im Feld, sondern in eigenen Strukturen (Position
 - Balance: Zünddauer, Flammendauer, Laufgeschwindigkeit
 
 -3. Meilenstein
--State: Open
+-State: InProgress
 
 ---
 

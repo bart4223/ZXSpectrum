@@ -1,5 +1,5 @@
 ; ============================================================
-; XBlast fuer den ZX Spectrum - Stufe 7: Sound und Musik
+; XBlast fuer den ZX Spectrum - Stufe 8: Feinschliff
 ; Assembler: pasmo   (pasmo --tapbas xblast.asm xblast.tap)
 ; ============================================================
 ; Zwei Fassungen aus einer Quelle (Konstante AY128 weiter unten):
@@ -8,6 +8,10 @@
 ; Der Beeper spielt pro Frame nur einen kurzen Ton-Burst, so bleibt das
 ; Spiel im 50-Hz-Takt. Im Titelbild schaltet die Taste T die Lautstaerke
 ; durch: 5 Stufen und Aus.
+;
+; Stufe 8: Power-Up-Anzeige in Zeile 1 (R = Reichweite, B = Bomben,
+; T = Tempo), vier Feldlayouts mit Namen, Serienstand und Level-Rekord
+; im Titelbild (gelten nur fuer die laufende Sitzung).
 ;
 ; Spielfeld 15 x 11 Kacheln a 16x16 Pixel (2x2 Zeichenzellen)
 ; Feste Waende am Rand und auf jeder zweiten Kachel,
@@ -212,6 +216,11 @@ m_prev      equ VARS + 0x2E8    ; Taste M im letzten Frame
 snd_fc      equ VARS + 0x2E9    ; Frame-Zaehler fuer das Ausklingen
 snd_vol     equ VARS + 0x2EA    ; Lautstaerke 0 (aus) .. 5
 snd_att     equ VARS + 0x2EB    ; 128K: Abzug von der AY-Lautstaerke
+layout      equ VARS + 0x2EC    ; Feldlayout 0..3
+mw1         equ VARS + 0x2ED    ; gewonnene Spiele Spieler 1 (Sitzung)
+mw2         equ VARS + 0x2EE    ; gewonnene Spiele Spieler 2 (Sitzung)
+best_level  equ VARS + 0x2EF    ; Einzelspieler: bestes Level der Sitzung
+hudbuf      equ VARS + 0x2F0    ; 9 Bytes: Text der Power-Up-Anzeige
 ay_regs     equ VARS + 0x360    ; 13 Bytes: Schattenregister des AY
 mons        equ VARS + 0x330    ; MAX_MON * MS_SIZE Bytes
 bigbuf      equ VARS + 0x300    ; 32 Bytes: grosses Zeichen (2x2 Zellen)
@@ -240,6 +249,10 @@ start:
         out (0xFE),a            ; Rand schwarz
         call seed_init
         call snd_init
+        xor a
+        ld (mw1),a
+        ld (mw2),a
+        ld (best_level),a
         ld a,DEFAULT_WINS
         ld (wins_needed),a
         ld a,1
@@ -254,8 +267,12 @@ title:
         ld (level),a
         ld a,START_LIVES
         ld (lives),a
+        call rnd
+        and 3
+        ld (layout),a           ; erstes Layout zufaellig
 
 next_round:
+        call pick_layout
         call init_round
         call cls
         call draw_header
@@ -267,6 +284,8 @@ next_round:
         ld (dirty),a
         call init_monsters      ; Einzelspieler: Monster aufstellen, Spieler 2 weg
         call draw_actors
+        call show_layout
+        call show_hud
         ld a,SONG_GAME
         call snd_song
 
@@ -471,6 +490,7 @@ up_free:                        ; leer, Power-Up oder Flamme (die ist toedlich)
         jr nc,up_done           ; Flamme
         ld (hl),T_EMPTY         ; Power-Up verschwindet von der Kachel
         call take_powerup
+        call show_hud_ix        ; Anzeige in Zeile 1 aktualisieren
 up_done:
         jp draw_players
 up_blocked:
@@ -1346,7 +1366,7 @@ round_logic:
         ld a,(rstate)
         cp RS_DECIDE
         jr z,rl_decide
-        jr nc,rl_over
+        jp nc,rl_over
         ; --- Runde laeuft
         call update_time
         call update_sudden
@@ -1384,11 +1404,20 @@ rl_win:
         call snd_song
         inc (hl)
         ld a,(hl)
+        push hl                 ; Zeiger auf score1 / score2 merken
         ld hl,wins_needed
         cp (hl)
+        pop hl
         jr c,rl_round           ; noch nicht genug Siege
         ld a,1
         ld (match_over),a
+        ld a,l                  ; Spielgewinn der Sitzung zaehlen
+        ld hl,mw1
+        cp score1 & 255
+        jr z,rl_mw
+        inc hl                  ; mw2 liegt direkt hinter mw1
+rl_mw:
+        inc (hl)
         ld h,b                  ; Text: "SPIELER n SIEGT!"
         ld l,c
         jr rl_show
@@ -1473,6 +1502,7 @@ r1_decide:
         jr nc,r1_ok
         inc a
         ld (level),a
+        call upd_best
 r1_ok:
         ld a,SONG_WIN
         call snd_song
@@ -1485,6 +1515,7 @@ r1_dead:
         jp nz,rl_show
         ld a,1
         ld (match_over),a       ; alle Leben weg: Spiel vorbei
+        call upd_best
         ld a,SONG_LOSE
         call snd_song
         ld hl,txt_gameover
@@ -1528,7 +1559,7 @@ update_time:
         ld a,1                  ; Zeit abgelaufen: Endspiel beginnt
         ld (sd_active),a
         ld hl,txt_sd
-        ld bc,1*256+1
+        ld bc,1*256+10
         ld a,ATTR_DEAD
         jp put_text
 
@@ -1795,6 +1826,7 @@ ts_set:
 
 ; Spielart (Zeile 19) und Siege bzw. Hinweis (Zeile 20) anzeigen
 show_menu:
+        call show_session       ; Zeile 7: Serienstand / Rekord
         ld hl,txt_vol           ; Zeile 22: Lautstaerke
         ld bc,22*256+3
         ld a,ATTR_TEXT
@@ -1883,7 +1915,7 @@ tt_loop:
         ld bc,2*256+24
         call draw_tile
         ld hl,txt_t1
-        ld bc,6*256+2
+        ld bc,5*256+2
         ld a,ATTR_TEXT
         call put_text
         ; Legende der Power-Ups
@@ -2212,11 +2244,19 @@ tile_for:
         jr z,tf_wall
         cp FH-1
         jr z,tf_wall
-        ; Saeulen: x und y beide gerade
+        ; Saeulen: x und y beide gerade (Layout 2: nur jede zweite Diagonale)
         ld a,b
         or c
         and 1
+        jr nz,tf_nopillar
+        ld a,(layout)
+        cp 2
+        jr nz,tf_wall
+        ld a,b
+        add a,c
+        and 3
         jr z,tf_wall
+tf_nopillar:
         ; Ecken freihalten: Abstand zur naechsten Ecke dx+dy <= 3
         ld a,b
         cp FW/2
@@ -2234,9 +2274,36 @@ tf_dy:
         add a,e                 ; dx+dy
         cp 4
         jr c,tf_empty
-        ; zufaellig Block oder leer
+        ; Layout 3 (Kreuzweg): mittlere Spalte und Zeile bleiben frei
+        ld a,(layout)
+        cp 3
+        jr nz,tf_rnd
+        ld a,b
+        cp FW/2
+        jr z,tf_empty
+        ld a,c
+        cp FH/2
+        jr z,tf_empty
+tf_rnd:
+        ; zufaellig Block oder leer, Dichte je nach Layout
         call rnd
-        cp BLOCK_CHANCE
+        ld e,a
+        ld d,BLOCK_CHANCE
+        ld a,(layout)
+        cp 1
+        jr nz,tf_d2
+        ld d,225                ; dichter Wald
+tf_d2:
+        cp 2
+        jr nz,tf_d3
+        ld d,140                ; offene Halle
+tf_d3:
+        cp 3
+        jr nz,tf_d4
+        ld d,190                ; Kreuzweg
+tf_d4:
+        ld a,e
+        cp d
         jr nc,tf_empty
         ld a,T_BLOCK
         ret
@@ -2466,6 +2533,169 @@ print_at:
         inc c
         jr print_at
 
+
+
+; ============================================================
+; Stufe 8: Layouts, Power-Up-Anzeige, Sitzungsstatistik
+; ============================================================
+; Layout fuer die kommende Runde: Einzelspieler nach Level,
+; Zwei Spieler reihum
+pick_layout:
+        ld a,(game_mode)
+        or a
+        jr nz,pl_two
+        ld a,(level)
+        dec a
+        and 3
+        ld (layout),a
+        ret
+pl_two:
+        ld a,(layout)
+        inc a
+        and 3
+        ld (layout),a
+        ret
+
+; Name des Layouts in Zeile 1 (Mitte)
+show_layout:
+        ld a,(layout)
+        add a,a
+        ld e,a
+        ld d,0
+        ld hl,layout_tab
+        add hl,de
+        ld e,(hl)
+        inc hl
+        ld d,(hl)
+        ex de,hl
+        ld bc,1*256+10
+        ld a,ATTR_TEXT
+        jp put_text
+
+; Power-Up-Anzeige beider Spieler (Zeile 1: P1 links, P2 rechts)
+show_hud:
+        ld ix,pl1
+        call show_hud_ix
+        ld a,(game_mode)
+        or a
+        ret z                   ; Einzelspieler: nur Spieler 1
+        ld ix,pl2
+; in: IX = Spieler; Anzeige "R2 B1 T0" (Reichweite, Bomben, Tempo-Stufe)
+show_hud_ix:
+        ld hl,hudbuf
+        ld (hl),'R'
+        inc hl
+        ld a,(ix+PRANGE)
+        add a,'0'
+        ld (hl),a
+        inc hl
+        ld (hl),' '
+        inc hl
+        ld (hl),'B'
+        inc hl
+        ld a,(ix+PMAXB)
+        add a,'0'
+        ld (hl),a
+        inc hl
+        ld (hl),' '
+        inc hl
+        ld (hl),'T'
+        inc hl
+        ld a,MOVE_DELAY
+        sub (ix+PSPEED)
+        add a,'0'
+        ld (hl),a
+        inc hl
+        ld (hl),0
+        ld a,(ix+PATTR)
+        ld (cur_attr),a
+        ld c,1
+        ld a,(ix+POWNER)
+        or a
+        jr z,hud_go
+        ld c,23
+hud_go:
+        ld b,1
+        ld hl,hudbuf
+        jp print_at
+
+; Einzelspieler: Level-Rekord der Sitzung nachziehen
+upd_best:
+        ld a,(level)
+        ld hl,best_level
+        cp (hl)
+        ret c
+        ld (hl),a
+        ret
+
+; Titelbild, Zeile 7: Serienstand (2 Spieler) oder Level-Rekord (1 Spieler)
+show_session:
+        ld hl,txt_blank
+        ld bc,7*256+1
+        ld a,ATTR_TEXT
+        call put_text
+        ld a,(game_mode)
+        or a
+        jr z,ss_one
+        ld hl,txt_serie
+        ld bc,7*256+5
+        ld a,ATTR_TEXT
+        call put_text
+        ld hl,txt_p1
+        ld bc,7*256+12
+        ld a,ATTR_P1
+        call put_text
+        ld a,(mw1)
+        ld b,7
+        ld c,15
+        call show_cnt1
+        ld hl,txt_colon
+        ld bc,7*256+17
+        ld a,ATTR_TEXT
+        call put_text
+        ld a,(mw2)
+        ld b,7
+        ld c,19
+        ld hl,txt_p2
+        push af
+        push bc
+        ld bc,7*256+21
+        ld a,ATTR_P2
+        call put_text
+        pop bc
+        pop af
+        jr show_cnt2
+ss_one:
+        ld a,(best_level)
+        or a
+        ret z                   ; noch kein Rekord
+        ld hl,txt_rekord
+        ld bc,7*256+8
+        ld a,ATTR_TEXT
+        call put_text
+        ld a,ATTR_TITLE
+        ld (cur_attr),a
+        ld a,(best_level)
+        ld b,7
+        ld c,22
+        jp print_digit
+
+; in: A = Zaehler, B/C = Zeile/Spalte; Ziffer in der Farbe von Spieler 1 bzw. 2
+show_cnt1:
+        ld d,ATTR_P1
+        jr show_cnt
+show_cnt2:
+        ld d,ATTR_P2
+show_cnt:
+        cp 10
+        jr c,sc_ok
+        ld a,9                  ; mehr als eine Stelle: bei 9 deckeln
+sc_ok:
+        ld e,a
+        ld a,d
+        ld (cur_attr),a
+        ld a,e
+        jp print_digit
 
 ; ============================================================
 ; Sound
@@ -3042,7 +3272,7 @@ txt_p2win:
 txt_draw:
         db "UNENTSCHIEDEN",0
 txt_sd:
-        db "ENDSPIEL!",0
+        db "ENDSPIEL!    ",0
 txt_prompt:
         db "FEUER: WEITER",0
 txt_t1:
@@ -3065,6 +3295,23 @@ txt_t9:
         db "STICK: HOCH/RUNTER=SPIELART",0
 txt_t10:
         db "FEUER = START",0
+txt_serie:
+        db "SERIE:",0
+txt_colon:
+        db ":",0
+txt_rekord:
+        db "REKORD: LEVEL",0
+; Layout-Namen (je 13 Zeichen, damit der Vorgaenger ueberschrieben wird)
+layout_tab:
+        dw lay_0,lay_1,lay_2,lay_3
+lay_0:
+        db "KLASSISCH    ",0
+lay_1:
+        db "DICHTER WALD ",0
+lay_2:
+        db "OFFENE HALLE ",0
+lay_3:
+        db "KREUZWEG     ",0
 txt_vol:
         db "T = TON: ",0
 txt_aus:
