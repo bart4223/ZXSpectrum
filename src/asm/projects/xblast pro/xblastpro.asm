@@ -225,6 +225,7 @@ best_level  equ VARS + 0x2EF    ; Einzelspieler: bestes Level der Sitzung
 exit_on     equ VARS + 0x2F0    ; 1 = Ausgang ist offen
 pts         equ VARS + 0x2F1    ; 2 Bytes: Punkte (Einzelspieler)
 best_pts    equ VARS + 0x2F3    ; 2 Bytes: Punkte-Rekord der Sitzung
+title_cnt   equ VARS + 0x2F5    ; Titelbild: Frame-Zaehler fuer die Bombenanimation
 ay_regs     equ VARS + 0x360    ; 13 Bytes: Schattenregister des AY
 mons        equ VARS + 0x330    ; MAX_MON * MS_SIZE Bytes
 bigbuf      equ VARS + 0x300    ; 32 Bytes: grosses Zeichen (2x2 Zellen)
@@ -1837,6 +1838,18 @@ ts_loop:
         halt
         call rnd
         call snd_tick
+        ld hl,title_cnt
+        inc (hl)
+        ld a,(hl)
+        and 15
+        jr nz,ts_noanim
+        ld a,(bomb_frame)       ; Bombe neben dem Titel pulsiert
+        xor 2
+        ld (bomb_frame),a
+        ld a,T_BOMB
+        ld bc,2*256+6
+        call draw_tile
+ts_noanim:
         call check_mute
         call read_joy1
         ld (menu_cur),a
@@ -1890,22 +1903,22 @@ ts_set:
 show_menu:
         call show_session       ; Zeile 7: Serienstand / Rekord
         ld hl,txt_vol           ; Zeile 22: Lautstaerke
-        ld bc,22*256+3
+        ld bc,22*256+9
         ld a,ATTR_TEXT
         call put_text
         ld a,(snd_vol)
         or a
         ld hl,txt_aus
-        ld bc,22*256+12
+        ld bc,22*256+18
         ld a,ATTR_TITLE
         jr z,sm_vol_txt
         ld a,ATTR_TITLE
         ld (cur_attr),a
         ld a,(snd_vol)
-        ld bc,22*256+12
+        ld bc,22*256+18
         call print_digit
         ld hl,txt_von5
-        ld bc,22*256+13
+        ld bc,22*256+19
         ld a,ATTR_TITLE
 sm_vol_txt:
         call put_text
@@ -1970,6 +1983,9 @@ tt_loop:
         dec d
         jr nz,tt_loop
         ; Bombe und Flamme neben dem Titel
+        xor a
+        ld (bomb_frame),a       ; Bombe startet im ersten Animationsframe
+        ld (title_cnt),a
         ld a,T_BOMB
         ld bc,2*256+6
         call draw_tile
@@ -1982,24 +1998,24 @@ tt_loop:
         call put_text
         ; Legende der Power-Ups
         ld a,T_PU_RANGE
-        ld bc,9*256+3
+        ld bc,9*256+6
         call draw_tile
         ld hl,txt_t2
-        ld bc,9*256+6
+        ld bc,9*256+9
         ld a,ATTR_TEXT
         call put_text
         ld a,T_PU_BOMB
-        ld bc,11*256+3
+        ld bc,11*256+6
         call draw_tile
         ld hl,txt_t3
-        ld bc,11*256+6
+        ld bc,11*256+9
         ld a,ATTR_TEXT
         call put_text
         ld a,T_PU_SPEED
-        ld bc,13*256+3
+        ld bc,13*256+6
         call draw_tile
         ld hl,txt_t4
-        ld bc,13*256+6
+        ld bc,13*256+9
         ld a,ATTR_TEXT
         call put_text
         ; Steuerung
@@ -2016,12 +2032,12 @@ tt_loop:
         ld a,ATTR_TEXT
         call put_text
         ld hl,txt_t12p
-        ld bc,17*256+23
+        ld bc,17*256+22
         ld a,ATTR_TEXT
         call put_text
         ; Menue (Zeilen 19/20 zeichnet show_menu)
         ld hl,txt_t9
-        ld bc,21*256+4
+        ld bc,21*256+3
         ld a,0x05               ; cyan
         call put_text
         ld hl,txt_t10
