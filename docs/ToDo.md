@@ -131,7 +131,7 @@ Spieler und Gegner liegen nicht im Feld, sondern in eigenen Strukturen (Position
 - Balance: Zünddauer, Flammendauer, Laufgeschwindigkeit
 
 -3. Meilenstein
--State: InProgress
+-State: Done
 
 ---
 
