@@ -1482,6 +1482,12 @@ rl_over:
         dec a
         ld (rcnt),a
         jp nz,rl_nc
+        ld a,(match_over)
+        or a
+        jr nz,rl_prompt
+        scf                     ; naechste Runde startet von selbst (nur nach Spielende: FEUER)
+        ret
+rl_prompt:
         ld hl,txt_prompt        ; Mindestzeit um: Hinweis zeigen
         ld bc,1*256+19
         ld a,ATTR_TITLE
@@ -2962,28 +2968,28 @@ show_session:
         or a
         jr z,ss_one
         ld hl,txt_serie
-        ld bc,7*256+5
+        ld bc,7*256+6
         ld a,ATTR_TEXT
         call put_text
         ld hl,txt_p1
-        ld bc,7*256+12
+        ld bc,7*256+13
         ld a,ATTR_P1
         call put_text
         ld a,(mw1)
         ld b,7
-        ld c,15
+        ld c,16
         call show_cnt1
         ld hl,txt_colon
-        ld bc,7*256+17
+        ld bc,7*256+18
         ld a,ATTR_TEXT
         call put_text
         ld a,(mw2)
         ld b,7
-        ld c,19
+        ld c,20
         ld hl,txt_p2
         push af
         push bc
-        ld bc,7*256+21
+        ld bc,7*256+22
         ld a,ATTR_P2
         call put_text
         pop bc
