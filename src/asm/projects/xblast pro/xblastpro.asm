@@ -153,7 +153,7 @@ PS_SIZE     equ 12
 MOVE_DELAY  equ 8               ; Frames pro Schritt (50 Hz / 8 = 6,25 Schritte/s)
 
 ; ---- Variablen (freier RAM, nicht im TAP) -----------------
-VARS        equ 0xA000
+VARS        equ 0xB000
 seed        equ VARS            ; 2 Bytes
 cur_attr    equ VARS + 2        ; 1 Byte: Attribut fuer draw_cell
 dirty       equ VARS + 3        ; 1 = Spieler muessen neu gezeichnet werden
