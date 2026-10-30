@@ -9,8 +9,8 @@
 ; Spiel im 50-Hz-Takt. Im Titelbild schaltet die Taste T die Lautstaerke
 ; durch: 5 Stufen und Aus.
 ;
-; Stufe 8: Power-Up-Anzeige in Zeile 1 (R = Reichweite, B = Bomben,
-; T = Tempo), vier Feldlayouts mit Namen, Serienstand und Level-Rekord
+; Stufe 8: Power-Up-Anzeige in Zeile 1 (Symbole fuer Reichweite, Bomben,
+; Tempo mit Zaehler), vier Feldlayouts mit Namen, Serienstand und Level-Rekord
 ; im Titelbild (gelten nur fuer die laufende Sitzung).
 ;
 ; Spielfeld 15 x 11 Kacheln a 16x16 Pixel (2x2 Zeichenzellen)
@@ -49,6 +49,7 @@
 ; ---- Konstanten -------------------------------------------
 AY128       equ 1               ; 0 = 48K Beeper, 1 = 128K AY (siehe Kopf)
 FW          equ 15              ; Feldbreite in Kacheln
+LAY_COUNT   equ 13              ; Layouts: 0-3 zufaellig, 4-12 gebaut
 FH          equ 11              ; Feldhoehe in Kacheln
 FIELD_COL   equ 1               ; Zeichenspalte der linken Feldkante
 FIELD_ROW   equ 2               ; Zeichenzeile der oberen Feldkante
@@ -62,6 +63,7 @@ T_FLAME     equ 4               ; Flamme (Grafikindex)
 T_PU_RANGE  equ 6               ; Flammenreichweite +1
 T_PU_BOMB   equ 7               ; eine Bombe mehr
 T_PU_SPEED  equ 8               ; schneller laufen
+T_EXIT      equ 9               ; Ausgang (Einzelspieler, erscheint nach dem letzten Monster)
 PU_CHANCE   equ 64              ; Anteil der Bloecke mit Power-Up (von 256)
 MAX_RANGE   equ 6               ; Obergrenzen
 MAX_PBOMBS  equ 5
@@ -220,7 +222,9 @@ layout      equ VARS + 0x2EC    ; Feldlayout 0..3
 mw1         equ VARS + 0x2ED    ; gewonnene Spiele Spieler 1 (Sitzung)
 mw2         equ VARS + 0x2EE    ; gewonnene Spiele Spieler 2 (Sitzung)
 best_level  equ VARS + 0x2EF    ; Einzelspieler: bestes Level der Sitzung
-hudbuf      equ VARS + 0x2F0    ; 9 Bytes: Text der Power-Up-Anzeige
+exit_on     equ VARS + 0x2F0    ; 1 = Ausgang ist offen
+pts         equ VARS + 0x2F1    ; 2 Bytes: Punkte (Einzelspieler)
+best_pts    equ VARS + 0x2F3    ; 2 Bytes: Punkte-Rekord der Sitzung
 ay_regs     equ VARS + 0x360    ; 13 Bytes: Schattenregister des AY
 mons        equ VARS + 0x330    ; MAX_MON * MS_SIZE Bytes
 bigbuf      equ VARS + 0x300    ; 32 Bytes: grosses Zeichen (2x2 Zellen)
@@ -253,6 +257,8 @@ start:
         ld (mw1),a
         ld (mw2),a
         ld (best_level),a
+        ld (best_pts),a
+        ld (best_pts+1),a
         ld a,DEFAULT_WINS
         ld (wins_needed),a
         ld a,1
@@ -267,8 +273,12 @@ title:
         ld (level),a
         ld a,START_LIVES
         ld (lives),a
-        call rnd
-        and 3
+        ld hl,0
+        ld (pts),hl
+st_rl:  call rnd
+        and 15
+        cp LAY_COUNT
+        jr nc,st_rl
         ld (layout),a           ; erstes Layout zufaellig
 
 next_round:
@@ -298,6 +308,10 @@ game_loop:
         in a,(0xFE)             ; Reihe B-N-M-Symbol-Leertaste
         rra                     ; Carry = Leertaste (0 = gedrueckt)
         jp nc,title             ; Leertaste: abbrechen
+        ld a,0xDF
+        in a,(0xFE)             ; Reihe P-O-I-U-Y
+        and 1
+        call z,pause_game       ; P: Pause
         ld a,(rstate)
         cp RS_OVER
         jr nc,gl_world          ; Runde vorbei: Spieler eingefroren
@@ -486,6 +500,8 @@ up_free:                        ; leer, Power-Up oder Flamme (die ist toedlich)
         ld a,(hl)
         cp T_PU_RANGE
         jr c,up_done
+        cp T_EXIT
+        jr z,up_done            ; Ausgang bleibt liegen
         cp 0x80
         jr nc,up_done           ; Flamme
         ld (hl),T_EMPTY         ; Power-Up verschwindet von der Kachel
@@ -772,6 +788,8 @@ ex_step:
         jr z,ex_block
         cp T_BOMB
         jr z,ex_bomb
+        cp T_EXIT
+        jr z,ex_stop            ; der Ausgang ist unzerstoerbar
         cp T_PU_RANGE
         jr nc,ex_block          ; ein Power-Up verbrennt wie ein Block
         jr ex_stop              ; feste Wand: hier ist Schluss
@@ -1244,6 +1262,15 @@ cmh_loop:
         cp 0x80
         jr c,cmh_contact
         ld (ix+MALIVE),0        ; in der Flamme gestorben
+        push de
+        ld de,100               ; Punkte: 100, Verfolger 200
+        ld a,(ix+MTYPE)
+        or a
+        jr z,cmh_pts
+        ld de,200
+cmh_pts:
+        call add_pts
+        pop de
         ld a,SFX_MONSTER
         call snd_sfx
         call redraw_tile
@@ -1336,6 +1363,7 @@ draw_monster:
 ; ============================================================
 init_round:
         xor a
+        ld (exit_on),a
         ld (rstate),a
         ld (armed),a
         ld (match_over),a
@@ -1425,6 +1453,8 @@ rl_round:
         ex de,hl                ; Text: "SPIELER n PUNKT"
         jr rl_show
 rl_draw:
+        ld a,SONG_LOSE          ; Unentschieden: kurzer Jingle
+        call snd_song
         ld hl,txt_draw
 rl_show:
         push hl
@@ -1450,7 +1480,7 @@ rl_over:
         jr z,rl_wait
         dec a
         ld (rcnt),a
-        jr nz,rl_nc
+        jp nz,rl_nc
         ld hl,txt_prompt        ; Mindestzeit um: Hinweis zeigen
         ld bc,1*256+19
         ld a,ATTR_TITLE
@@ -1483,6 +1513,17 @@ round_logic1:
         call count_monsters
         or a
         jp nz,rl_nc             ; es gibt noch Gegner
+        ld a,(exit_on)
+        or a
+        jp z,place_exit         ; alle Monster tot: Ausgang oeffnen
+        ld a,(pl1+PX)
+        ld b,a
+        ld a,(pl1+PY)
+        ld c,a
+        call field_addr
+        ld a,(hl)
+        cp T_EXIT
+        jp nz,rl_nc             ; Spieler steht noch nicht im Ausgang
 r1_start:
         ld a,RS_DECIDE
         ld (rstate),a
@@ -1497,12 +1538,14 @@ r1_decide:
         ld a,(pl1+PALIVE)
         or a
         jr z,r1_dead
-        ld a,(level)            ; alle Monster tot: naechstes Level
+        ld de,500               ; Bonus fuers Level
+        call add_pts
+        ld a,(level)            ; Ausgang erreicht: naechstes Level
         cp MAX_LEVEL
         jr nc,r1_ok
         inc a
         ld (level),a
-        call upd_best
+        call upd_level          ; Punkte-Rekord zaehlt erst am Spielende
 r1_ok:
         ld a,SONG_WIN
         call snd_song
@@ -1511,14 +1554,24 @@ r1_ok:
 r1_dead:
         ld hl,lives
         dec (hl)
-        ld hl,txt_lost
-        jp nz,rl_show
+        jr nz,r1_life
         ld a,1
         ld (match_over),a       ; alle Leben weg: Spiel vorbei
+        ld de,txt_gameover
+        call is_record          ; Carry = mehr Punkte als der Rekord
+        jr nc,r1_go
+        ld de,txt_record
+r1_go:
+        push de
         call upd_best
         ld a,SONG_LOSE
         call snd_song
-        ld hl,txt_gameover
+        pop hl
+        jp rl_show
+r1_life:
+        ld a,SONG_LOSE          ; Jingle: Leben verloren
+        call snd_song
+        ld hl,txt_lost
         jp rl_show
 
 ; out: A = Anzahl lebender Spieler
@@ -1603,7 +1656,16 @@ show_status1:
         call count_monsters
         ld b,0
         ld c,31
-        jp print_digit
+        call print_digit
+        ld hl,txt_pkt
+        ld bc,1*256+23
+        ld a,ATTR_TEXT
+        call put_text
+        ld a,ATTR_TITLE
+        ld (cur_attr),a
+        ld hl,(pts)
+        ld bc,1*256+26
+        jp print_num5
 
 ; Endspiel: im Takt SD_RATE eine Wand mehr, spiralfoermig von aussen
 update_sudden:
@@ -1953,6 +2015,10 @@ tt_loop:
         ld bc,17*256+2
         ld a,ATTR_TEXT
         call put_text
+        ld hl,txt_t12p
+        ld bc,17*256+23
+        ld a,ATTR_TEXT
+        call put_text
         ; Menue (Zeilen 19/20 zeichnet show_menu)
         ld hl,txt_t9
         ld bc,21*256+4
@@ -2233,6 +2299,9 @@ pp_none:
 ; out: A = Kacheltyp
 ; veraendert: A, DE (BC und HL bleiben erhalten)
 tile_for:
+        ld a,(layout)
+        cp 4
+        jr nc,tf_hand           ; gebautes Level
         ; Rand
         ld a,b
         or a
@@ -2312,6 +2381,44 @@ tf_empty:
         ret
 tf_wall:
         ld a,T_WALL
+        ret
+; gebautes Level: Zeichen aus der Textkarte lesen (# Wand, o Block, sonst leer)
+tf_hand:
+        sub 4
+        add a,a
+        ld e,a
+        ld d,0
+        push hl
+        ld hl,map_tab
+        add hl,de
+        ld e,(hl)
+        inc hl
+        ld d,(hl)               ; DE = Kartenanfang
+        ld l,c
+        ld h,0
+        add hl,hl
+        add hl,hl
+        add hl,hl
+        add hl,hl               ; 16*y
+        push de
+        ld e,c
+        ld d,0
+        or a
+        sbc hl,de               ; 15*y
+        ld e,b
+        add hl,de               ; + x
+        pop de
+        add hl,de
+        ld a,(hl)
+        pop hl
+        cp "#"
+        jr z,tf_wall
+        cp "o"
+        jr z,tf_blk
+        xor a
+        ret
+tf_blk:
+        ld a,T_BLOCK
         ret
 
 ; in:  B = x, C = y (Kachelkoordinaten)
@@ -2541,19 +2648,23 @@ print_at:
 ; Layout fuer die kommende Runde: Einzelspieler nach Level,
 ; Zwei Spieler reihum
 pick_layout:
-        ld a,(game_mode)
-        or a
-        jr nz,pl_two
-        ld a,(level)
-        dec a
+        call rnd
         and 3
-        ld (layout),a
-        ret
-pl_two:
-        ld a,(layout)
-        inc a
-        and 3
-        ld (layout),a
+        jr nz,pl_built          ; 3 von 4 Runden: gebautes Level
+        call rnd
+        and 3                   ; 1 von 4 Runden: Zufallslayout 0-3
+        jr pl_chk
+pl_built:
+        call rnd
+        and 15
+        cp 9
+        jr nc,pl_built
+        add a,4                 ; zufaellig eines der 9 gebauten Level
+pl_chk:
+        ld hl,layout
+        cp (hl)
+        jr z,pick_layout        ; nie zweimal hintereinander dasselbe
+        ld (hl),a
         ret
 
 ; Name des Layouts in Zeile 1 (Mitte)
@@ -2580,35 +2691,9 @@ show_hud:
         or a
         ret z                   ; Einzelspieler: nur Spieler 1
         ld ix,pl2
-; in: IX = Spieler; Anzeige "R2 B1 T0" (Reichweite, Bomben, Tempo-Stufe)
+; in: IX = Spieler; Anzeige: Symbol + Ziffer fuer Reichweite, Bomben und
+; Tempo-Stufe (8 Zellen in Zeile 1, Spieler 1 ab Spalte 1, Spieler 2 ab 23)
 show_hud_ix:
-        ld hl,hudbuf
-        ld (hl),'R'
-        inc hl
-        ld a,(ix+PRANGE)
-        add a,'0'
-        ld (hl),a
-        inc hl
-        ld (hl),' '
-        inc hl
-        ld (hl),'B'
-        inc hl
-        ld a,(ix+PMAXB)
-        add a,'0'
-        ld (hl),a
-        inc hl
-        ld (hl),' '
-        inc hl
-        ld (hl),'T'
-        inc hl
-        ld a,MOVE_DELAY
-        sub (ix+PSPEED)
-        add a,'0'
-        ld (hl),a
-        inc hl
-        ld (hl),0
-        ld a,(ix+PATTR)
-        ld (cur_attr),a
         ld c,1
         ld a,(ix+POWNER)
         or a
@@ -2616,17 +2701,240 @@ show_hud_ix:
         ld c,23
 hud_go:
         ld b,1
-        ld hl,hudbuf
-        jp print_at
+        ld hl,gl_range
+        ld d,0x46               ; gelb
+        ld e,(ix+PRANGE)
+        call hud_item
+        ld hl,gl_bomb
+        ld d,0x42               ; rot
+        ld e,(ix+PMAXB)
+        call hud_item
+        ld hl,gl_speed
+        ld d,0x44               ; gruen
+        ld a,MOVE_DELAY
+        sub (ix+PSPEED)
+        ld e,a
+; in: HL = 8-Byte-Symbol, D = Symbol-Attribut, E = Wert, B/C = Zeile/Spalte,
+; IX = Spieler; zeichnet Symbol und Ziffer, C zeigt danach 3 Spalten weiter
+hud_item:
+        push bc
+        push de
+        ld a,d
+        ld (cur_attr),a
+        call draw_cell          ; Symbol (erhaelt BC)
+        pop de
+        pop bc
+        inc c
+        push bc
+        ld a,(ix+PATTR)
+        ld (cur_attr),a         ; Ziffer in der Farbe des Spielers
+        ld a,e
+        call print_digit
+        pop bc
+        inc c
+        inc c
+        ret
+
+; Symbole fuer die Anzeige (8x8)
+gl_range:
+        db 0x18,0x18,0x3C,0xFF,0xFF,0x3C,0x18,0x18
+gl_bomb:
+        db 0x02,0x04,0x1C,0x3E,0x3E,0x3E,0x1C,0x00
+gl_speed:
+        db 0x06,0x0C,0x18,0x3E,0x0C,0x18,0x30,0x40
 
 ; Einzelspieler: Level-Rekord der Sitzung nachziehen
 upd_best:
+        call is_record
+        jr nc,ub_lvl
+        ld hl,(pts)
+        ld (best_pts),hl
+upd_level:
+ub_lvl:
         ld a,(level)
         ld hl,best_level
         cp (hl)
         ret c
         ld (hl),a
         ret
+
+; out: Carry = pts > best_pts; erhaelt DE, BC
+is_record:
+        ld hl,(best_pts)
+        ld a,(pts)
+        sub l
+        ld a,(pts+1)
+        sbc a,h
+        jr nc,ir_ge             ; pts >= best_pts
+        and a
+        ret
+ir_ge:
+        ld a,(pts)
+        cp l
+        jr nz,ir_yes
+        ld a,(pts+1)
+        cp h
+        jr nz,ir_yes
+        and a                   ; gleich: kein neuer Rekord
+        ret
+ir_yes:
+        scf
+        ret
+
+; in: DE = Punkte; addiert zu pts (Deckel 65535); veraendert A, HL
+add_pts:
+        ld hl,(pts)
+        add hl,de
+        jr nc,ap_ok
+        ld hl,65535
+ap_ok:
+        ld (pts),hl
+        ret
+
+; in: HL = Wert 0..65535, B = Zeile, C = Spalte der ersten Ziffer, (cur_attr)
+; schreibt 5 Ziffern (mit fuehrenden Nullen); veraendert A, DE, HL
+print_num5:
+        push ix                 ; IX gehoert dem Aufrufer (Monsterschleife)
+        push bc
+        ld ix,bigbuf+16         ; Textpuffer
+        push ix
+        ld de,10000
+        call pn5_dig
+        ld de,1000
+        call pn5_dig
+        ld de,100
+        call pn5_dig
+        ld de,10
+        call pn5_dig
+        ld a,l
+        add a,'0'
+        ld (ix+0),a
+        ld (ix+1),0
+        pop hl
+        pop bc
+        pop ix
+        jp print_at
+pn5_dig:
+        ld a,'0'-1
+pn5_sub:
+        inc a
+        or a
+        sbc hl,de
+        jr nc,pn5_sub
+        add hl,de
+        ld (ix+0),a
+        inc ix
+        ret
+
+; Ausgang an einer zufaelligen leeren Kachel oeffnen (Einzelspieler)
+; Carry = 0 beim Rueckkehr (Rundenlogik laeuft weiter)
+place_exit:
+        ld e,200                ; Versuche
+pe_try:
+        call rnd
+        and 15
+        cp 13
+        jr nc,pe_try
+        inc a
+        ld b,a                  ; x = 1..13
+pe_y:
+        call rnd
+        and 15
+        cp 9
+        jr nc,pe_y
+        inc a
+        ld c,a                  ; y = 1..9
+        call field_addr
+        ld a,(hl)
+        or a
+        jr nz,pe_next           ; nur leere Kacheln
+        ld a,e
+        cp 100
+        jr c,pe_ok              ; nach 100 Versuchen nicht mehr waehlerisch
+        ld a,(pl1+PX)           ; Abstand zum Spieler mindestens 4
+        sub b
+        jr nc,pe_dx
+        neg
+pe_dx:
+        ld d,a
+        ld a,(pl1+PY)
+        sub c
+        jr nc,pe_dy
+        neg
+pe_dy:
+        add a,d
+        cp 4
+        jr nc,pe_ok
+pe_next:
+        dec e
+        jr nz,pe_try
+        and a
+        ret                     ; nichts gefunden: naechster Frame neuer Versuch
+pe_ok:
+        ld (hl),T_EXIT
+        call redraw_tile
+        ld a,1
+        ld (exit_on),a
+        ld a,SFX_POWERUP
+        call snd_sfx
+        ld hl,txt_exit
+        ld bc,1*256+10
+        ld a,ATTR_TITLE
+        call put_text
+        and a
+        ret
+
+; P: Spiel anhalten; P erneut = weiter, Leertaste = zum Titel
+pause_game:
+        xor a
+        out (0xFE),a
+        IF AY128
+        call ay_reset           ; Ton stumm schalten
+        ENDIF
+        ld hl,txt_pause
+        ld bc,1*256+10
+        ld a,ATTR_TITLE
+        call put_text
+pg_rel:
+        halt
+        ld a,0xDF
+        in a,(0xFE)
+        and 1
+        jr z,pg_rel             ; P loslassen
+pg_wait:
+        halt
+        ld a,0x7F
+        in a,(0xFE)
+        rra
+        jr nc,pg_quit           ; Leertaste: Spiel beenden
+        ld a,0xDF
+        in a,(0xFE)
+        and 1
+        jr nz,pg_wait
+pg_rel2:
+        halt
+        ld a,0xDF
+        in a,(0xFE)
+        and 1
+        jr z,pg_rel2
+        ld a,(sd_active)
+        or a
+        jr z,pg_nosd
+        ld hl,txt_sd
+        ld bc,1*256+10
+        ld a,ATTR_DEAD
+        jp put_text
+pg_nosd:
+        ld a,(exit_on)
+        or a
+        jp z,show_layout
+        ld hl,txt_exit
+        ld bc,1*256+10
+        ld a,ATTR_TITLE
+        jp put_text
+pg_quit:
+        pop af                  ; Ruecksprung verwerfen
+        jp title
 
 ; Titelbild, Zeile 7: Serienstand (2 Spieler) oder Level-Rekord (1 Spieler)
 show_session:
@@ -2670,15 +2978,22 @@ ss_one:
         or a
         ret z                   ; noch kein Rekord
         ld hl,txt_rekord
-        ld bc,7*256+8
+        ld bc,7*256+4
         ld a,ATTR_TEXT
         call put_text
         ld a,ATTR_TITLE
         ld (cur_attr),a
         ld a,(best_level)
         ld b,7
-        ld c,22
-        jp print_digit
+        ld c,18
+        call print_digit
+        ld hl,(best_pts)
+        ld bc,7*256+21
+        call print_num5
+        ld hl,txt_pkt
+        ld bc,7*256+27
+        ld a,ATTR_TEXT
+        jp put_text
 
 ; in: A = Zaehler, B/C = Zeile/Spalte; Ziffer in der Farbe von Spieler 1 bzw. 2
 show_cnt1:
@@ -3271,6 +3586,14 @@ txt_p2win:
         db "SPIELER 2 SIEGT!",0
 txt_draw:
         db "UNENTSCHIEDEN",0
+txt_pause:
+        db "PAUSE        ",0
+txt_exit:
+        db "AUSGANG AUF  ",0
+txt_pkt:
+        db "PKT",0
+txt_record:
+        db "NEUER REKORD!",0
 txt_sd:
         db "ENDSPIEL!    ",0
 txt_prompt:
@@ -3289,6 +3612,8 @@ txt_t6:
         db "SPIELER 2: JOYSTICK 2 (1-5)",0
 txt_t7:
         db "FEUER = BOMBE LEGEN",0
+txt_t12p:
+        db "P = PAUSE",0
 txt_t8:
         db "SIEGE ZUM SPIELGEWINN:",0
 txt_t9:
@@ -3303,7 +3628,7 @@ txt_rekord:
         db "REKORD: LEVEL",0
 ; Layout-Namen (je 13 Zeichen, damit der Vorgaenger ueberschrieben wird)
 layout_tab:
-        dw lay_0,lay_1,lay_2,lay_3
+        dw lay_0,lay_1,lay_2,lay_3,lay_4,lay_5,lay_6,lay_7,lay_8,lay_9,lay_10,lay_11,lay_12
 lay_0:
         db "KLASSISCH    ",0
 lay_1:
@@ -3373,6 +3698,7 @@ tile_attr:
         db 0x4E                 ; Power-Up Reichweite: gelb auf blau
         db 0x57                 ; Power-Up Bombe: weiss auf rot
         db 0x67                 ; Power-Up Tempo: weiss auf gruen
+        db 0x45                 ; Ausgang: hell cyan auf schwarz
 
 ; Kachelgrafiken: je 4 Zellen (oben links, oben rechts,
 ; unten links, unten rechts) zu 8 Bytes = 32 Bytes
@@ -3422,6 +3748,11 @@ tile_gfx:
         db 0xFF,0x01,0x3D,0x79,0xF1,0xE1,0xFD,0xF9
         db 0x80,0x80,0x80,0x81,0x83,0x86,0x80,0xFF
         db 0x39,0x71,0xE1,0xC1,0x01,0x01,0x01,0xFF
+        ; Ausgang (Tuer)
+        db 0x07,0x1F,0x3F,0x7F,0x7F,0x7C,0x7C,0x7C
+        db 0xE0,0xF8,0xFC,0xFE,0xFE,0x3E,0x3E,0x3E
+        db 0x7C,0x7C,0x7C,0x7C,0x7C,0x7C,0x7F,0x7F
+        db 0x3E,0x3E,0x3E,0x06,0x3E,0x3E,0xFE,0xFE
 
 ; Spieler-Sprites (Blick hoch, rechts, runter, links), je 32 Bytes
 spr_gfx:
@@ -3990,5 +4321,138 @@ sfx_tab:
         dw sfx_4   ; 4 = Monster stirbt
         dw sfx_5   ; 5 = Explosion
         dw sfx_6   ; 6 = Tod
+
+; ---- Gebaute Level (erzeugt, von Hand aenderbar) ----
+; # Wand   o Block   . leer
+; Die Startecken (je 3 Kacheln) muessen frei bleiben.
+map_0:                       ; AUFTAKT
+        db "###############"
+        db "#...o.o.oo.o.o#"
+        db "#.#.#o#.#o#o#.#"
+        db "#.............#"
+        db "#.#o#o#.#o#.#o#"
+        db "#o.o.oo.o.oo.o#"
+        db "#o#o#.#.#o#o#o#"
+        db "#o..ooo..ooo..#"
+        db "#.#.#.#.#.#.#.#"
+        db "#..ooo..ooo...#"
+        db "###############"
+map_1:                       ; GITTER
+        db "###############"
+        db "#....o.o.o.o.o#"
+        db "#.#.#.#.#.#.#.#"
+        db "#..o.o.o.o.o.o#"
+        db "#.#.#.#.#.#.#.#"
+        db "#o.o.o.o.o.o.o#"
+        db "#.#.#.#.#.#.#.#"
+        db "#o.o.o.o.o.o..#"
+        db "#.#.#.#.#.#.#.#"
+        db "#o.o.o.o.o....#"
+        db "###############"
+map_2:                       ; VIER RAEUME
+        db "###############"
+        db "#......o......#"
+        db "#.#.#.#.#.#.#.#"
+        db "#.o....o....o.#"
+        db "#.#.#.#o#.#.#.#"
+        db "#oo.ooooooo.oo#"
+        db "#.#.#.#o#.#.#.#"
+        db "#.o....o....o.#"
+        db "#.#.#.#.#.#.#.#"
+        db "#......o......#"
+        db "###############"
+map_3:                       ; DIAGONALE
+        db "###############"
+        db "#...oo..oo..oo#"
+        db "#.#o#.#o#.#o#.#"
+        db "#.oo..oo..oo..#"
+        db "#o#.#o#.#o#.#o#"
+        db "#o..oo..oo..oo#"
+        db "#.#o#.#o#.#o#.#"
+        db "#.oo..oo..oo..#"
+        db "#o#.#o#.#o#.#.#"
+        db "#o..oo..oo....#"
+        db "###############"
+map_4:                       ; SPIRALE
+        db "###############"
+        db "#.............#"
+        db "#.#.#.#.#.#.#.#"
+        db "#..oooo.oooo..#"
+        db "#.#o#.#.#.#o#.#"
+        db "#....o.o.o....#"
+        db "#.#o#.#.#.#o#.#"
+        db "#..oooo.oooo..#"
+        db "#.#.#.#.#.#.#.#"
+        db "#.............#"
+        db "###############"
+map_5:                       ; LABYRINTH
+        db "###############"
+        db "#.............#"
+        db "#.#.#.#.#.#.#.#"
+        db "#.ooooo.ooooo.#"
+        db "#.#.#.#.#.#.#.#"
+        db "#....o...o....#"
+        db "#.#.#.#.#.#.#.#"
+        db "#.ooooo.ooooo.#"
+        db "#.#.#.#.#.#.#.#"
+        db "#.............#"
+        db "###############"
+map_6:                       ; INSELN
+        db "###############"
+        db "#.....o...o...#"
+        db "#.#o#o#o#o#o#.#"
+        db "#.o.o.o.o.o.o.#"
+        db "#.#o#o#o#o#o#o#"
+        db "#.o.o.o.o.o.o.#"
+        db "#o#o#o#o#o#o#.#"
+        db "#.o.o.o.o.o.o.#"
+        db "#.#o#o#o#o#o#.#"
+        db "#...o...o.....#"
+        db "###############"
+map_7:                       ; FESTUNG
+        db "###############"
+        db "#.....o.o.....#"
+        db "#.#.#.#.#.#.#.#"
+        db "#...ooooooo...#"
+        db "#.#.#.#.#.#.#.#"
+        db "#...o.....o...#"
+        db "#.#.#.#.#.#.#.#"
+        db "#...ooo.ooo...#"
+        db "#.#.#.#.#.#.#.#"
+        db "#.....o.o.....#"
+        db "###############"
+map_8:                       ; ZICKZACK
+        db "###############"
+        db "#...oo....oo..#"
+        db "#.#.#o#.#.#o#.#"
+        db "#..o..o..o..o.#"
+        db "#o#.#.#o#.#.#o#"
+        db "#oo....oo....o#"
+        db "#.#o#.#.#o#.#.#"
+        db "#...oo....oo..#"
+        db "#.#.#o#.#.#o#.#"
+        db "#..o..o..o....#"
+        db "###############"
+map_tab:
+        dw map_0,map_1,map_2,map_3,map_4,map_5,map_6,map_7,map_8
+; Layout-Namen (je 13 Zeichen)
+lay_4:
+        db "AUFTAKT      ",0
+lay_5:
+        db "GITTER       ",0
+lay_6:
+        db "VIER RAEUME  ",0
+lay_7:
+        db "DIAGONALE    ",0
+lay_8:
+        db "SPIRALE      ",0
+lay_9:
+        db "LABYRINTH    ",0
+lay_10:
+        db "INSELN       ",0
+lay_11:
+        db "FESTUNG      ",0
+lay_12:
+        db "ZICKZACK     ",0
 
         end start
