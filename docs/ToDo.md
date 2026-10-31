@@ -52,7 +52,7 @@ Ziel: Labyrinth-Jagd im Stil von Pacman in Z80-Assembler, nur 128K, AY-Sound.
 - Richtungswahl an jeder Kachelmitte, vorausberechnet: Reihenfolge hoch, links, runter, rechts, kein Umkehren, kürzeste Distanz zum Ziel. Zunächst haben alle den Spieler als Ziel.
 - Kollision Spieler–Geist: Leben verlieren (noch ohne Animation)
 
-- State: InProgress
+- State: Done
 
 ### Stufe 4 – Individuelle Zielwahl
 - Jäger: Spieler
@@ -61,7 +61,7 @@ Ziel: Labyrinth-Jagd im Stil von Pacman in Z80-Assembler, nur 128K, AY-Sound.
 - Zögerer: Spieler, solange weit weg, sonst eigene Ecke
 - Debug-Overlay (Taste D): Zielkachel jedes Geistes als farbiger Punkt, Modus und Timer in der HUD-Zeile
 
-- State: Open
+- State: InProgress
 
 ### Stufe 5 – Modi und Käfig
 - Scatter/Chase nach Zeittabelle, Richtungsumkehr beim Moduswechsel
@@ -81,12 +81,12 @@ Ziel: Labyrinth-Jagd im Stil von Pacman in Z80-Assembler, nur 128K, AY-Sound.
 
 ### Stufe 7 – Sound (AY, 128K)
 - Eigene Titelmelodie, Sirene im Spiel (wechselnd je Modus), Fress-, Geister-fressen-, Tod-, Bonus- und Extraleben-Effekte
-- Lautstärke per T wie bei XBlast, kein Dauermusik-Zwang im Spiel (wie bei dir bei XBlast Pro)
+- Lautstärke per T kein Dauermusik-Zwang im Spiel
 
 - State: Open
 
 ### Stufe 8 – Titelbild und Rundherum
-- Titelbild mit Regenbogen-Schrift (aus Boulder Dash), Spielstart per Feuer
+- Titelbild mit Regenbogen-Schrift, Spielstart per Feuer
 - Sitzungsrekord, Pause (P), Abspann nach dem letzten Level
 
 - 2 . Meilenstein
@@ -94,13 +94,13 @@ Ziel: Labyrinth-Jagd im Stil von Pacman in Z80-Assembler, nur 128K, AY-Sound.
 
 ### Stufe 9 – Feinschliff
 - Flimmerfrei: wenn sichtbar, zweiter Bildschirm (Bank 7) mit Umschalten pro Frame
-- 2–4 Labyrinthe im Wechsel (wie die Layouts bei XBlast)
+- 2–4 Labyrinthe im Wechsel
 - Feintuning der Tempi und Zeiten auf dem Gerät
 
 - State: Open
 
 ### Stufe 10 – Zwei Spieler
-- beide laufen gleichzeitig, wer mehr frisst, gewinnt
+- beide Spieler laufen gleichzeitig, wer mehr frisst, gewinnt
 
 - 3 . Meilenstein
 - State: Open

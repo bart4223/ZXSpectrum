@@ -1,5 +1,5 @@
 ; ============================================================
-; Pacman-Variante fuer den ZX Spectrum 128K - Stufe 3: Drohnen laufen
+; Pacman-Variante fuer den ZX Spectrum 128K - Stufe 4: Individuelle Zielwahl
 ; Assembler: pasmo   (pasmo --tapbas pacman.asm pacman.tap)
 ; ============================================================
 ; Nur 128K. Das Labyrinth ist eine Textkarte (map_text weiter unten), 28 x 21
@@ -7,6 +7,14 @@
 ; fuer jede Wandkachel werden die 8 Nachbarn untersucht (Maske), daraus waehlt
 ; eine Tabelle die passende Kachel (Linien dort, wo ein Gang angrenzt).
 ;
+; Stufe 4: Jede Drohne hat ihre eigene Zielwahl (nur in der Jagd):
+;   Jaeger (rot)         : der Roboter selbst
+;   Abfangjaeger (rosa)  : 4 Felder vor dem Roboter (in seiner Laufrichtung)
+;   Flankierer (cyan)    : Spiegelpunkt des Jaegers am Punkt 2 Felder vor dem Roboter
+;   Zoegerer (orange)    : der Roboter, solange er weiter als 8 Felder weg ist, sonst
+;                          die eigene Ecke unten links
+; Taste D schaltet die Zielanzeige ein/aus: jede Zielkachel erscheint als kleiner Ring
+; in der Farbe ihrer Drohne.
 ; Stufe 3: Vier Drohnen (Geister) mit eigenem Tempo und eigener Farbe jagen den Roboter.
 ; An jeder Kachelmitte waehlt eine Drohne die Richtung: Reihenfolge hoch, links, runter,
 ; rechts, kein Umkehren, kleinster Abstand der naechsten Kachel zum Ziel (hier haben
@@ -71,6 +79,7 @@ G_OR        equ 10
 G_OW        equ 11
 G_OH        equ 12
 G_OV        equ 13              ; 1 = alter Bereich gueltig
+G_TYPE      equ 14              ; 0 Jaeger, 1 Abfangjaeger, 2 Flankierer, 3 Zoegerer
 GS_SIZE     equ 16
 
 GT_Y        equ (MAZE_ROW+10)*8 ; Tunnelzeile in Bildschirmpixeln
@@ -140,7 +149,12 @@ gc_nc       equ VARS + 0x756    ; Nachbarzelle
 gc_nr       equ VARS + 0x757
 gc_bd       equ VARS + 0x758    ; beste Richtung (255 = keine)
 gc_best     equ VARS + 0x759    ; 2 Bytes: bester Abstand (quadriert)
+gt_pc       equ VARS + 0x75B    ; Zelle des Spielers (Spalte, Zeile)
+gt_pr       equ VARS + 0x75C
+key_d       equ VARS + 0x75D    ; Taste D im letzten Frame
+dbg         equ VARS + 0x75E    ; 1 = Zielanzeige an
 ghosts      equ VARS + 0x780    ; 4 Drohnen zu GS_SIZE Bytes
+mk          equ VARS + 0x7C0    ; Zielmarker je Drohne (8 Bytes): Ziel x,y, alter Bereich c,r,w,h, gueltig
 
 ; ============================================================
 ; Programmstart
@@ -189,6 +203,13 @@ start:
         ld (lives),a
         xor a
         ld (door_ok),a
+        ld (key_d),a
+        ld (dbg),a
+        ld hl,mk
+        ld de,mk+1
+        ld bc,31
+        ld (hl),0
+        ldir
         ld hl,0xA280
         ld (rng),hl
         call apply_space        ; ULAplus aus, falls ein Vorgaenger es angelassen hat
@@ -215,7 +236,7 @@ main_loop:
         jr main_loop
 
 ; ============================================================
-; Tasten P (Farbraum) und N (neues Level), nur bei neuem Druck
+; Tasten P (Farbraum), D (Zielanzeige) und N (neues Level), nur bei neuem Druck
 ; ============================================================
 keys:
         ld a,0xDF
@@ -224,13 +245,26 @@ keys:
         and 0x01                ; Bit 0 = P
         ld hl,key_p
         call edge
-        jr z,k_n
+        jr z,k_d
         ld a,(col_mode)
         xor 1
         ld (col_mode),a
         call apply_space
         call draw_foot
         call draw_maze
+k_d:    ld a,0xFD
+        in a,(0xFE)             ; Reihe A S D F G
+        cpl
+        and 0x04                ; Bit 2 = D
+        ld hl,key_d
+        call edge
+        jr z,k_n
+        ld a,(dbg)              ; Zielanzeige umschalten
+        xor 1
+        ld (dbg),a
+        call draw_foot
+        ld a,1
+        ld (dirty),a
 k_n:    ld a,0x7F
         in a,(0xFE)             ; Reihe Leertaste Sym M N B
         cpl
@@ -830,6 +864,9 @@ redraw:
         xor a
         ld (dirty),a
         call erase_all          ; alle alten Bereiche aus der Karte wiederherstellen
+        ld a,(dbg)
+        or a
+        call nz,draw_markers
         ld ix,ghosts            ; Drohnen
         ld b,4
 rd_g:   push bc
@@ -1392,6 +1429,7 @@ erase_all:
         call nz,erase_old
         xor a
         ld (old_valid),a
+        call erase_markers      ; (nutzt old_c.. und muss nach dem Spieler kommen)
         ld ix,ghosts
         ld b,4
 ea_l:   push bc
@@ -1537,19 +1575,14 @@ ghost_choose:
         ld a,1
         ld (door_ok),a
         jr gc_t2
-gc_t1:  ld a,(pl_x)             ; Ziel: der Spieler
-        rrca
-        rrca
-        rrca
-        and 0x1F
-        ld (gc_tc),a
-        ld a,(pl_y)
-        rrca
-        rrca
-        rrca
-        and 0x1F
-        ld (gc_tr),a
-gc_t2:  ld hl,0xFFFF
+gc_t1:  call ghost_target       ; Ziel je nach Drohnenart
+gc_t2:  call mk_addr            ; Ziel fuer die Anzeige merken
+        ld a,(gc_tc)
+        ld (hl),a
+        inc hl
+        ld a,(gc_tr)
+        ld (hl),a
+        ld hl,0xFFFF
         ld (gc_best),hl
         ld a,0xFF
         ld (gc_bd),a
@@ -1637,6 +1670,234 @@ gc_next:
         xor 2
 gc_set: ld (ix+G_DIR),a
         ret
+
+
+; HL = Markerplatz der Drohne IX
+mk_addr:
+        ld a,(ix+G_TYPE)
+        add a,a
+        add a,a
+        add a,a
+        ld e,a
+        ld d,0
+        ld hl,mk
+        add hl,de
+        ret
+
+; Ziel der Drohne IX in der Jagd -> gc_tc, gc_tr (Zeichenzellen, auf 0..31 begrenzt)
+ghost_target:
+        ld a,(pl_x)
+        rrca
+        rrca
+        rrca
+        and 0x1F
+        ld (gt_pc),a
+        ld a,(pl_y)
+        rrca
+        rrca
+        rrca
+        and 0x1F
+        ld (gt_pr),a
+        ld a,(ix+G_TYPE)
+        or a
+        jr z,gt_pl
+        dec a
+        jr z,gt_a4
+        dec a
+        jr z,gt_fl
+        ; Zoegerer: weit weg -> Spieler, nah -> eigene Ecke
+        ld a,(gc_cc)
+        ld b,a
+        ld a,(gt_pc)
+        sub b
+        jr nc,gt_z1
+        neg
+gt_z1:  ld e,a
+        ld d,0
+        ld hl,sq_tab
+        add hl,de
+        add hl,de
+        ld e,(hl)
+        inc hl
+        ld d,(hl)
+        push de
+        ld a,(gc_rr)
+        ld b,a
+        ld a,(gt_pr)
+        sub b
+        jr nc,gt_z2
+        neg
+gt_z2:  ld e,a
+        ld d,0
+        ld hl,sq_tab
+        add hl,de
+        add hl,de
+        ld a,(hl)
+        inc hl
+        ld h,(hl)
+        ld l,a
+        pop de
+        add hl,de
+        ld de,65                ; Abstand^2 < 65 = naeher als 8 Felder
+        or a
+        sbc hl,de
+        jr c,gt_corner
+gt_pl:  ld a,(gt_pc)
+        ld b,a
+        ld a,(gt_pr)
+        ld c,a
+        jr gt_set
+gt_corner:
+        ld b,2
+        ld c,23
+        jr gt_set
+gt_a4:  ld a,4
+        call gt_ahead
+        jr gt_set
+gt_fl:  ld a,2
+        call gt_ahead           ; B, C = 2 Felder vor dem Spieler
+        ld a,(ghosts+G_X)       ; Jaeger (Drohne 0)
+        rrca
+        rrca
+        rrca
+        and 0x1F
+        ld d,a
+        ld a,(ghosts+G_Y)
+        rrca
+        rrca
+        rrca
+        and 0x1F
+        ld e,a
+        ld a,b                  ; Ziel = 2 * Punkt - Jaeger
+        add a,a
+        sub d
+        ld b,a
+        ld a,c
+        add a,a
+        sub e
+        ld c,a
+gt_set: ld a,b
+        call clamp31
+        ld (gc_tc),a
+        ld a,c
+        call clamp31
+        ld (gc_tr),a
+        ret
+
+; in: A = Anzahl Felder; out: B, C = Spielerzelle + A Felder in Laufrichtung (vorzeichenbehaftet)
+gt_ahead:
+        ld c,a
+        ld a,(pl_dir)
+        add a,a
+        ld e,a
+        ld d,0
+        ld hl,dirvec
+        add hl,de
+        ld b,(hl)               ; dx
+        inc hl
+        ld e,(hl)               ; dy
+        ld a,(gt_pc)
+        ld h,a
+        ld a,(gt_pr)
+        ld l,a
+ga_l:   ld a,h
+        add a,b
+        ld h,a
+        ld a,l
+        add a,e
+        ld l,a
+        dec c
+        jr nz,ga_l
+        ld b,h
+        ld c,l
+        ret
+
+; A (vorzeichenbehaftet) auf 0..31 begrenzen
+clamp31:
+        bit 7,a
+        jr z,cl_1
+        xor a
+        ret
+cl_1:   cp 32
+        ret c
+        ld a,31
+        ret
+
+dirvec:
+        db 0,255, 1,0, 0,1, 255,0       ; hoch, rechts, runter, links (dx, dy)
+
+; Zielmarker zeichnen (nur bei eingeschalteter Anzeige)
+draw_markers:
+        ld ix,ghosts
+        ld b,4
+dk_l:   push bc
+        ld a,(ix+G_MODE)
+        or a
+        jr z,dk_n               ; wartende Drohnen haben noch kein Ziel
+        call mk_addr
+        ld a,(hl)
+        add a,a
+        add a,a
+        add a,a
+        ld b,a                  ; x
+        inc hl
+        ld a,(hl)
+        cp 2                    ; Marker nur im Bereich des Labyrinths (Zeilen 2..22)
+        jr nc,dk_a
+        ld a,2
+dk_a:   cp 23
+        jr c,dk_r
+        ld a,22
+dk_r:   add a,a
+        add a,a
+        add a,a
+        ld c,a                  ; y
+        ld a,(ix+G_ATTR)
+        ld hl,mark_gfx
+        call draw_sprite
+        call mk_addr
+        inc hl
+        inc hl
+        ex de,hl
+        ld hl,spr_c
+        ld bc,4
+        ldir
+        ex de,hl
+        ld (hl),1
+dk_n:   pop bc
+        ld de,GS_SIZE
+        add ix,de
+        djnz dk_l
+        ret
+
+; Zielmarker aus der Karte wegzeichnen
+erase_markers:
+        ld ix,ghosts
+        ld b,4
+em_l:   push bc
+        call mk_addr
+        push hl
+        ld de,6
+        add hl,de
+        ld a,(hl)
+        ld (hl),0
+        pop hl
+        or a
+        jr z,em_n
+        inc hl
+        inc hl
+        ld de,old_c
+        ld bc,4
+        ldir
+        call erase_old
+em_n:   pop bc
+        ld de,GS_SIZE
+        add ix,de
+        djnz em_l
+        ret
+
+mark_gfx:
+        db 0x00,0x00, 0x18,0x00, 0x24,0x00, 0x42,0x00, 0x42,0x00, 0x24,0x00, 0x18,0x00, 0x00,0x00
 
 ; in: A = Richtung, B = Spalte, C = Zeile; out: B, C = Nachbarfeld
 apply_dir:
@@ -1755,6 +2016,16 @@ draw_foot:
         jr z,df_1
         ld hl,txt_ext
 df_1:   ld bc,23*256+10
+        call print_at
+        ld hl,txt_d_aus
+        ld a,(dbg)
+        or a
+        jr z,df_2
+        ld hl,txt_d_an
+df_2:   ld bc,23*256+19
+        call print_at
+        ld hl,txt_neu
+        ld bc,23*256+25
         jp print_at
 
 ; Levelzahl (2 Stellen) oben rechts
@@ -1873,9 +2144,15 @@ txt_level:
 txt_leben:
         db "LEBEN ",0
 txt_normal:
-        db "P:NORMAL    N/LEER:NEU",0
+        db "P:NORMAL ",0
 txt_ext:
-        db "P:ERWEITERT N/LEER:NEU",0
+        db "P:ERWEIT ",0
+txt_d_aus:
+        db "D:AUS",0
+txt_d_an:
+        db "D:AN ",0
+txt_neu:
+        db "N:NEU",0
 
 ; Wandfarben (NORMAL): hell blau, hell cyan, hell magenta, hell gruen
 col_tab:
@@ -2080,9 +2357,9 @@ spr_drone:
 ;   Attribut, Zustand (0 wartet, 2 jagt), Freigabe (Zwei-Frame-Takte), Zaehler, alter Bereich (5), 2 frei
 ghost_init:
         db 120,72,3,0,8,0x42,2,0,0,0,0,0,0,0,0,0          ; J
-        db 120,96,0,0,7,0x03,0,50,0,0,0,0,0,0,0,0          ; A
-        db 104,96,0,0,7,0x05,0,100,0,0,0,0,0,0,0,0          ; F
-        db 144,96,0,0,6,0x06,0,150,0,0,0,0,0,0,0,0          ; Z
+        db 120,96,0,0,7,0x03,0,50,0,0,0,0,0,0,1,0          ; A
+        db 104,96,0,0,7,0x05,0,100,0,0,0,0,0,0,2,0          ; F
+        db 144,96,0,0,6,0x06,0,150,0,0,0,0,0,0,3,0          ; Z
 ; Quadrate 0..31 fuer die Abstandsberechnung
 sq_tab:
         dw 0,1,4,9,16,25,36,49
