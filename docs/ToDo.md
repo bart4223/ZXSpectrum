@@ -31,14 +31,14 @@ Ziel: Labyrinth-Jagd im Stil von Pacman in Z80-Assembler, nur 128K, AY-Sound.
 - Textkarte für das Labyrinth, Zeichnen mit Wandtiles (Nachbarmaske), Punkte und Pillen als Tiles
 - HUD-Zeilen mit Platzhaltern
 
-- State: InProgress
+- State: Done
 
 ### Stufe 1 – Spieler läuft
 - Sprite-Engine (Löschen aus Karte, Zeichnen vorgeschobener Sprites), Mundanimation
 - Pixelweise Bewegung, gepufferte Richtungswunsch, Abbiegen nur an der Kachelmitte
 - Tunnel links/rechts, Tempo-Muster
 
-- State: Open
+- State: InProgress
 
 ### Stufe 2 – Punkte, Pillen, Punktestand
 - Punkte fressen (Karte und Bildschirm aktualisieren), Pillen blinken, Punktezähler

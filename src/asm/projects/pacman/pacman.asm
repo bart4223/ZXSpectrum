@@ -1,5 +1,5 @@
 ; ============================================================
-; Pacman-Variante fuer den ZX Spectrum 128K - Stufe 0: Geruest und Labyrinth
+; Pacman-Variante fuer den ZX Spectrum 128K - Stufe 1: Spieler laeuft
 ; Assembler: pasmo   (pasmo --tapbas pacman.asm pacman.tap)
 ; ============================================================
 ; Nur 128K. Das Labyrinth ist eine Textkarte (map_text weiter unten), 28 x 21
@@ -7,7 +7,11 @@
 ; fuer jede Wandkachel werden die 8 Nachbarn untersucht (Maske), daraus waehlt
 ; eine Tabelle die passende Kachel (Linien dort, wo ein Gang angrenzt).
 ;
-; Stufe 0 zeigt nur das Labyrinth. Zum Ausprobieren des Aussehens:
+; Stufe 1: Der Spieler (Roboter) laeuft pixelweise (2 Pixel je Schritt) mit Joystick 1
+; (Tasten 6 7 8 9 0) oder 2 (Tasten 1 2 3 4 5, Sinclair IF2). Richtungswunsch wird
+; gepuffert und an der naechsten Kachelmitte ausgefuehrt, Umkehren geht jederzeit.
+; Tunnel in der mittleren Zeile. Die vier Drohnen stehen nur zur Ansicht an ihren
+; Startfeldern. Zum Ausprobieren des Aussehens:
 ;   Wandstil: abgerundete Ecken (fest).
 ;   Wandfarbe: zufaellig bei jedem neuen Level.
 ;   P = Farbraum umschalten:
@@ -37,6 +41,17 @@ ATTR_TEXT   equ 0x07            ; weiss auf schwarz
 ATTR_HEAD   equ 0x46            ; hell gelb auf schwarz
 ATTR_DOT    equ 0x47            ; Punkte und Pillen: hell weiss
 ATTR_DOOR   equ 0x43            ; Tuer: hell magenta
+ATTR_PLAYER equ 0x46            ; Spieler: hell gelb
+
+D_UP        equ 0               ; Richtungen
+D_RIGHT     equ 1
+D_DOWN      equ 2
+D_LEFT      equ 3
+
+PL_SPEED    equ 12              ; Schritte je 20 Frames (2 Pixel je Schritt)
+PL_TTL      equ 30              ; Frames, wie lange ein Richtungswunsch gilt
+PL_START_X  equ (13+MAZE_COL)*8 ; Startfeld des Spielers (Kachel 13,15) in Bildschirmpixeln
+PL_START_Y  equ (15+MAZE_ROW)*8
 
 ; ---- Variablen (freier RAM, nicht im TAP) -----------------
 VARS        equ 0xB000
@@ -52,6 +67,26 @@ key_n       equ VARS + 0x706    ; Taste N im letzten Frame
 level       equ VARS + 0x707    ; Levelnummer 1..99
 rng         equ VARS + 0x708    ; 2 Bytes: Zufallszahl-Zustand
 lvl_txt     equ VARS + 0x70A    ; 3 Bytes: Levelzahl als Text
+pl_x        equ VARS + 0x710    ; Spieler: linke Kante in Bildschirmpixeln (0..248)
+pl_y        equ VARS + 0x711    ; Spieler: obere Kante in Bildschirmpixeln
+pl_dir      equ VARS + 0x712    ; aktuelle Richtung
+pl_want     equ VARS + 0x713    ; gewuenschte Richtung
+pl_ttl      equ VARS + 0x714    ; Restdauer des Wunsches
+pl_acc      equ VARS + 0x715    ; Tempo-Summe (Schritt, wenn >= 20)
+pl_cnt      equ VARS + 0x716    ; Schrittzaehler fuer die Animation
+old_valid   equ VARS + 0x717    ; 1 = alter Bereich des Spielers muss geloescht werden
+old_c       equ VARS + 0x718    ; alter Bereich: Spalte, Zeile, Breite, Hoehe (in Zeichen)
+old_r       equ VARS + 0x719
+old_w       equ VARS + 0x71A
+old_h       equ VARS + 0x71B
+dirty       equ VARS + 0x71C    ; 1 = Figuren neu zeichnen
+spr_c       equ VARS + 0x720    ; Bereich der gerade gezeichneten Figur (Spalte, Zeile, Breite, Hoehe)
+spr_r       equ VARS + 0x721
+spr_w       equ VARS + 0x722
+spr_h       equ VARS + 0x723
+spr_attr    equ VARS + 0x724
+spr_x       equ VARS + 0x725
+spr_y       equ VARS + 0x726
 
 ; ============================================================
 ; Programmstart
@@ -81,6 +116,17 @@ start:
         ld (key_p),a
         ld (key_n),a
         ld (col_mode),a
+        ld (pl_ttl),a
+        ld (pl_acc),a
+        ld (pl_cnt),a
+        ld (old_valid),a
+        ld a,PL_START_X
+        ld (pl_x),a
+        ld a,PL_START_Y
+        ld (pl_y),a
+        ld a,D_LEFT
+        ld (pl_dir),a
+        ld (pl_want),a
         ld a,1
         ld (level),a
         ld hl,0xA280
@@ -95,6 +141,8 @@ start:
 ; ---- Hauptschleife: ein Durchlauf pro Frame (50 Hz) -------
 main_loop:
         halt
+        call update_player      ; Bewegung (nur Zahlen)
+        call redraw             ; Zeichnen direkt nach HALT
         call keys
         jr main_loop
 
@@ -431,6 +479,8 @@ dm_col: ld a,(hl)
         ld a,e
         cp MAZE_H
         jr nz,dm_row
+        ld a,1
+        ld (dirty),a            ; Figuren muessen danach neu gezeichnet werden
         ret
 
 ; in: A = Feldcode, D = x, E = y; zeichnet das Feld
@@ -476,6 +526,443 @@ dc_draw:                        ; HL = Grafik, B = Attribut
         add a,MAZE_COL
         ld c,a                  ; Zeichenspalte
         jp draw_cell
+
+
+; ============================================================
+; Joystick lesen (Sinclair IF2); out: A = Bits (aktiv = 1)
+;   Bit 1 hoch, Bit 2 runter, Bit 3 rechts, Bit 4 links, Bit 0 Feuer
+; Joystick 1 = Tasten 6 7 8 9 0 (Port 0xEFFE), passt direkt;
+; Joystick 2 = Tasten 1 2 3 4 5 (Port 0xF7FE), Bits werden umgedreht
+; ============================================================
+get_joy:
+        ld bc,0xEFFE
+        in a,(c)
+        cpl
+        and 0x1F
+        ld h,a
+        ld bc,0xF7FE
+        in a,(c)
+        cpl
+        and 0x1F
+        ld e,a
+        ld d,0
+        ld b,5
+gj_rev: rr e
+        rl d
+        djnz gj_rev
+        ld a,d
+        or h
+        ret
+
+; Richtungswunsch aus dem Joystick (haelt PL_TTL Frames, auch nach dem Loslassen)
+read_input:
+        call get_joy
+        ld c,a
+        ld a,(pl_want)
+        ld d,a                  ; D = Wunsch (bisher)
+        ld e,0                  ; E = 1, wenn eine Richtung gedrueckt ist
+        bit 1,c
+        jr z,ri_1
+        ld d,D_UP
+        ld e,1
+ri_1:   bit 2,c
+        jr z,ri_2
+        ld d,D_DOWN
+        ld e,1
+ri_2:   bit 4,c
+        jr z,ri_3
+        ld d,D_LEFT
+        ld e,1
+ri_3:   bit 3,c
+        jr z,ri_4
+        ld d,D_RIGHT
+        ld e,1
+ri_4:   ld a,e
+        or a
+        jr z,ri_rel
+        ld a,d
+        ld (pl_want),a
+        ld a,PL_TTL
+        ld (pl_ttl),a
+        ret
+ri_rel: ld a,(pl_ttl)
+        or a
+        ret z
+        dec a
+        ld (pl_ttl),a
+        ret nz
+        ld a,(pl_dir)           ; Wunsch verfallen: einfach weiterlaufen
+        ld (pl_want),a
+        ret
+
+; ============================================================
+; Spieler bewegen
+; ============================================================
+update_player:
+        call read_input
+        ld a,(pl_acc)
+        add a,PL_SPEED
+        cp 20
+        jr c,up_st
+        sub 20
+        ld (pl_acc),a
+        jp move_step
+up_st:  ld (pl_acc),a
+        ret
+
+; ein Schritt (2 Pixel)
+move_step:
+        ld a,(pl_x)
+        ld b,a
+        ld a,(pl_y)
+        or b
+        and 7
+        jr nz,ms_between        ; nicht auf einer Kachelmitte
+        ld a,(pl_want)          ; Kachelmitte: erst den Wunsch probieren
+        call can_move
+        jr z,ms_cur
+        ld a,(pl_want)
+        ld (pl_dir),a
+        jr ms_go
+ms_cur: ld a,(pl_dir)
+        call can_move
+        ret z                   ; Wand voraus: stehen bleiben
+        jr ms_go
+ms_between:
+        ld a,(pl_dir)           ; zwischen Kacheln nur Umkehren
+        xor 2
+        ld b,a
+        ld a,(pl_want)
+        cp b
+        jr nz,ms_go
+        ld (pl_dir),a
+ms_go:  ld a,(pl_dir)
+        or a
+        jr z,ms_up
+        dec a
+        jr z,ms_right
+        dec a
+        jr z,ms_down
+        ld a,(pl_x)             ; links, im Tunnel mit Umbruch
+        or a
+        jr nz,ms_l1
+        ld a,250
+ms_l1:  sub 2
+        ld (pl_x),a
+        jr ms_done
+ms_right:
+        ld a,(pl_x)
+        cp 248
+        jr nz,ms_r1
+        ld a,254
+ms_r1:  add a,2
+        ld (pl_x),a
+        jr ms_done
+ms_up:  ld a,(pl_y)
+        sub 2
+        ld (pl_y),a
+        jr ms_done
+ms_down:
+        ld a,(pl_y)
+        add a,2
+        ld (pl_y),a
+ms_done:
+        ld hl,pl_cnt
+        inc (hl)
+        ld a,1
+        ld (dirty),a
+        ret
+
+; in: A = Richtung, Spieler steht auf einer Kachelmitte
+; out: NZ = Nachbarfeld ist frei
+can_move:
+        ld e,a
+        ld a,(pl_x)
+        rrca
+        rrca
+        rrca
+        and 0x1F
+        ld b,a                  ; B = Zeichenspalte
+        ld a,(pl_y)
+        rrca
+        rrca
+        rrca
+        and 0x1F
+        ld c,a                  ; C = Zeichenzeile
+        ld a,e
+        or a
+        jr nz,cm_1
+        dec c                   ; hoch
+        jr passable
+cm_1:   dec a
+        jr nz,cm_2
+        inc b                   ; rechts
+        jr passable
+cm_2:   dec a
+        jr nz,cm_3
+        inc c                   ; runter
+        jr passable
+cm_3:   dec b                   ; links
+
+; in: B = Zeichenspalte, C = Zeichenzeile; out: NZ = Spieler darf hinein
+; Ausserhalb des Labyrinths geht es nur in der Tunnelzeile.
+passable:
+        ld a,b
+        sub MAZE_COL
+        cp MAZE_W
+        jr nc,pa_out
+        ld d,a                  ; D = x
+        ld a,c
+        sub MAZE_ROW
+        cp MAZE_H
+        jr nc,pa_no
+        ld c,a
+        ld b,d
+        call maze_addr
+        ld a,(hl)
+        cp C_WALL
+        jr z,pa_no
+        cp C_DOOR
+        jr z,pa_no
+pa_yes: ld a,1
+        or a
+        ret
+pa_out: ld a,c
+        cp MAZE_ROW+10          ; Tunnelzeile
+        jr z,pa_yes
+pa_no:  xor a
+        ret
+
+; ============================================================
+; Figuren zeichnen
+; ============================================================
+redraw:
+        ld a,(dirty)
+        or a
+        ret z
+        xor a
+        ld (dirty),a
+        ld a,(old_valid)
+        or a
+        call nz,erase_old
+        ld hl,drone_tab         ; vier Drohnen (nur Ansicht)
+        ld b,4
+rd_dr:  push bc
+        ld b,(hl)
+        inc hl
+        ld c,(hl)
+        inc hl
+        ld a,(hl)
+        inc hl
+        push hl
+        ld hl,spr_drone
+        call draw_sprite
+        pop hl
+        pop bc
+        djnz rd_dr
+        ld a,(pl_cnt)           ; Spieler: Bild nach Richtung und Animationsschritt
+        and 3
+        ld e,a
+        ld d,0
+        ld hl,anim_seq
+        add hl,de
+        ld c,(hl)               ; Bild 0..2
+        ld a,(pl_dir)
+        ld b,a
+        add a,a
+        add a,b                 ; Richtung * 3
+        add a,c
+        ld l,a
+        ld h,0
+        add hl,hl
+        add hl,hl
+        add hl,hl
+        add hl,hl
+        add hl,hl
+        add hl,hl               ; * 64 Bytes je Bild (4 Verschiebungen zu 16)
+        ld de,spr_player
+        add hl,de
+        ld a,(pl_x)
+        ld b,a
+        ld a,(pl_y)
+        ld c,a
+        ld a,ATTR_PLAYER
+        call draw_sprite
+        ld hl,spr_c             ; belegten Bereich merken
+        ld de,old_c
+        ld bc,4
+        ldir
+        ld a,1
+        ld (old_valid),a
+        ret
+
+anim_seq:
+        db 0,1,2,1
+
+; alten Bereich des Spielers aus der Karte wiederherstellen
+erase_old:
+        ld a,(old_r)
+        ld c,a
+        ld a,(old_h)
+        ld d,a
+eo_row: ld a,(old_c)
+        ld b,a
+        ld a,(old_w)
+        ld e,a
+eo_col: push bc
+        push de
+        call erase_cell
+        pop de
+        pop bc
+        inc b
+        dec e
+        jr nz,eo_col
+        inc c
+        dec d
+        jr nz,eo_row
+        ret
+
+; in: B = Zeichenspalte, C = Zeichenzeile: Feld aus der Karte neu zeichnen
+; (ausserhalb des Labyrinths: leer)
+erase_cell:
+        ld a,b
+        sub MAZE_COL
+        cp MAZE_W
+        jr nc,ec_blank
+        ld d,a
+        ld a,c
+        sub MAZE_ROW
+        cp MAZE_H
+        jr nc,ec_blank
+        ld e,a
+        push de
+        ld b,d
+        ld c,a
+        call maze_addr
+        ld a,(hl)
+        pop de
+        jp draw_code
+ec_blank:
+        ld a,ATTR_TEXT
+        ld (cur_attr),a
+        ld hl,gfx_empty
+        ld a,b
+        ld b,c
+        ld c,a
+        jp draw_cell
+
+; Figur zeichnen (ODER ueber den Hintergrund) und die Attribute der belegten Zellen setzen
+; in: HL = 4 vorverschobene Bilder zu je 16 Bytes, B = x, C = y (Bildschirmpixel,
+;     x gerade), A = Attribut
+draw_sprite:
+        ld (spr_attr),a
+        ld a,b
+        ld (spr_x),a
+        ld a,c
+        ld (spr_y),a
+        ld a,b
+        and 6
+        add a,a
+        add a,a
+        add a,a                 ; (x & 6) * 8 = Verschiebung * 16
+        ld e,a
+        ld d,0
+        add hl,de
+        push hl
+        pop ix
+        ld a,(spr_x)            ; belegte Zeichenzellen
+        ld b,a
+        rrca
+        rrca
+        rrca
+        and 0x1F
+        ld (spr_c),a
+        ld a,b
+        and 7
+        ld a,1
+        jr z,ds_w
+        inc a
+ds_w:   ld (spr_w),a
+        ld a,(spr_y)
+        ld b,a
+        rrca
+        rrca
+        rrca
+        and 0x1F
+        ld (spr_r),a
+        ld a,b
+        and 7
+        ld a,1
+        jr z,ds_h
+        inc a
+ds_h:   ld (spr_h),a
+        ld a,(spr_r)            ; Attribute setzen
+        ld l,a
+        ld h,0
+        add hl,hl
+        add hl,hl
+        add hl,hl
+        add hl,hl
+        add hl,hl
+        ld de,0x5800
+        add hl,de
+        ld a,(spr_c)
+        ld e,a
+        ld d,0
+        add hl,de
+        ld a,(spr_attr)
+        ld c,a
+        ld a,(spr_h)
+        ld b,a
+ds_ar:  ld (hl),c
+        ld a,(spr_w)
+        cp 2
+        jr nz,ds_a1
+        inc hl
+        ld (hl),c
+        dec hl
+ds_a1:  ld de,32
+        add hl,de
+        djnz ds_ar
+        ld c,0                  ; Pixelzeilen 0..7
+ds_row: ld a,(spr_y)
+        add a,c
+        ld e,a                  ; E = Pixelzeile
+        and 0xC0
+        rrca
+        rrca
+        rrca
+        ld d,a
+        ld a,e
+        and 7
+        or d
+        or 0x40
+        ld h,a
+        ld a,e
+        and 0x38
+        add a,a
+        add a,a
+        ld l,a
+        ld a,(spr_c)
+        add a,l
+        ld l,a
+        ld a,(ix+0)
+        or (hl)
+        ld (hl),a
+        ld a,(spr_w)
+        cp 2
+        jr nz,ds_n
+        inc hl
+        ld a,(ix+1)
+        or (hl)
+        ld (hl),a
+ds_n:   inc ix
+        inc ix
+        inc c
+        ld a,c
+        cp 8
+        jr nz,ds_row
+        ret
 
 ; ============================================================
 ; Kopf- und Fusszeile
@@ -764,5 +1251,80 @@ gfx_round:      ; 47 Kacheln
         db 0x00,0xFC,0x02,0x02,0x02,0x02,0x82,0x42
         db 0x00,0xFC,0x02,0x02,0x02,0x02,0xFC,0x00
         db 0x00,0x3C,0x42,0x42,0x42,0x42,0x3C,0x00
+
+; ---- Figuren (erzeugt): je Bild 4 um 0/2/4/6 Pixel verschobene Kopien, 8 Zeilen * 2 Bytes ----
+; Spieler: Richtung hoch, rechts, runter, links; je Richtung 3 Bilder (zu, halb, offen)
+spr_player:
+        ; Richtung 0 Bild 0
+        db 0x7E,0x00,0xFF,0x00,0xFF,0x00,0xDF,0x00,0xFF,0x00,0xFF,0x00,0xFF,0x00,0x7E,0x00
+        db 0x1F,0x80,0x3F,0xC0,0x3F,0xC0,0x37,0xC0,0x3F,0xC0,0x3F,0xC0,0x3F,0xC0,0x1F,0x80
+        db 0x07,0xE0,0x0F,0xF0,0x0F,0xF0,0x0D,0xF0,0x0F,0xF0,0x0F,0xF0,0x0F,0xF0,0x07,0xE0
+        db 0x01,0xF8,0x03,0xFC,0x03,0xFC,0x03,0x7C,0x03,0xFC,0x03,0xFC,0x03,0xFC,0x01,0xF8
+        ; Richtung 0 Bild 1
+        db 0x62,0x00,0xE3,0x00,0xF7,0x00,0xDF,0x00,0xFF,0x00,0xFF,0x00,0xFF,0x00,0x7E,0x00
+        db 0x18,0x80,0x38,0xC0,0x3D,0xC0,0x37,0xC0,0x3F,0xC0,0x3F,0xC0,0x3F,0xC0,0x1F,0x80
+        db 0x06,0x20,0x0E,0x30,0x0F,0x70,0x0D,0xF0,0x0F,0xF0,0x0F,0xF0,0x0F,0xF0,0x07,0xE0
+        db 0x01,0x88,0x03,0x8C,0x03,0xDC,0x03,0x7C,0x03,0xFC,0x03,0xFC,0x03,0xFC,0x01,0xF8
+        ; Richtung 0 Bild 2
+        db 0x62,0x00,0xE3,0x00,0xE3,0x00,0xC3,0x00,0xF7,0x00,0xFF,0x00,0xFF,0x00,0x7E,0x00
+        db 0x18,0x80,0x38,0xC0,0x38,0xC0,0x30,0xC0,0x3D,0xC0,0x3F,0xC0,0x3F,0xC0,0x1F,0x80
+        db 0x06,0x20,0x0E,0x30,0x0E,0x30,0x0C,0x30,0x0F,0x70,0x0F,0xF0,0x0F,0xF0,0x07,0xE0
+        db 0x01,0x88,0x03,0x8C,0x03,0x8C,0x03,0x0C,0x03,0xDC,0x03,0xFC,0x03,0xFC,0x01,0xF8
+        ; Richtung 1 Bild 0
+        db 0x7E,0x00,0xFF,0x00,0xF7,0x00,0xFF,0x00,0xFF,0x00,0xFF,0x00,0xFF,0x00,0x7E,0x00
+        db 0x1F,0x80,0x3F,0xC0,0x3D,0xC0,0x3F,0xC0,0x3F,0xC0,0x3F,0xC0,0x3F,0xC0,0x1F,0x80
+        db 0x07,0xE0,0x0F,0xF0,0x0F,0x70,0x0F,0xF0,0x0F,0xF0,0x0F,0xF0,0x0F,0xF0,0x07,0xE0
+        db 0x01,0xF8,0x03,0xFC,0x03,0xDC,0x03,0xFC,0x03,0xFC,0x03,0xFC,0x03,0xFC,0x01,0xF8
+        ; Richtung 1 Bild 1
+        db 0x7E,0x00,0xFF,0x00,0xF7,0x00,0xFC,0x00,0xF8,0x00,0xFC,0x00,0xFF,0x00,0x7E,0x00
+        db 0x1F,0x80,0x3F,0xC0,0x3D,0xC0,0x3F,0x00,0x3E,0x00,0x3F,0x00,0x3F,0xC0,0x1F,0x80
+        db 0x07,0xE0,0x0F,0xF0,0x0F,0x70,0x0F,0xC0,0x0F,0x80,0x0F,0xC0,0x0F,0xF0,0x07,0xE0
+        db 0x01,0xF8,0x03,0xFC,0x03,0xDC,0x03,0xF0,0x03,0xE0,0x03,0xF0,0x03,0xFC,0x01,0xF8
+        ; Richtung 1 Bild 2
+        db 0x7E,0x00,0xFF,0x00,0xF7,0x00,0xF0,0x00,0xE0,0x00,0xF0,0x00,0xFF,0x00,0x7E,0x00
+        db 0x1F,0x80,0x3F,0xC0,0x3D,0xC0,0x3C,0x00,0x38,0x00,0x3C,0x00,0x3F,0xC0,0x1F,0x80
+        db 0x07,0xE0,0x0F,0xF0,0x0F,0x70,0x0F,0x00,0x0E,0x00,0x0F,0x00,0x0F,0xF0,0x07,0xE0
+        db 0x01,0xF8,0x03,0xFC,0x03,0xDC,0x03,0xC0,0x03,0x80,0x03,0xC0,0x03,0xFC,0x01,0xF8
+        ; Richtung 2 Bild 0
+        db 0x7E,0x00,0xFF,0x00,0xFF,0x00,0xFF,0x00,0xFB,0x00,0xFF,0x00,0xFF,0x00,0x7E,0x00
+        db 0x1F,0x80,0x3F,0xC0,0x3F,0xC0,0x3F,0xC0,0x3E,0xC0,0x3F,0xC0,0x3F,0xC0,0x1F,0x80
+        db 0x07,0xE0,0x0F,0xF0,0x0F,0xF0,0x0F,0xF0,0x0F,0xB0,0x0F,0xF0,0x0F,0xF0,0x07,0xE0
+        db 0x01,0xF8,0x03,0xFC,0x03,0xFC,0x03,0xFC,0x03,0xEC,0x03,0xFC,0x03,0xFC,0x01,0xF8
+        ; Richtung 2 Bild 1
+        db 0x7E,0x00,0xFF,0x00,0xFF,0x00,0xFF,0x00,0xFB,0x00,0xEF,0x00,0xC7,0x00,0x46,0x00
+        db 0x1F,0x80,0x3F,0xC0,0x3F,0xC0,0x3F,0xC0,0x3E,0xC0,0x3B,0xC0,0x31,0xC0,0x11,0x80
+        db 0x07,0xE0,0x0F,0xF0,0x0F,0xF0,0x0F,0xF0,0x0F,0xB0,0x0E,0xF0,0x0C,0x70,0x04,0x60
+        db 0x01,0xF8,0x03,0xFC,0x03,0xFC,0x03,0xFC,0x03,0xEC,0x03,0xBC,0x03,0x1C,0x01,0x18
+        ; Richtung 2 Bild 2
+        db 0x7E,0x00,0xFF,0x00,0xFF,0x00,0xEF,0x00,0xC3,0x00,0xC7,0x00,0xC7,0x00,0x46,0x00
+        db 0x1F,0x80,0x3F,0xC0,0x3F,0xC0,0x3B,0xC0,0x30,0xC0,0x31,0xC0,0x31,0xC0,0x11,0x80
+        db 0x07,0xE0,0x0F,0xF0,0x0F,0xF0,0x0E,0xF0,0x0C,0x30,0x0C,0x70,0x0C,0x70,0x04,0x60
+        db 0x01,0xF8,0x03,0xFC,0x03,0xFC,0x03,0xBC,0x03,0x0C,0x03,0x1C,0x03,0x1C,0x01,0x18
+        ; Richtung 3 Bild 0
+        db 0x7E,0x00,0xFF,0x00,0xEF,0x00,0xFF,0x00,0xFF,0x00,0xFF,0x00,0xFF,0x00,0x7E,0x00
+        db 0x1F,0x80,0x3F,0xC0,0x3B,0xC0,0x3F,0xC0,0x3F,0xC0,0x3F,0xC0,0x3F,0xC0,0x1F,0x80
+        db 0x07,0xE0,0x0F,0xF0,0x0E,0xF0,0x0F,0xF0,0x0F,0xF0,0x0F,0xF0,0x0F,0xF0,0x07,0xE0
+        db 0x01,0xF8,0x03,0xFC,0x03,0xBC,0x03,0xFC,0x03,0xFC,0x03,0xFC,0x03,0xFC,0x01,0xF8
+        ; Richtung 3 Bild 1
+        db 0x7E,0x00,0xFF,0x00,0xEF,0x00,0x3F,0x00,0x1F,0x00,0x3F,0x00,0xFF,0x00,0x7E,0x00
+        db 0x1F,0x80,0x3F,0xC0,0x3B,0xC0,0x0F,0xC0,0x07,0xC0,0x0F,0xC0,0x3F,0xC0,0x1F,0x80
+        db 0x07,0xE0,0x0F,0xF0,0x0E,0xF0,0x03,0xF0,0x01,0xF0,0x03,0xF0,0x0F,0xF0,0x07,0xE0
+        db 0x01,0xF8,0x03,0xFC,0x03,0xBC,0x00,0xFC,0x00,0x7C,0x00,0xFC,0x03,0xFC,0x01,0xF8
+        ; Richtung 3 Bild 2
+        db 0x7E,0x00,0xFF,0x00,0xEF,0x00,0x0F,0x00,0x07,0x00,0x0F,0x00,0xFF,0x00,0x7E,0x00
+        db 0x1F,0x80,0x3F,0xC0,0x3B,0xC0,0x03,0xC0,0x01,0xC0,0x03,0xC0,0x3F,0xC0,0x1F,0x80
+        db 0x07,0xE0,0x0F,0xF0,0x0E,0xF0,0x00,0xF0,0x00,0x70,0x00,0xF0,0x0F,0xF0,0x07,0xE0
+        db 0x01,0xF8,0x03,0xFC,0x03,0xBC,0x00,0x3C,0x00,0x1C,0x00,0x3C,0x03,0xFC,0x01,0xF8
+spr_drone:
+        db 0xC3,0x00,0x7E,0x00,0xFF,0x00,0xDB,0x00,0xFF,0x00,0xFF,0x00,0x5A,0x00,0x24,0x00
+        db 0x30,0xC0,0x1F,0x80,0x3F,0xC0,0x36,0xC0,0x3F,0xC0,0x3F,0xC0,0x16,0x80,0x09,0x00
+        db 0x0C,0x30,0x07,0xE0,0x0F,0xF0,0x0D,0xB0,0x0F,0xF0,0x0F,0xF0,0x05,0xA0,0x02,0x40
+        db 0x03,0x0C,0x01,0xF8,0x03,0xFC,0x03,0x6C,0x03,0xFC,0x03,0xFC,0x01,0x68,0x00,0x90
+; Drohnen an den Startfeldern: x, y (Bildschirmpixel), Attribut (nur zur Ansicht)
+drone_tab:
+        db 120,72,0x43          ; J
+        db 120,96,0x05          ; A
+        db 104,96,0x06          ; F
+        db 144,96,0x07          ; Z
 
         end start
