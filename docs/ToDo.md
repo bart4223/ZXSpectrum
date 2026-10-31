@@ -45,14 +45,14 @@ Ziel: Labyrinth-Jagd im Stil von Pacman in Z80-Assembler, nur 128K, AY-Sound.
 - Level geschafft, wenn alles gefressen ist (Blinken, dann Neuaufbau)
 - Fresseffekt als einfacher AY-Effekt auf Kanal C (zwei abwechselnde Töne)
 
-- State: InProgress
+- State: Done
 
 ### Stufe 3 – Geister laufen (Grundgerüst)
 - Vier Geister als Figuren mit eigenem Tempo und Farbe, zunächst ohne Käfig
 - Richtungswahl an jeder Kachelmitte, vorausberechnet: Reihenfolge hoch, links, runter, rechts, kein Umkehren, kürzeste Distanz zum Ziel. Zunächst haben alle den Spieler als Ziel.
 - Kollision Spieler–Geist: Leben verlieren (noch ohne Animation)
 
-- State: Open
+- State: InProgress
 
 ### Stufe 4 – Individuelle Zielwahl
 - Jäger: Spieler

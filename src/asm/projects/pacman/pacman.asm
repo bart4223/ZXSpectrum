@@ -1,5 +1,5 @@
 ; ============================================================
-; Pacman-Variante fuer den ZX Spectrum 128K - Stufe 2: Punkte, Pillen, Punktestand
+; Pacman-Variante fuer den ZX Spectrum 128K - Stufe 3: Drohnen laufen
 ; Assembler: pasmo   (pasmo --tapbas pacman.asm pacman.tap)
 ; ============================================================
 ; Nur 128K. Das Labyrinth ist eine Textkarte (map_text weiter unten), 28 x 21
@@ -7,6 +7,12 @@
 ; fuer jede Wandkachel werden die 8 Nachbarn untersucht (Maske), daraus waehlt
 ; eine Tabelle die passende Kachel (Linien dort, wo ein Gang angrenzt).
 ;
+; Stufe 3: Vier Drohnen (Geister) mit eigenem Tempo und eigener Farbe jagen den Roboter.
+; An jeder Kachelmitte waehlt eine Drohne die Richtung: Reihenfolge hoch, links, runter,
+; rechts, kein Umkehren, kleinster Abstand der naechsten Kachel zum Ziel (hier haben
+; noch alle den Roboter als Ziel). Die drei Drohnen im Haus werden nacheinander
+; freigelassen (2, 4, 6 Sekunden). Beruehrung kostet ein Leben (drei Leben, danach
+; beginnt das Spiel von vorn). Pillen wirken noch nicht auf die Drohnen.
 ; Stufe 2: Punkte (10) und Pillen (50, blinken) werden beim Ueberfahren gefressen
 ; (Karte und Bildschirm), Punktestand und Rekord, Fresston auf AY-Kanal C (zwei
 ; abwechselnde Toene). Ist alles gefressen, blinken die Waende, dann beginnt das
@@ -46,6 +52,28 @@ ATTR_HEAD   equ 0x46            ; hell gelb auf schwarz
 ATTR_DOT    equ 0x47            ; Punkte und Pillen: hell weiss
 ATTR_DOOR   equ 0x43            ; Tuer: hell magenta
 ATTR_PLAYER equ 0x46            ; Spieler: hell gelb
+
+M_WAIT      equ 0               ; Drohnenzustaende
+M_EXIT      equ 1               ; verlaesst das Haus
+M_CHASE     equ 2               ; jagt den Spieler
+
+G_X         equ 0               ; Drohnen-Struktur (GS_SIZE Bytes je Drohne)
+G_Y         equ 1
+G_DIR       equ 2
+G_ACC       equ 3               ; Tempo-Summe
+G_SPD       equ 4               ; Schritte je 20 Frames
+G_ATTR      equ 5
+G_MODE      equ 6
+G_TMR       equ 7               ; Freigabe in Zwei-Frame-Takten
+G_CNT       equ 8               ; Schrittzaehler (Animation)
+G_OC        equ 9               ; alter Bereich: Spalte, Zeile, Breite, Hoehe
+G_OR        equ 10
+G_OW        equ 11
+G_OH        equ 12
+G_OV        equ 13              ; 1 = alter Bereich gueltig
+GS_SIZE     equ 16
+
+GT_Y        equ (MAZE_ROW+10)*8 ; Tunnelzeile in Bildschirmpixeln
 
 D_UP        equ 0               ; Richtungen
 D_RIGHT     equ 1
@@ -100,6 +128,19 @@ blink_off   equ VARS + 0x73A    ; 1 = Pillen gerade unsichtbar
 sfx_t       equ VARS + 0x73B    ; Restdauer des Fresstons in Frames
 sfx_flip    equ VARS + 0x73C    ; wechselt bei jedem Punkt den Ton
 sc_txt      equ VARS + 0x740    ; 7 Bytes: Zahl als Text
+lives       equ VARS + 0x748    ; Leben
+door_ok     equ VARS + 0x749    ; 1 = Haustuer ist passierbar (nur beim Verlassen des Hauses)
+gc_cc       equ VARS + 0x750    ; Richtungswahl: aktuelle Zelle (Spalte, Zeile)
+gc_rr       equ VARS + 0x751
+gc_tc       equ VARS + 0x752    ; Ziel (Spalte, Zeile)
+gc_tr       equ VARS + 0x753
+gc_i        equ VARS + 0x754    ; Kandidat 0..3
+gc_d        equ VARS + 0x755    ; Richtung des Kandidaten
+gc_nc       equ VARS + 0x756    ; Nachbarzelle
+gc_nr       equ VARS + 0x757
+gc_bd       equ VARS + 0x758    ; beste Richtung (255 = keine)
+gc_best     equ VARS + 0x759    ; 2 Bytes: bester Abstand (quadriert)
+ghosts      equ VARS + 0x780    ; 4 Drohnen zu GS_SIZE Bytes
 
 ; ============================================================
 ; Programmstart
@@ -144,6 +185,10 @@ start:
         ld (sfx_flip),a
         ld a,1
         ld (level),a
+        ld a,3
+        ld (lives),a
+        xor a
+        ld (door_ok),a
         ld hl,0xA280
         ld (rng),hl
         call apply_space        ; ULAplus aus, falls ein Vorgaenger es angelassen hat
@@ -158,6 +203,8 @@ start:
 main_loop:
         halt
         call update_player      ; Bewegung (nur Zahlen)
+        call update_ghosts
+        call check_hits
         call blink_pills
         call redraw             ; Zeichnen direkt nach HALT
         call keys
@@ -312,14 +359,17 @@ pk_1:   ld (rng),hl
         add a,b                 ; Abstand 1..3 zur alten Farbe
         and 3
         jp set_color
-pk_ext: ld b,7
+pk_ext: ld b,5
         call mod_a
-        ld b,a                  ; 0..6
+        ld b,a                  ; 0..4
         ld a,(ext_col)
         inc a
-        add a,b                 ; Abstand 1..7 zur alten Farbe
-        and 7
-        ld (ext_col),a
+        add a,b                 ; Abstand 1..5 zur alten Farbe
+pk_x:   cp 6
+        jr c,pk_y
+        sub 6
+        jr pk_x
+pk_y:   ld (ext_col),a
         jp set_ext_attr
 
 ; A = A mod B (B > 0)
@@ -757,7 +807,10 @@ passable:
         cp C_WALL
         jr z,pa_no
         cp C_DOOR
-        jr z,pa_no
+        jr nz,pa_yes
+        ld a,(door_ok)          ; Haustuer: nur beim Verlassen des Hauses
+        or a
+        ret
 pa_yes: ld a,1
         or a
         ret
@@ -776,24 +829,41 @@ redraw:
         ret z
         xor a
         ld (dirty),a
-        ld a,(old_valid)
-        or a
-        call nz,erase_old
-        ld hl,drone_tab         ; vier Drohnen (nur Ansicht)
+        call erase_all          ; alle alten Bereiche aus der Karte wiederherstellen
+        ld ix,ghosts            ; Drohnen
         ld b,4
-rd_dr:  push bc
-        ld b,(hl)
-        inc hl
-        ld c,(hl)
-        inc hl
-        ld a,(hl)
-        inc hl
-        push hl
-        ld hl,spr_drone
+rd_g:   push bc
+        ld a,(ix+G_CNT)
+        rrca
+        rrca
+        and 1                   ; Bild 0/1
+        ld l,a
+        ld h,0
+        add hl,hl
+        add hl,hl
+        add hl,hl
+        add hl,hl
+        add hl,hl
+        add hl,hl               ; * 64
+        ld de,spr_drone
+        add hl,de
+        ld b,(ix+G_X)
+        ld c,(ix+G_Y)
+        ld a,(ix+G_ATTR)
         call draw_sprite
-        pop hl
+        ld a,(spr_c)
+        ld (ix+G_OC),a
+        ld a,(spr_r)
+        ld (ix+G_OR),a
+        ld a,(spr_w)
+        ld (ix+G_OW),a
+        ld a,(spr_h)
+        ld (ix+G_OH),a
+        ld (ix+G_OV),1
         pop bc
-        djnz rd_dr
+        ld de,GS_SIZE
+        add ix,de
+        djnz rd_g
         ld a,(pl_cnt)           ; Spieler: Bild nach Richtung und Animationsschritt
         and 3
         ld e,a
@@ -889,6 +959,7 @@ ec_blank:
 ; in: HL = 4 vorverschobene Bilder zu je 16 Bytes, B = x, C = y (Bildschirmpixel,
 ;     x gerade), A = Attribut
 draw_sprite:
+        push ix                 ; IX gehoert dem Aufrufer (Drohnen-Schleifen)
         ld (spr_attr),a
         ld a,b
         ld (spr_x),a
@@ -996,6 +1067,7 @@ ds_n:   inc ix
         ld a,c
         cp 8
         jr nz,ds_row
+        pop ix
         ret
 
 
@@ -1007,12 +1079,17 @@ reset_level:
         call load_maze
         call count_dots
         xor a
+        ld (blink_off),a
+        ld (win_flag),a
+        ; (weiter mit reset_actors)
+
+; Spieler und Drohnen an die Startfelder
+reset_actors:
+        xor a
         ld (pl_acc),a
         ld (pl_cnt),a
         ld (pl_ttl),a
         ld (old_valid),a
-        ld (blink_off),a
-        ld (win_flag),a
         ld a,PL_START_X
         ld (pl_x),a
         ld a,PL_START_Y
@@ -1020,6 +1097,12 @@ reset_level:
         ld a,D_LEFT
         ld (pl_dir),a
         ld (pl_want),a
+        ld hl,ghost_init
+        ld de,ghosts
+        ld bc,4*GS_SIZE
+        ldir
+        ld a,1
+        ld (dirty),a
         ret
 
 count_dots:
@@ -1301,6 +1384,347 @@ sfx_tick:
         ld e,0                  ; Ton aus
         jp ay_wr
 
+
+; alte Bereiche von Spieler und Drohnen aus der Karte wiederherstellen
+erase_all:
+        ld a,(old_valid)
+        or a
+        call nz,erase_old
+        xor a
+        ld (old_valid),a
+        ld ix,ghosts
+        ld b,4
+ea_l:   push bc
+        ld a,(ix+G_OV)
+        or a
+        jr z,ea_n
+        ld a,(ix+G_OC)
+        ld (old_c),a
+        ld a,(ix+G_OR)
+        ld (old_r),a
+        ld a,(ix+G_OW)
+        ld (old_w),a
+        ld a,(ix+G_OH)
+        ld (old_h),a
+        call erase_old
+        ld (ix+G_OV),0
+ea_n:   pop bc
+        ld de,GS_SIZE
+        add ix,de
+        djnz ea_l
+        ret
+
+; ============================================================
+; Drohnen
+; ============================================================
+update_ghosts:
+        ld ix,ghosts
+        ld b,4
+ug_l:   push bc
+        call update_ghost
+        pop bc
+        ld de,GS_SIZE
+        add ix,de
+        djnz ug_l
+        ret
+
+; IX = Drohne
+update_ghost:
+        ld a,(ix+G_MODE)
+        or a
+        jr nz,ug_act
+        ld a,(blink_cnt)        ; Wartezeit: alle 2 Frames um 1 herunter
+        and 1
+        ret nz
+        ld a,(ix+G_TMR)
+        or a
+        jr z,ug_rel
+        dec (ix+G_TMR)
+        ret
+ug_rel: ld (ix+G_MODE),M_EXIT
+        ld (ix+G_DIR),D_UP
+        ret
+ug_act: ld a,(ix+G_Y)           ; im Tunnel langsamer
+        cp GT_Y
+        jr nz,ug_n
+        ld a,(ix+G_X)
+        cp 33
+        jr c,ug_slow
+        cp 216
+        jr c,ug_n
+ug_slow:
+        ld a,4
+        jr ug_a
+ug_n:   ld a,(ix+G_SPD)
+ug_a:   add a,(ix+G_ACC)
+        cp 20
+        jr c,ug_st
+        sub 20
+        ld (ix+G_ACC),a
+        jr ghost_step
+ug_st:  ld (ix+G_ACC),a
+        ret
+
+; ein Schritt (2 Pixel); auf einer Kachelmitte zuerst die Richtung waehlen
+ghost_step:
+        ld a,(ix+G_X)
+        or (ix+G_Y)
+        and 7
+        call z,ghost_choose
+        ld a,(ix+G_DIR)
+        or a
+        jr z,gs_up
+        dec a
+        jr z,gs_r
+        dec a
+        jr z,gs_d
+        ld a,(ix+G_X)           ; links, im Tunnel mit Umbruch
+        or a
+        jr nz,gs_l1
+        ld a,250
+gs_l1:  sub 2
+        ld (ix+G_X),a
+        jr gs_done
+gs_r:   ld a,(ix+G_X)
+        cp 248
+        jr nz,gs_r1
+        ld a,254
+gs_r1:  add a,2
+        ld (ix+G_X),a
+        jr gs_done
+gs_up:  ld a,(ix+G_Y)
+        sub 2
+        ld (ix+G_Y),a
+        jr gs_done
+gs_d:   ld a,(ix+G_Y)
+        add a,2
+        ld (ix+G_Y),a
+gs_done:
+        inc (ix+G_CNT)
+        ld a,1
+        ld (dirty),a
+        ld a,(ix+G_MODE)
+        cp M_EXIT
+        ret nz
+        ld a,(ix+G_Y)           ; draussen vor dem Haus: jagen
+        cp 73
+        ret nc
+        ld (ix+G_MODE),M_CHASE
+        ret
+
+; Richtung an einer Kachelmitte waehlen (IX = Drohne): von den Nachbarfeldern (ohne Umkehren,
+; Reihenfolge hoch, links, runter, rechts) das mit dem kleinsten Abstand zum Ziel
+ghost_choose:
+        ld a,(ix+G_X)
+        rrca
+        rrca
+        rrca
+        and 0x1F
+        ld (gc_cc),a
+        ld a,(ix+G_Y)
+        rrca
+        rrca
+        rrca
+        and 0x1F
+        ld (gc_rr),a
+        ld a,(ix+G_MODE)
+        cp M_EXIT
+        jr nz,gc_t1
+        ld a,15                 ; Ziel beim Verlassen des Hauses: ueber der Tuer
+        ld (gc_tc),a
+        ld a,7
+        ld (gc_tr),a
+        ld a,1
+        ld (door_ok),a
+        jr gc_t2
+gc_t1:  ld a,(pl_x)             ; Ziel: der Spieler
+        rrca
+        rrca
+        rrca
+        and 0x1F
+        ld (gc_tc),a
+        ld a,(pl_y)
+        rrca
+        rrca
+        rrca
+        and 0x1F
+        ld (gc_tr),a
+gc_t2:  ld hl,0xFFFF
+        ld (gc_best),hl
+        ld a,0xFF
+        ld (gc_bd),a
+        xor a
+        ld (gc_i),a
+gc_l:   ld a,(gc_i)
+        ld e,a
+        ld d,0
+        ld hl,cand_dirs
+        add hl,de
+        ld a,(hl)
+        ld (gc_d),a
+        ld b,a
+        ld a,(ix+G_DIR)
+        xor 2                   ; Umkehr ausschliessen
+        cp b
+        jr z,gc_next
+        ld a,(gc_cc)
+        ld b,a
+        ld a,(gc_rr)
+        ld c,a
+        ld a,(gc_d)
+        call apply_dir
+        ld a,b
+        and 0x1F                ; im Tunnel umbrechen
+        ld b,a
+        ld (gc_nc),a
+        ld a,c
+        ld (gc_nr),a
+        call passable
+        jr z,gc_next
+        ld a,(gc_nc)            ; Abstand (dx*dx + dy*dy) zum Ziel
+        ld b,a
+        ld a,(gc_tc)
+        sub b
+        jr nc,gc_x
+        neg
+gc_x:   ld e,a
+        ld d,0
+        ld hl,sq_tab
+        add hl,de
+        add hl,de
+        ld e,(hl)
+        inc hl
+        ld d,(hl)
+        push de
+        ld a,(gc_nr)
+        ld b,a
+        ld a,(gc_tr)
+        sub b
+        jr nc,gc_y
+        neg
+gc_y:   ld e,a
+        ld d,0
+        ld hl,sq_tab
+        add hl,de
+        add hl,de
+        ld a,(hl)
+        inc hl
+        ld h,(hl)
+        ld l,a
+        pop de
+        add hl,de
+        push hl
+        ld de,(gc_best)
+        or a
+        sbc hl,de
+        pop hl
+        jr nc,gc_next           ; nur echt kleiner gewinnt (Reihenfolge entscheidet bei Gleichstand)
+        ld (gc_best),hl
+        ld a,(gc_d)
+        ld (gc_bd),a
+gc_next:
+        ld a,(gc_i)
+        inc a
+        ld (gc_i),a
+        cp 4
+        jp nz,gc_l
+        xor a
+        ld (door_ok),a
+        ld a,(gc_bd)
+        cp 0xFF
+        jr nz,gc_set
+        ld a,(ix+G_DIR)         ; Sackgasse: umkehren
+        xor 2
+gc_set: ld (ix+G_DIR),a
+        ret
+
+; in: A = Richtung, B = Spalte, C = Zeile; out: B, C = Nachbarfeld
+apply_dir:
+        or a
+        jr nz,ad_1
+        dec c
+        ret
+ad_1:   dec a
+        jr nz,ad_2
+        inc b
+        ret
+ad_2:   dec a
+        jr nz,ad_3
+        inc c
+        ret
+ad_3:   dec b
+        ret
+
+cand_dirs:
+        db D_UP,D_LEFT,D_DOWN,D_RIGHT
+
+; Beruehrung Spieler - Drohne
+check_hits:
+        ld ix,ghosts
+        ld b,4
+ch_l:   ld a,(ix+G_MODE)
+        or a
+        jr z,ch_n               ; wartende Drohnen im Haus: nein
+        ld a,(pl_x)
+        sub (ix+G_X)
+        jr nc,ch_1
+        neg
+ch_1:   cp 6
+        jr nc,ch_n
+        ld a,(pl_y)
+        sub (ix+G_Y)
+        jr nc,ch_2
+        neg
+ch_2:   cp 6
+        jr nc,ch_n
+        jp life_lost
+ch_n:   ld de,GS_SIZE
+        add ix,de
+        djnz ch_l
+        ret
+
+; Leben verlieren (noch ohne Animation): kurze Pause, alle an den Start
+life_lost:
+        call erase_all
+        ld a,(lives)
+        dec a
+        ld (lives),a
+        jr z,game_over
+        call draw_lives
+        ld b,50
+ll_w:   halt
+        djnz ll_w
+        jp reset_actors
+
+; keine Leben mehr: neues Spiel
+game_over:
+        ld a,3
+        ld (lives),a
+        xor a
+        ld (score),a
+        ld (score+1),a
+        ld (score+2),a
+        ld a,1
+        ld (level),a
+        call reset_level
+        call draw_hud
+        jp draw_maze
+
+draw_lives:
+        ld a,ATTR_TEXT
+        ld (cur_attr),a
+        ld hl,txt_leben
+        ld bc,23*256+2
+        call print_at
+        ld a,(lives)
+        add a,"0"
+        ld (sc_txt),a
+        xor a
+        ld (sc_txt+1),a
+        ld hl,sc_txt
+        ld bc,23*256+8
+        jp print_at
+
 ; ============================================================
 ; Kopf- und Fusszeile
 ; ============================================================
@@ -1318,9 +1742,7 @@ draw_hud:
         call print_at
         call draw_score
         call draw_level
-        ld hl,txt_leben
-        ld bc,23*256+2
-        call print_at
+        call draw_lives
         ; (fall through)
 
 ; Fusszeile: Tastenhilfe mit Zustand der Farbwahl
@@ -1449,7 +1871,7 @@ txt_rekord:
 txt_level:
         db "LEVEL",0
 txt_leben:
-        db "LEBEN 3",0
+        db "LEBEN ",0
 txt_normal:
         db "P:NORMAL    N/LEER:NEU",0
 txt_ext:
@@ -1459,16 +1881,17 @@ txt_ext:
 col_tab:
         db 0x41,0x45,0x43,0x44
 
-; ULAplus-Sondertoene der Wand (GGGRRRBB):
-; orange, rosa, violett, tuerkis, limone, himmelblau, mint, purpur
+; ULAplus-Sondertoene (GGGRRRBB): 6 Wandtoene (violett, tuerkis, limone, himmelblau, mint,
+; purpur) und 2 Drohnentoene
 ext_tab:
-        db 0x9C,0x7E,0x2F,0xC3,0xF0,0x8B,0xEE,0x2B
+        db 0x2F,0xC3,0xF0,0x8B,0xEE,0x2B
+        db 0x7E,0x9C                    ; Drohnen: rosa (Eintrag 3), orange (Eintrag 6)
 ; zugehoerige Paletteneintraege und Attribute (hell Tinte 1,2,4,5 und dunkel Tinte 1..4;
 ; Tinte 3 hell = Tuer und Tinte 6/7 hell = Kopfzeile/Punkte bleiben unberuehrt)
 ext_ent:
-        db 17,18,20,21,1,2,3,4
+        db 17,20,21,1,2,4,3,6
 ext_atr:
-        db 0x41,0x42,0x44,0x45,0x01,0x02,0x03,0x04
+        db 0x41,0x44,0x45,0x01,0x02,0x04
 
 ; Standardpalette fuer ULAplus (Farbe 0..7 = schwarz blau rot magenta gruen cyan gelb weiss)
 std_norm:
@@ -1643,16 +2066,28 @@ spr_player:
         db 0x1F,0x80,0x3F,0xC0,0x3B,0xC0,0x03,0xC0,0x01,0xC0,0x03,0xC0,0x3F,0xC0,0x1F,0x80
         db 0x07,0xE0,0x0F,0xF0,0x0E,0xF0,0x00,0xF0,0x00,0x70,0x00,0xF0,0x0F,0xF0,0x07,0xE0
         db 0x01,0xF8,0x03,0xFC,0x03,0xBC,0x00,0x3C,0x00,0x1C,0x00,0x3C,0x03,0xFC,0x01,0xF8
+; Drohne: 2 Bilder (Rotoren/Beine), je 4 Verschiebungen
 spr_drone:
         db 0xC3,0x00,0x7E,0x00,0xFF,0x00,0xDB,0x00,0xFF,0x00,0xFF,0x00,0x5A,0x00,0x24,0x00
         db 0x30,0xC0,0x1F,0x80,0x3F,0xC0,0x36,0xC0,0x3F,0xC0,0x3F,0xC0,0x16,0x80,0x09,0x00
         db 0x0C,0x30,0x07,0xE0,0x0F,0xF0,0x0D,0xB0,0x0F,0xF0,0x0F,0xF0,0x05,0xA0,0x02,0x40
         db 0x03,0x0C,0x01,0xF8,0x03,0xFC,0x03,0x6C,0x03,0xFC,0x03,0xFC,0x01,0x68,0x00,0x90
-; Drohnen an den Startfeldern: x, y (Bildschirmpixel), Attribut (nur zur Ansicht)
-drone_tab:
-        db 120,72,0x43          ; J
-        db 120,96,0x05          ; A
-        db 104,96,0x06          ; F
-        db 144,96,0x07          ; Z
+        db 0x66,0x00,0x7E,0x00,0xFF,0x00,0xDB,0x00,0xFF,0x00,0xFF,0x00,0x5A,0x00,0x42,0x00
+        db 0x19,0x80,0x1F,0x80,0x3F,0xC0,0x36,0xC0,0x3F,0xC0,0x3F,0xC0,0x16,0x80,0x10,0x80
+        db 0x06,0x60,0x07,0xE0,0x0F,0xF0,0x0D,0xB0,0x0F,0xF0,0x0F,0xF0,0x05,0xA0,0x04,0x20
+        db 0x01,0x98,0x01,0xF8,0x03,0xFC,0x03,0x6C,0x03,0xFC,0x03,0xFC,0x01,0x68,0x01,0x08
+; Startwerte der vier Drohnen (GS_SIZE = 16 Bytes): x, y, Richtung, Tempo-Summe, Tempo,
+;   Attribut, Zustand (0 wartet, 2 jagt), Freigabe (Zwei-Frame-Takte), Zaehler, alter Bereich (5), 2 frei
+ghost_init:
+        db 120,72,3,0,9,0x42,2,0,0,0,0,0,0,0,0,0          ; J
+        db 120,96,0,0,8,0x03,0,50,0,0,0,0,0,0,0,0          ; A
+        db 104,96,0,0,8,0x05,0,100,0,0,0,0,0,0,0,0          ; F
+        db 144,96,0,0,7,0x06,0,150,0,0,0,0,0,0,0,0          ; Z
+; Quadrate 0..31 fuer die Abstandsberechnung
+sq_tab:
+        dw 0,1,4,9,16,25,36,49
+        dw 64,81,100,121,144,169,196,225
+        dw 256,289,324,361,400,441,484,529
+        dw 576,625,676,729,784,841,900,961
 
         end start
