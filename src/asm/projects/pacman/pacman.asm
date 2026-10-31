@@ -2079,10 +2079,10 @@ spr_drone:
 ; Startwerte der vier Drohnen (GS_SIZE = 16 Bytes): x, y, Richtung, Tempo-Summe, Tempo,
 ;   Attribut, Zustand (0 wartet, 2 jagt), Freigabe (Zwei-Frame-Takte), Zaehler, alter Bereich (5), 2 frei
 ghost_init:
-        db 120,72,3,0,9,0x42,2,0,0,0,0,0,0,0,0,0          ; J
-        db 120,96,0,0,8,0x03,0,50,0,0,0,0,0,0,0,0          ; A
-        db 104,96,0,0,8,0x05,0,100,0,0,0,0,0,0,0,0          ; F
-        db 144,96,0,0,7,0x06,0,150,0,0,0,0,0,0,0,0          ; Z
+        db 120,72,3,0,8,0x42,2,0,0,0,0,0,0,0,0,0          ; J
+        db 120,96,0,0,7,0x03,0,50,0,0,0,0,0,0,0,0          ; A
+        db 104,96,0,0,7,0x05,0,100,0,0,0,0,0,0,0,0          ; F
+        db 144,96,0,0,6,0x06,0,150,0,0,0,0,0,0,0,0          ; Z
 ; Quadrate 0..31 fuer die Abstandsberechnung
 sq_tab:
         dw 0,1,4,9,16,25,36,49
