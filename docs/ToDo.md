@@ -38,14 +38,14 @@ Ziel: Labyrinth-Jagd im Stil von Pacman in Z80-Assembler, nur 128K, AY-Sound.
 - Pixelweise Bewegung, gepufferte Richtungswunsch, Abbiegen nur an der Kachelmitte
 - Tunnel links/rechts, Tempo-Muster
 
-- State: InProgress
+- State: Done
 
 ### Stufe 2 – Punkte, Pillen, Punktestand
 - Punkte fressen (Karte und Bildschirm aktualisieren), Pillen blinken, Punktezähler
 - Level geschafft, wenn alles gefressen ist (Blinken, dann Neuaufbau)
 - Fresseffekt als einfacher AY-Effekt auf Kanal C (zwei abwechselnde Töne)
 
-- State: Open
+- State: InProgress
 
 ### Stufe 3 – Geister laufen (Grundgerüst)
 - Vier Geister als Figuren mit eigenem Tempo und Farbe, zunächst ohne Käfig

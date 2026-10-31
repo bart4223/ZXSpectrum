@@ -1,5 +1,5 @@
 ; ============================================================
-; Pacman-Variante fuer den ZX Spectrum 128K - Stufe 1: Spieler laeuft
+; Pacman-Variante fuer den ZX Spectrum 128K - Stufe 2: Punkte, Pillen, Punktestand
 ; Assembler: pasmo   (pasmo --tapbas pacman.asm pacman.tap)
 ; ============================================================
 ; Nur 128K. Das Labyrinth ist eine Textkarte (map_text weiter unten), 28 x 21
@@ -7,6 +7,10 @@
 ; fuer jede Wandkachel werden die 8 Nachbarn untersucht (Maske), daraus waehlt
 ; eine Tabelle die passende Kachel (Linien dort, wo ein Gang angrenzt).
 ;
+; Stufe 2: Punkte (10) und Pillen (50, blinken) werden beim Ueberfahren gefressen
+; (Karte und Bildschirm), Punktestand und Rekord, Fresston auf AY-Kanal C (zwei
+; abwechselnde Toene). Ist alles gefressen, blinken die Waende, dann beginnt das
+; naechste Level. N / Leertaste / Enter ueberspringt ein Level.
 ; Stufe 1: Der Spieler (Roboter) laeuft pixelweise (2 Pixel je Schritt) mit Joystick 1
 ; (Tasten 6 7 8 9 0) oder 2 (Tasten 1 2 3 4 5, Sinclair IF2). Richtungswunsch wird
 ; gepuffert und an der naechsten Kachelmitte ausgefuehrt, Umkehren geht jederzeit.
@@ -87,6 +91,15 @@ spr_h       equ VARS + 0x723
 spr_attr    equ VARS + 0x724
 spr_x       equ VARS + 0x725
 spr_y       equ VARS + 0x726
+score       equ VARS + 0x730    ; 3 Bytes BCD, niedrigstes Byte zuerst
+record      equ VARS + 0x733    ; 3 Bytes BCD
+dots_left   equ VARS + 0x736    ; 2 Bytes: noch nicht gefressene Punkte und Pillen
+win_flag    equ VARS + 0x738    ; 1 = alles gefressen
+blink_cnt   equ VARS + 0x739    ; Frame-Zaehler fuer das Pillenblinken
+blink_off   equ VARS + 0x73A    ; 1 = Pillen gerade unsichtbar
+sfx_t       equ VARS + 0x73B    ; Restdauer des Fresstons in Frames
+sfx_flip    equ VARS + 0x73C    ; wechselt bei jedem Punkt den Ton
+sc_txt      equ VARS + 0x740    ; 7 Bytes: Zahl als Text
 
 ; ============================================================
 ; Programmstart
@@ -120,20 +133,23 @@ start:
         ld (pl_acc),a
         ld (pl_cnt),a
         ld (old_valid),a
-        ld a,PL_START_X
-        ld (pl_x),a
-        ld a,PL_START_Y
-        ld (pl_y),a
-        ld a,D_LEFT
-        ld (pl_dir),a
-        ld (pl_want),a
+        ld (score),a
+        ld (score+1),a
+        ld (score+2),a
+        ld (record),a
+        ld (record+1),a
+        ld (record+2),a
+        ld (blink_cnt),a
+        ld (sfx_t),a
+        ld (sfx_flip),a
         ld a,1
         ld (level),a
         ld hl,0xA280
         ld (rng),hl
         call apply_space        ; ULAplus aus, falls ein Vorgaenger es angelassen hat
         call pick_color         ; Wandfarbe fuer Level 1
-        call load_maze
+        call reset_level        ; Karte laden, Punkte zaehlen, Spieler an den Start
+        call ay_init
         call cls
         call draw_hud
         call draw_maze
@@ -142,8 +158,13 @@ start:
 main_loop:
         halt
         call update_player      ; Bewegung (nur Zahlen)
+        call blink_pills
         call redraw             ; Zeichnen direkt nach HALT
         call keys
+        call sfx_tick
+        ld a,(win_flag)
+        or a
+        call nz,level_clear
         jr main_loop
 
 ; ============================================================
@@ -337,6 +358,7 @@ new_level:
         ld a,1
 nl_1:   ld (level),a
         call pick_color         ; in beiden Farbraeumen eine neue Wandfarbe
+        call reset_level
         call draw_level
         jp draw_maze
 
@@ -495,9 +517,15 @@ draw_code:
         ld b,ATTR_DOT
         cp C_DOT
         jr z,dc_draw
-        ld hl,gfx_pill
         cp C_PILL
+        jr nz,dc_door
+        ld hl,gfx_pill
+        ld a,(blink_off)        ; Pillen blinken
+        or a
         jr z,dc_draw
+        ld hl,gfx_empty
+        jr dc_draw
+dc_door:
         ld hl,gfx_door
         ld b,ATTR_DOOR
         jr dc_draw
@@ -671,7 +699,13 @@ ms_done:
         inc (hl)
         ld a,1
         ld (dirty),a
-        ret
+        ld a,(pl_x)
+        ld b,a
+        ld a,(pl_y)
+        or b
+        and 7
+        ret nz
+        jp eat                  ; auf einer Kachelmitte: fressen
 
 ; in: A = Richtung, Spieler steht auf einer Kachelmitte
 ; out: NZ = Nachbarfeld ist frei
@@ -964,6 +998,309 @@ ds_n:   inc ix
         jr nz,ds_row
         ret
 
+
+; ============================================================
+; Stufe 2: Fressen, Punkte, Level-Ende, Ton
+; ============================================================
+; Karte laden, Punkte zaehlen, Spieler an den Start (Anfang jedes Levels)
+reset_level:
+        call load_maze
+        call count_dots
+        xor a
+        ld (pl_acc),a
+        ld (pl_cnt),a
+        ld (pl_ttl),a
+        ld (old_valid),a
+        ld (blink_off),a
+        ld (win_flag),a
+        ld a,PL_START_X
+        ld (pl_x),a
+        ld a,PL_START_Y
+        ld (pl_y),a
+        ld a,D_LEFT
+        ld (pl_dir),a
+        ld (pl_want),a
+        ret
+
+count_dots:
+        ld hl,maze
+        ld bc,MAZE_W*MAZE_H
+        ld de,0
+cd_1:   ld a,(hl)
+        inc hl
+        cp C_DOT
+        jr z,cd_c
+        cp C_PILL
+        jr nz,cd_n
+cd_c:   inc de
+cd_n:   dec bc
+        ld a,b
+        or c
+        jr nz,cd_1
+        ld (dots_left),de
+        ret
+
+; Der Spieler steht auf einer Kachelmitte: Punkt oder Pille fressen
+eat:
+        ld a,(pl_x)
+        rrca
+        rrca
+        rrca
+        and 0x1F
+        sub MAZE_COL
+        cp MAZE_W
+        ret nc                  ; im Tunnel ausserhalb: nichts zu fressen
+        ld b,a
+        ld a,(pl_y)
+        rrca
+        rrca
+        rrca
+        and 0x1F
+        sub MAZE_ROW
+        cp MAZE_H
+        ret nc
+        ld c,a
+        call maze_addr
+        ld a,(hl)
+        cp C_DOT
+        jr z,ea_dot
+        cp C_PILL
+        ret nz
+        ld (hl),C_EMPTY
+        call sfx_pill
+        ld a,0x50
+        jr ea_sc
+ea_dot: ld (hl),C_EMPTY
+        call sfx_dot
+        ld a,0x10
+ea_sc:  call add_score
+        ld hl,(dots_left)
+        dec hl
+        ld (dots_left),hl
+        ld a,h
+        or l
+        ret nz
+        ld a,1
+        ld (win_flag),a
+        ret
+
+; in: A = Punkte (BCD, 0x10 / 0x50); aktualisiert Punktestand und Rekord
+add_score:
+        ld hl,score
+        add a,(hl)
+        daa
+        ld (hl),a
+        inc hl
+        ld a,(hl)
+        adc a,0
+        daa
+        ld (hl),a
+        inc hl
+        ld a,(hl)
+        adc a,0
+        daa
+        ld (hl),a
+        ld a,(score+2)          ; Rekord = max(Rekord, Punkte)
+        ld b,a
+        ld a,(record+2)
+        cp b
+        jr c,as_new
+        jr nz,draw_score
+        ld a,(score+1)
+        ld b,a
+        ld a,(record+1)
+        cp b
+        jr c,as_new
+        jr nz,draw_score
+        ld a,(score)
+        ld b,a
+        ld a,(record)
+        cp b
+        jr nc,draw_score
+as_new: ld hl,score
+        ld de,record
+        ld bc,3
+        ldir
+        ; (weiter mit draw_score)
+
+draw_score:
+        ld a,ATTR_TEXT
+        ld (cur_attr),a
+        ld hl,score+2
+        ld de,sc_txt
+        call bcd_txt
+        ld hl,sc_txt
+        ld bc,1*256+2
+        call print_at
+        ld hl,record+2
+        ld de,sc_txt
+        call bcd_txt
+        ld hl,sc_txt
+        ld bc,1*256+12
+        jp print_at
+
+; in: HL = hoechstes Byte einer 3-Byte-BCD-Zahl, DE = Zielpuffer (7 Bytes)
+bcd_txt:
+        ld b,3
+bt_1:   ld a,(hl)
+        dec hl
+        push af
+        rrca
+        rrca
+        rrca
+        rrca
+        and 15
+        add a,"0"
+        ld (de),a
+        inc de
+        pop af
+        and 15
+        add a,"0"
+        ld (de),a
+        inc de
+        djnz bt_1
+        xor a
+        ld (de),a
+        ret
+
+; Pillen blinken (alle 16 Frames umschalten)
+blink_pills:
+        ld hl,blink_cnt
+        inc (hl)
+        ld a,(hl)
+        and 15
+        ret nz
+        ld a,(blink_off)
+        xor 1
+        ld (blink_off),a
+        ld hl,maze
+        ld e,0
+bp_r:   ld d,0
+bp_c:   ld a,(hl)
+        cp C_PILL
+        jr nz,bp_n
+        push hl
+        push de
+        call draw_code
+        pop de
+        pop hl
+bp_n:   inc hl
+        inc d
+        ld a,d
+        cp MAZE_W
+        jr nz,bp_c
+        inc e
+        ld a,e
+        cp MAZE_H
+        jr nz,bp_r
+        ld a,1
+        ld (dirty),a            ; Figuren danach neu zeichnen
+        ret
+
+; Alles gefressen: Waende blinken, dann naechstes Level
+level_clear:
+        xor a
+        ld (win_flag),a
+        ld e,25
+lc_w:   halt
+        dec e
+        jr nz,lc_w
+        ld e,6
+lc_1:   push de
+        ld a,e
+        and 1
+        ld a,0x47
+        jr nz,lc_2
+        ld a,(wall_attr)
+lc_2:   call set_wall_attr
+        ld b,8
+lc_3:   halt
+        djnz lc_3
+        pop de
+        dec e
+        jr nz,lc_1
+        jp new_level
+
+; in: A = Attribut: alle Wandzellen umfaerben
+set_wall_attr:
+        ld (cur_attr),a
+        ld hl,maze
+        ld de,0x5800+MAZE_ROW*32+MAZE_COL
+        ld c,MAZE_H
+swa_r:  push de
+        ld b,MAZE_W
+swa_c:  ld a,(hl)
+        cp C_WALL
+        jr nz,swa_n
+        ld a,(cur_attr)
+        ld (de),a
+swa_n:  inc hl
+        inc de
+        djnz swa_c
+        pop de
+        push hl
+        ld hl,32
+        add hl,de
+        ex de,hl
+        pop hl
+        dec c
+        jr nz,swa_r
+        ret
+
+; ---- AY-3-8912: Fresston auf Kanal C ----
+; D = Register, E = Wert
+ay_wr:
+        ld bc,0xFFFD
+        out (c),d
+        ld b,0xBF
+        out (c),e
+        ret
+
+ay_init:
+        ld d,7
+        ld e,0x3B               ; nur Ton C an, kein Rauschen
+        call ay_wr
+        ld d,10
+        ld e,0
+        jp ay_wr
+
+sfx_dot:
+        ld a,(sfx_flip)
+        xor 1
+        ld (sfx_flip),a
+        ld hl,200               ; zwei abwechselnde Toene
+        jr z,sd_1
+        ld hl,150
+sd_1:   ld bc,0x040C            ; Lautstaerke 12, 4 Frames
+        jr sfx_go
+sfx_pill:
+        ld hl,600
+        ld bc,0x0E0E            ; Lautstaerke 14, 14 Frames
+sfx_go: ld a,b
+        ld (sfx_t),a
+        push bc
+        ld d,4
+        ld e,l
+        call ay_wr
+        ld d,5
+        ld e,h
+        call ay_wr
+        pop bc
+        ld d,10
+        ld e,c
+        jp ay_wr
+
+sfx_tick:
+        ld a,(sfx_t)
+        or a
+        ret z
+        dec a
+        ld (sfx_t),a
+        ret nz
+        ld d,10
+        ld e,0                  ; Ton aus
+        jp ay_wr
+
 ; ============================================================
 ; Kopf- und Fusszeile
 ; ============================================================
@@ -979,14 +1316,7 @@ draw_hud:
         ld hl,txt_level
         ld bc,0*256+24
         call print_at
-        ld a,ATTR_TEXT
-        ld (cur_attr),a
-        ld hl,txt_null6
-        ld bc,1*256+2
-        call print_at
-        ld hl,txt_null6
-        ld bc,1*256+12
-        call print_at
+        call draw_score
         call draw_level
         ld hl,txt_leben
         ld bc,23*256+2
@@ -1118,8 +1448,6 @@ txt_rekord:
         db "REKORD",0
 txt_level:
         db "LEVEL",0
-txt_null6:
-        db "000000",0
 txt_leben:
         db "LEBEN 3",0
 txt_normal:
