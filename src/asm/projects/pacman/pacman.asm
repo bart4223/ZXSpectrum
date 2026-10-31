@@ -1271,11 +1271,11 @@ sfx_dot:
         ld hl,200               ; zwei abwechselnde Toene
         jr z,sd_1
         ld hl,150
-sd_1:   ld bc,0x040C            ; Lautstaerke 12, 4 Frames
+sd_1:   ld bc,0x0404            ; Lautstaerke 4 (leise), 4 Frames
         jr sfx_go
 sfx_pill:
         ld hl,600
-        ld bc,0x0E0E            ; Lautstaerke 14, 14 Frames
+        ld bc,0x0E06            ; Lautstaerke 6 (leise), 14 Frames
 sfx_go: ld a,b
         ld (sfx_t),a
         push bc
