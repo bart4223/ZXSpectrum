@@ -14,7 +14,7 @@
 ;       NORMAL    = Standardfarben (blau / cyan / magenta / gruen)
 ;       ERWEITERT = ULAplus (64 Farben): zufaellige Wandfarbe aus 8 Sondertoenen
 ;                   (orange, rosa, violett, tuerkis, limone, himmelblau, mint, purpur)
-;   N = neues Level simulieren (Levelzahl +1, neue Wandfarbe)
+;   N, Leertaste oder Enter = neues Level simulieren (Levelzahl +1, neue Wandfarbe)
 ; ULAplus: Ports 0xBF3B (Register) / 0xFF3B (Daten). Auf Geraeten ohne ULAplus
 ; (und in Emulatoren ohne) bleibt ERWEITERT ohne Wirkung auf die Farben.
 ; ============================================================
@@ -118,7 +118,13 @@ keys:
 k_n:    ld a,0x7F
         in a,(0xFE)             ; Reihe Leertaste Sym M N B
         cpl
-        and 0x08                ; Bit 3 = N
+        and 0x09                ; Bit 3 = N, Bit 0 = Leertaste
+        ld d,a
+        ld a,0xBF
+        in a,(0xFE)             ; Reihe Enter L K J H
+        cpl
+        and 0x01                ; Bit 0 = Enter
+        or d                    ; N, Leertaste oder Enter
         ld hl,key_n
         call edge
         ret z
@@ -254,7 +260,7 @@ rnd:
         ld (rng),hl
         ret
 
-; Neues Level: Zahl hochzaehlen, bei Zufall neue Wandfarbe, Labyrinth neu zeichnen
+; Neues Level: Zahl hochzaehlen, neue Wandfarbe, Labyrinth neu zeichnen
 new_level:
         ld a,(level)
         inc a
@@ -262,9 +268,7 @@ new_level:
         jr c,nl_1
         ld a,1
 nl_1:   ld (level),a
-        ld a,(col_mode)
-        or a
-        call nz,pick_color
+        call pick_color         ; in beiden Farbraeumen eine neue Wandfarbe
         call draw_level
         jp draw_maze
 
@@ -612,9 +616,9 @@ txt_null6:
 txt_leben:
         db "LEBEN 3",0
 txt_normal:
-        db "P:NORMAL     N:NEU    ",0
+        db "P:NORMAL    N/LEER:NEU",0
 txt_ext:
-        db "P:ERWEITERT  N:NEU    ",0
+        db "P:ERWEITERT N/LEER:NEU",0
 
 ; Wandfarben (NORMAL): hell blau, hell cyan, hell magenta, hell gruen
 col_tab:
