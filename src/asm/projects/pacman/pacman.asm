@@ -48,7 +48,7 @@ D_RIGHT     equ 1
 D_DOWN      equ 2
 D_LEFT      equ 3
 
-PL_SPEED    equ 12              ; Schritte je 20 Frames (2 Pixel je Schritt)
+PL_SPEED    equ 10              ; Schritte je 20 Frames (2 Pixel je Schritt)
 PL_TTL      equ 30              ; Frames, wie lange ein Richtungswunsch gilt
 PL_START_X  equ (13+MAZE_COL)*8 ; Startfeld des Spielers (Kachel 13,15) in Bildschirmpixeln
 PL_START_Y  equ (15+MAZE_ROW)*8
