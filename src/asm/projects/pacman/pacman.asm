@@ -1,0 +1,663 @@
+; ============================================================
+; Pacman-Variante fuer den ZX Spectrum 128K - Stufe 0: Geruest und Labyrinth
+; Assembler: pasmo   (pasmo --tapbas pacman.asm pacman.tap)
+; ============================================================
+; Nur 128K. Das Labyrinth ist eine Textkarte (map_text weiter unten), 28 x 21
+; Kacheln zu je 8x8 Pixel. Die Wandzeichnung entsteht beim Start aus der Karte:
+; fuer jede Wandkachel werden die 8 Nachbarn untersucht (Maske), daraus waehlt
+; eine Tabelle die passende Kachel (Linien dort, wo ein Gang angrenzt).
+;
+; Stufe 0 zeigt nur das Labyrinth. Zum Ausprobieren des Aussehens:
+;   S = Wandstil wechseln (rund / eckig / Bloecke)
+;   C = Wandfarbe wechseln (blau / cyan / magenta / gruen)
+; ============================================================
+
+        org 32768
+
+; ---- Konstanten -------------------------------------------
+MAZE_W      equ 28              ; Labyrinthbreite in Kacheln
+MAZE_H      equ 21              ; Labyrinthhoehe in Kacheln
+MAZE_COL    equ 2               ; Zeichenspalte der linken Kante
+MAZE_ROW    equ 2               ; Zeichenzeile der oberen Kante
+
+C_EMPTY     equ 0               ; Feldcodes in der Karte
+C_WALL      equ 1
+C_DOT       equ 2
+C_PILL      equ 3
+C_DOOR      equ 4               ; Tuer des Geisterhauses
+
+ATTR_TEXT   equ 0x07            ; weiss auf schwarz
+ATTR_HEAD   equ 0x46            ; hell gelb auf schwarz
+ATTR_DOT    equ 0x47            ; Punkte und Pillen: hell weiss
+ATTR_DOOR   equ 0x43            ; Tuer: hell magenta
+
+; ---- Variablen (freier RAM, nicht im TAP) -----------------
+VARS        equ 0xB000
+maze        equ VARS            ; MAZE_W*MAZE_H Bytes: Feldcodes (588)
+font        equ VARS + 0x300    ; 768 Bytes: Zeichensatz (Zeichen 32..127)
+cur_attr    equ VARS + 0x700    ; Attribut fuer draw_cell
+wall_attr   equ VARS + 0x701    ; Wandfarbe
+wall_style  equ VARS + 0x702    ; 0 rund, 1 eckig, 2 Bloecke
+wall_col    equ VARS + 0x703    ; Index in col_tab
+key_s       equ VARS + 0x704    ; Taste S im letzten Frame
+key_c       equ VARS + 0x705    ; Taste C im letzten Frame
+wall_idx    equ VARS + 0x706    ; 2 Bytes: Index-Tabelle des Stils
+wall_gfx    equ VARS + 0x708    ; 2 Bytes: Kacheln des Stils
+
+; ============================================================
+; Programmstart
+; ============================================================
+start:
+        ; 128K: 48K-BASIC-ROM einblenden (dort liegt der Zeichensatz bei 0x3D00).
+        ; Zuerst 0x1FFD (+2A/+3: ROM 3), dann 0x7FFD (ROM-Bit 4 = 1).
+        di
+        ld bc,0x1FFD
+        ld a,0x04
+        out (c),a
+        ld bc,0x7FFD
+        ld a,0x10
+        out (c),a
+        ei
+        xor a
+        out (0xFE),a            ; Rand schwarz
+        ; Zeichensatz einmal ins RAM kopieren, danach braucht das Spiel das ROM nicht mehr
+        ld hl,0x3D00
+        ld de,font
+        ld bc,768
+        ldir
+        ; Voreinstellungen
+        ld a,0x41               ; hell blau auf schwarz
+        ld (wall_attr),a
+        xor a
+        ld (wall_style),a
+        ld (wall_col),a
+        ld (key_s),a
+        ld (key_c),a
+        call set_style
+        call load_maze
+        call cls
+        call draw_hud
+        call draw_maze
+
+; ---- Hauptschleife: ein Durchlauf pro Frame (50 Hz) -------
+main_loop:
+        halt
+        call keys
+        jr main_loop
+
+; ============================================================
+; Tasten S (Stil) und C (Farbe), nur bei neuem Druck
+; ============================================================
+keys:
+        ld a,0xFD
+        in a,(0xFE)             ; Reihe A S D F G
+        cpl
+        and 0x02                ; Bit 1 = S
+        ld hl,key_s
+        call edge
+        jr z,k_c
+        ld a,(wall_style)
+        inc a
+        cp 3
+        jr c,k_s1
+        xor a
+k_s1:   ld (wall_style),a
+        call set_style
+        call draw_maze
+k_c:    ld a,0xFE
+        in a,(0xFE)             ; Reihe Shift Z X C V
+        cpl
+        and 0x08                ; Bit 3 = C
+        ld hl,key_c
+        call edge
+        ret z
+        ld a,(wall_col)
+        inc a
+        and 3
+        ld (wall_col),a
+        ld e,a
+        ld d,0
+        ld hl,col_tab
+        add hl,de
+        ld a,(hl)
+        ld (wall_attr),a
+        jp draw_maze
+
+; in: A = Tastenzustand jetzt (0 = nicht gedrueckt), HL = Zeiger auf den Zustand vorher
+; out: NZ = Taste wurde neu gedrueckt
+edge:
+        ld b,(hl)
+        ld (hl),a
+        ld c,a
+        ld a,b
+        cpl
+        and c
+        ret
+
+; Wandstil setzen: Zeiger auf Index-Tabelle und Kacheln des Stils holen
+set_style:
+        ld a,(wall_style)
+        add a,a
+        add a,a                 ; * 4 Bytes je Eintrag
+        ld e,a
+        ld d,0
+        ld hl,style_tab
+        add hl,de
+        ld e,(hl)
+        inc hl
+        ld d,(hl)
+        inc hl
+        ld (wall_idx),de
+        ld e,(hl)
+        inc hl
+        ld d,(hl)
+        ld (wall_gfx),de
+        ret
+
+; ============================================================
+; Karte laden: Textzeichen in Feldcodes umsetzen
+; ============================================================
+load_maze:
+        ld hl,map_text
+        ld de,maze
+        ld bc,MAZE_W*MAZE_H
+lm_loop:
+        ld a,(hl)
+        inc hl
+        cp "#"
+        jr nz,lm_1
+        ld a,C_WALL
+        jr lm_st
+lm_1:   cp "."
+        jr nz,lm_2
+        ld a,C_DOT
+        jr lm_st
+lm_2:   cp "o"
+        jr nz,lm_3
+        ld a,C_PILL
+        jr lm_st
+lm_3:   cp "="
+        ld a,C_EMPTY            ; (ld aendert die Flags nicht)
+        jr nz,lm_st
+        ld a,C_DOOR
+lm_st:  ld (de),a
+        inc de
+        dec bc
+        ld a,b
+        or c
+        jr nz,lm_loop
+        ret
+
+; in: B = x, C = y (Kachelkoordinaten); out: HL = Adresse in maze
+; erhaelt BC, DE
+maze_addr:
+        push de
+        ld l,c
+        ld h,0
+        add hl,hl
+        add hl,hl               ; 4y
+        ld d,h
+        ld e,l
+        add hl,hl
+        add hl,hl
+        add hl,hl               ; 32y
+        or a
+        sbc hl,de               ; 28y
+        ld e,b
+        ld d,0
+        add hl,de               ; + x
+        ld de,maze
+        add hl,de
+        pop de
+        ret
+
+; in: B = x, C = y (auch -1 / ausserhalb); out: A = 1 offen (Gang oder ausserhalb),
+; A = 0 Wand; erhaelt BC, DE
+is_open:
+        ld a,b
+        cp MAZE_W
+        jr nc,io_out            ; x ausserhalb (auch 255 = -1)
+        ld a,c
+        cp MAZE_H
+        jr nc,io_out
+        call maze_addr
+        ld a,(hl)
+        cp C_WALL
+        ld a,0                  ; (ld aendert die Flags nicht)
+        ret z                   ; Wand
+io_out: ld a,1
+        ret
+
+; in: D = x, E = y einer Wandkachel
+; out: A = Nachbarmaske: Bit 7 = N, 6 = NO, 5 = O, 4 = SO, 3 = S, 2 = SW, 1 = W, 0 = NW;
+; ein gesetztes Bit bedeutet: der Nachbar ist offen (Gang oder ausserhalb)
+; erhaelt DE; veraendert BC, HL
+wall_mask:
+        ld hl,nb_tab
+        ld bc,8*256+0           ; B = 8 Nachbarn, C = Maske
+wm_loop:
+        push bc
+        ld a,(hl)
+        inc hl
+        add a,d
+        ld b,a                  ; x des Nachbarn
+        ld a,(hl)
+        inc hl
+        add a,e
+        ld c,a                  ; y des Nachbarn
+        push hl
+        call is_open
+        pop hl
+        pop bc
+        sla c
+        or c
+        ld c,a
+        djnz wm_loop
+        ld a,c
+        ret
+
+; Nachbarn der Reihe nach: N, NO, O, SO, S, SW, W, NW (dx, dy; 255 = -1)
+nb_tab:
+        db 0,255, 1,255, 1,0, 1,1, 0,1, 255,1, 255,0, 255,255
+
+; ============================================================
+; Labyrinth zeichnen
+; ============================================================
+draw_maze:
+        ld hl,maze
+        ld e,0                  ; y
+dm_row: ld d,0                  ; x
+dm_col: ld a,(hl)
+        push hl
+        push de
+        call draw_code
+        pop de
+        pop hl
+        inc hl
+        inc d
+        ld a,d
+        cp MAZE_W
+        jr nz,dm_col
+        inc e
+        ld a,e
+        cp MAZE_H
+        jr nz,dm_row
+        ret
+
+; in: A = Feldcode, D = x, E = y; zeichnet das Feld
+draw_code:
+        cp C_WALL
+        jr z,dc_wall
+        ld hl,gfx_empty
+        ld b,ATTR_TEXT
+        or a
+        jr z,dc_draw
+        ld hl,gfx_dot
+        ld b,ATTR_DOT
+        cp C_DOT
+        jr z,dc_draw
+        ld hl,gfx_pill
+        cp C_PILL
+        jr z,dc_draw
+        ld hl,gfx_door
+        ld b,ATTR_DOOR
+        jr dc_draw
+dc_wall:
+        call wall_mask          ; A = Maske
+        ld hl,(wall_idx)
+        ld c,a
+        ld b,0
+        add hl,bc
+        ld l,(hl)               ; Kachelnummer
+        ld h,0
+        add hl,hl
+        add hl,hl
+        add hl,hl               ; * 8
+        ld bc,(wall_gfx)
+        add hl,bc
+        ld a,(wall_attr)
+        ld b,a
+dc_draw:                        ; HL = Grafik, B = Attribut
+        ld a,b
+        ld (cur_attr),a
+        ld a,e
+        add a,MAZE_ROW
+        ld b,a                  ; Zeichenzeile
+        ld a,d
+        add a,MAZE_COL
+        ld c,a                  ; Zeichenspalte
+        jp draw_cell
+
+; ============================================================
+; Kopf- und Fusszeile
+; ============================================================
+draw_hud:
+        ld a,ATTR_HEAD
+        ld (cur_attr),a
+        ld hl,txt_punkte
+        ld bc,0*256+2
+        call print_at
+        ld hl,txt_rekord
+        ld bc,0*256+12
+        call print_at
+        ld hl,txt_level
+        ld bc,0*256+24
+        call print_at
+        ld a,ATTR_TEXT
+        ld (cur_attr),a
+        ld hl,txt_null6
+        ld bc,1*256+2
+        call print_at
+        ld hl,txt_null6
+        ld bc,1*256+12
+        call print_at
+        ld hl,txt_lv1
+        ld bc,1*256+24
+        call print_at
+        ld hl,txt_leben
+        ld bc,23*256+2
+        call print_at
+        ld hl,txt_keys
+        ld bc,23*256+16
+        jp print_at
+
+; ============================================================
+; cls: Bildschirm loeschen, Attribute weiss auf schwarz
+; ============================================================
+cls:
+        ld hl,0x4000
+        ld de,0x4001
+        ld bc,0x17FF
+        ld (hl),0
+        ldir
+        ld hl,0x5800
+        ld de,0x5801
+        ld bc,0x02FF
+        ld (hl),ATTR_TEXT
+        ldir
+        ret
+
+; ============================================================
+; draw_cell: eine 8x8-Zelle samt Attribut zeichnen
+; in: HL = 8 Bytes Grafik, B = Zeile, C = Spalte, (cur_attr)
+; out: HL zeigt hinter die 8 Bytes; BC bleibt erhalten
+; veraendert: A, DE
+; ============================================================
+draw_cell:
+        push bc
+        ; Bildschirmadresse der Zelle
+        ld a,b
+        and 0x18
+        or 0x40
+        ld d,a
+        ld a,b
+        and 7
+        rrca
+        rrca
+        rrca                    ; (Zeile & 7) * 32
+        add a,c
+        ld e,a
+        ld b,8
+dc_line:
+        ld a,(hl)
+        ld (de),a
+        inc hl
+        inc d
+        djnz dc_line
+        pop bc
+        ; Attributadresse: 0x5800 + Zeile*32 + Spalte
+        ld a,b
+        rrca
+        rrca
+        rrca
+        ld e,a
+        and 3
+        or 0x58
+        ld d,a
+        ld a,e
+        and 0xE0
+        add a,c
+        ld e,a
+        ld a,(cur_attr)
+        ld (de),a
+        ret
+
+; ============================================================
+; print_at: Text mit dem Zeichensatz aus dem RAM ausgeben
+; in: HL = Text (Ende mit 0), B = Zeile, C = Spalte, (cur_attr)
+; ============================================================
+print_at:
+        ld a,(hl)
+        or a
+        ret z
+        inc hl
+        push hl
+        ld l,a
+        ld h,0
+        add hl,hl
+        add hl,hl
+        add hl,hl               ; * 8
+        ld de,font-256          ; Zeichen 32 liegt am Anfang von font
+        add hl,de
+        call draw_cell
+        pop hl
+        inc c
+        jr print_at
+
+; ============================================================
+; Daten
+; ============================================================
+txt_punkte:
+        db "PUNKTE",0
+txt_rekord:
+        db "REKORD",0
+txt_level:
+        db "LEVEL",0
+txt_null6:
+        db "000000",0
+txt_lv1:
+        db "01",0
+txt_leben:
+        db "LEBEN 3",0
+txt_keys:
+        db "S=STIL C=FARBE",0
+
+; Wandfarben: hell blau, hell cyan, hell magenta, hell gruen
+col_tab:
+        db 0x41,0x45,0x43,0x44
+
+; Stile: Zeiger auf Index-Tabelle und auf die Kacheln
+style_tab:
+        dw idx_round,gfx_round
+        dw idx_square,gfx_square
+        dw idx_block,gfx_block
+
+; Grafiken der Feldtypen
+gfx_empty:
+        db 0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00
+gfx_dot:
+        db 0x00,0x00,0x00,0x18,0x18,0x00,0x00,0x00
+gfx_pill:
+        db 0x00,0x3C,0x7E,0x7E,0x7E,0x7E,0x3C,0x00
+gfx_door:
+        db 0x00,0x00,0x00,0xFF,0xFF,0x00,0x00,0x00
+
+; ---- Labyrinth (erzeugt von tools/gen_pacman_data.py, von Hand aenderbar) ----
+; #  Wand      .  Punkt     o  Pille    _  Gang ohne Punkt    =  Tuer des Geisterhauses
+; P  Spieler   J  Jaeger   A  Abfangjaeger   F  Flankierer   Z  Zoegerer  (Startfelder)
+; Die Wandzeichnung entsteht beim Start aus der Karte (siehe wall_mask).
+map_text:
+        db "############################"      ;  0
+        db "#..........................#"      ;  1
+        db "#.####.#####.##.#####.####.#"      ;  2
+        db "#o####.#####.##.#####.####o#"      ;  3
+        db "#.####.#####.##.#####.####.#"      ;  4
+        db "#..........................#"      ;  5
+        db "#.####.##.########.##.####.#"      ;  6
+        db "#.####.##....J.....##.####.#"      ;  7
+        db "#.####.##.###==###.##.####.#"      ;  8
+        db "#.####.##.#______#.##.####.#"      ;  9
+        db "_.........#F_A__Z#........._"      ; 10
+        db "#.####.##.#______#.##.####.#"      ; 11
+        db "#.####.##.########.##.####.#"      ; 12
+        db "#.####.##..........##.####.#"      ; 13
+        db "#.####.##.########.##.####.#"      ; 14
+        db "#............P.............#"      ; 15
+        db "#.####.#####.##.#####.####.#"      ; 16
+        db "#o####.#####.##.#####.####o#"      ; 17
+        db "#.####.#####.##.#####.####.#"      ; 18
+        db "#..........................#"      ; 19
+        db "############################"      ; 20
+
+; ---- Wandgrafiken: je Stil eine Index-Tabelle (Nachbarmaske -> Kachel) und die Kacheln ----
+idx_round:
+        db 0,1,2,2,3,4,2,2,5,6,7,7,5,6,7,7
+        db 8,9,10,10,11,12,10,10,5,6,7,7,5,6,7,7
+        db 13,14,15,15,16,17,15,15,18,19,20,20,18,19,20,20
+        db 13,14,15,15,16,17,15,15,18,19,20,20,18,19,20,20
+        db 21,22,23,23,24,25,23,23,26,27,28,28,26,27,28,28
+        db 29,30,31,31,32,33,31,31,26,27,28,28,26,27,28,28
+        db 13,14,15,15,16,17,15,15,18,19,20,20,18,19,20,20
+        db 13,14,15,15,16,17,15,15,18,19,20,20,18,19,20,20
+        db 34,34,35,35,36,36,35,35,37,37,38,38,37,37,38,38
+        db 39,39,40,40,41,41,40,40,37,37,38,38,37,37,38,38
+        db 42,42,43,43,44,44,43,43,45,45,46,46,45,45,46,46
+        db 42,42,43,43,44,44,43,43,45,45,46,46,45,45,46,46
+        db 34,34,35,35,36,36,35,35,37,37,38,38,37,37,38,38
+        db 39,39,40,40,41,41,40,40,37,37,38,38,37,37,38,38
+        db 42,42,43,43,44,44,43,43,45,45,46,46,45,45,46,46
+        db 42,42,43,43,44,44,43,43,45,45,46,46,45,45,46,46
+gfx_round:      ; 47 Kacheln
+        db 0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00
+        db 0x40,0x80,0x00,0x00,0x00,0x00,0x00,0x00
+        db 0x40,0x40,0x40,0x40,0x40,0x40,0x40,0x40
+        db 0x00,0x00,0x00,0x00,0x00,0x00,0x80,0x40
+        db 0x40,0x80,0x00,0x00,0x00,0x00,0x80,0x40
+        db 0x00,0x00,0x00,0x00,0x00,0x00,0xFF,0x00
+        db 0x40,0x80,0x00,0x00,0x00,0x00,0xFF,0x00
+        db 0x40,0x40,0x40,0x40,0x40,0x40,0x3F,0x00
+        db 0x00,0x00,0x00,0x00,0x00,0x00,0x01,0x02
+        db 0x40,0x80,0x00,0x00,0x00,0x00,0x01,0x02
+        db 0x40,0x40,0x40,0x40,0x40,0x40,0x41,0x42
+        db 0x00,0x00,0x00,0x00,0x00,0x00,0x81,0x42
+        db 0x40,0x80,0x00,0x00,0x00,0x00,0x81,0x42
+        db 0x02,0x02,0x02,0x02,0x02,0x02,0x02,0x02
+        db 0x42,0x82,0x02,0x02,0x02,0x02,0x02,0x02
+        db 0x42,0x42,0x42,0x42,0x42,0x42,0x42,0x42
+        db 0x02,0x02,0x02,0x02,0x02,0x02,0x82,0x42
+        db 0x42,0x82,0x02,0x02,0x02,0x02,0x82,0x42
+        db 0x02,0x02,0x02,0x02,0x02,0x02,0xFC,0x00
+        db 0x42,0x82,0x02,0x02,0x02,0x02,0xFC,0x00
+        db 0x42,0x42,0x42,0x42,0x42,0x42,0x3C,0x00
+        db 0x02,0x01,0x00,0x00,0x00,0x00,0x00,0x00
+        db 0x42,0x81,0x00,0x00,0x00,0x00,0x00,0x00
+        db 0x42,0x41,0x40,0x40,0x40,0x40,0x40,0x40
+        db 0x02,0x01,0x00,0x00,0x00,0x00,0x80,0x40
+        db 0x42,0x81,0x00,0x00,0x00,0x00,0x80,0x40
+        db 0x02,0x01,0x00,0x00,0x00,0x00,0xFF,0x00
+        db 0x42,0x81,0x00,0x00,0x00,0x00,0xFF,0x00
+        db 0x42,0x41,0x40,0x40,0x40,0x40,0x3F,0x00
+        db 0x02,0x01,0x00,0x00,0x00,0x00,0x01,0x02
+        db 0x42,0x81,0x00,0x00,0x00,0x00,0x01,0x02
+        db 0x42,0x41,0x40,0x40,0x40,0x40,0x41,0x42
+        db 0x02,0x01,0x00,0x00,0x00,0x00,0x81,0x42
+        db 0x42,0x81,0x00,0x00,0x00,0x00,0x81,0x42
+        db 0x00,0xFF,0x00,0x00,0x00,0x00,0x00,0x00
+        db 0x00,0x3F,0x40,0x40,0x40,0x40,0x40,0x40
+        db 0x00,0xFF,0x00,0x00,0x00,0x00,0x80,0x40
+        db 0x00,0xFF,0x00,0x00,0x00,0x00,0xFF,0x00
+        db 0x00,0x3F,0x40,0x40,0x40,0x40,0x3F,0x00
+        db 0x00,0xFF,0x00,0x00,0x00,0x00,0x01,0x02
+        db 0x00,0x3F,0x40,0x40,0x40,0x40,0x41,0x42
+        db 0x00,0xFF,0x00,0x00,0x00,0x00,0x81,0x42
+        db 0x00,0xFC,0x02,0x02,0x02,0x02,0x02,0x02
+        db 0x00,0x3C,0x42,0x42,0x42,0x42,0x42,0x42
+        db 0x00,0xFC,0x02,0x02,0x02,0x02,0x82,0x42
+        db 0x00,0xFC,0x02,0x02,0x02,0x02,0xFC,0x00
+        db 0x00,0x3C,0x42,0x42,0x42,0x42,0x3C,0x00
+idx_square:
+        db 0,1,2,2,3,4,2,2,5,6,7,7,5,6,7,7
+        db 8,9,10,10,11,12,10,10,5,6,7,7,5,6,7,7
+        db 13,14,15,15,16,17,15,15,18,19,20,20,18,19,20,20
+        db 13,14,15,15,16,17,15,15,18,19,20,20,18,19,20,20
+        db 21,22,23,23,24,25,23,23,26,27,28,28,26,27,28,28
+        db 29,30,31,31,32,33,31,31,26,27,28,28,26,27,28,28
+        db 13,14,15,15,16,17,15,15,18,19,20,20,18,19,20,20
+        db 13,14,15,15,16,17,15,15,18,19,20,20,18,19,20,20
+        db 34,34,35,35,36,36,35,35,37,37,38,38,37,37,38,38
+        db 39,39,40,40,41,41,40,40,37,37,38,38,37,37,38,38
+        db 42,42,43,43,44,44,43,43,45,45,46,46,45,45,46,46
+        db 42,42,43,43,44,44,43,43,45,45,46,46,45,45,46,46
+        db 34,34,35,35,36,36,35,35,37,37,38,38,37,37,38,38
+        db 39,39,40,40,41,41,40,40,37,37,38,38,37,37,38,38
+        db 42,42,43,43,44,44,43,43,45,45,46,46,45,45,46,46
+        db 42,42,43,43,44,44,43,43,45,45,46,46,45,45,46,46
+gfx_square:      ; 47 Kacheln
+        db 0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00
+        db 0x40,0xC0,0x00,0x00,0x00,0x00,0x00,0x00
+        db 0x40,0x40,0x40,0x40,0x40,0x40,0x40,0x40
+        db 0x00,0x00,0x00,0x00,0x00,0x00,0xC0,0x40
+        db 0x40,0xC0,0x00,0x00,0x00,0x00,0xC0,0x40
+        db 0x00,0x00,0x00,0x00,0x00,0x00,0xFF,0x00
+        db 0x40,0xC0,0x00,0x00,0x00,0x00,0xFF,0x00
+        db 0x40,0x40,0x40,0x40,0x40,0x40,0x7F,0x00
+        db 0x00,0x00,0x00,0x00,0x00,0x00,0x03,0x02
+        db 0x40,0xC0,0x00,0x00,0x00,0x00,0x03,0x02
+        db 0x40,0x40,0x40,0x40,0x40,0x40,0x43,0x42
+        db 0x00,0x00,0x00,0x00,0x00,0x00,0xC3,0x42
+        db 0x40,0xC0,0x00,0x00,0x00,0x00,0xC3,0x42
+        db 0x02,0x02,0x02,0x02,0x02,0x02,0x02,0x02
+        db 0x42,0xC2,0x02,0x02,0x02,0x02,0x02,0x02
+        db 0x42,0x42,0x42,0x42,0x42,0x42,0x42,0x42
+        db 0x02,0x02,0x02,0x02,0x02,0x02,0xC2,0x42
+        db 0x42,0xC2,0x02,0x02,0x02,0x02,0xC2,0x42
+        db 0x02,0x02,0x02,0x02,0x02,0x02,0xFE,0x00
+        db 0x42,0xC2,0x02,0x02,0x02,0x02,0xFE,0x00
+        db 0x42,0x42,0x42,0x42,0x42,0x42,0x7E,0x00
+        db 0x02,0x03,0x00,0x00,0x00,0x00,0x00,0x00
+        db 0x42,0xC3,0x00,0x00,0x00,0x00,0x00,0x00
+        db 0x42,0x43,0x40,0x40,0x40,0x40,0x40,0x40
+        db 0x02,0x03,0x00,0x00,0x00,0x00,0xC0,0x40
+        db 0x42,0xC3,0x00,0x00,0x00,0x00,0xC0,0x40
+        db 0x02,0x03,0x00,0x00,0x00,0x00,0xFF,0x00
+        db 0x42,0xC3,0x00,0x00,0x00,0x00,0xFF,0x00
+        db 0x42,0x43,0x40,0x40,0x40,0x40,0x7F,0x00
+        db 0x02,0x03,0x00,0x00,0x00,0x00,0x03,0x02
+        db 0x42,0xC3,0x00,0x00,0x00,0x00,0x03,0x02
+        db 0x42,0x43,0x40,0x40,0x40,0x40,0x43,0x42
+        db 0x02,0x03,0x00,0x00,0x00,0x00,0xC3,0x42
+        db 0x42,0xC3,0x00,0x00,0x00,0x00,0xC3,0x42
+        db 0x00,0xFF,0x00,0x00,0x00,0x00,0x00,0x00
+        db 0x00,0x7F,0x40,0x40,0x40,0x40,0x40,0x40
+        db 0x00,0xFF,0x00,0x00,0x00,0x00,0xC0,0x40
+        db 0x00,0xFF,0x00,0x00,0x00,0x00,0xFF,0x00
+        db 0x00,0x7F,0x40,0x40,0x40,0x40,0x7F,0x00
+        db 0x00,0xFF,0x00,0x00,0x00,0x00,0x03,0x02
+        db 0x00,0x7F,0x40,0x40,0x40,0x40,0x43,0x42
+        db 0x00,0xFF,0x00,0x00,0x00,0x00,0xC3,0x42
+        db 0x00,0xFE,0x02,0x02,0x02,0x02,0x02,0x02
+        db 0x00,0x7E,0x42,0x42,0x42,0x42,0x42,0x42
+        db 0x00,0xFE,0x02,0x02,0x02,0x02,0xC2,0x42
+        db 0x00,0xFE,0x02,0x02,0x02,0x02,0xFE,0x00
+        db 0x00,0x7E,0x42,0x42,0x42,0x42,0x7E,0x00
+idx_block:
+        db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+        db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+        db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+        db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+        db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+        db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+        db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+        db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+        db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+        db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+        db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+        db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+        db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+        db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+        db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+        db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+gfx_block:      ; 1 Kacheln
+        db 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF
+
+        end start
