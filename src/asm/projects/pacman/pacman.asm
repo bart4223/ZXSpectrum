@@ -8,8 +8,15 @@
 ; eine Tabelle die passende Kachel (Linien dort, wo ein Gang angrenzt).
 ;
 ; Stufe 0 zeigt nur das Labyrinth. Zum Ausprobieren des Aussehens:
-;   S = Wandstil wechseln (rund / eckig / Bloecke)
-;   C = Wandfarbe wechseln (blau / cyan / magenta / gruen)
+;   Wandstil: abgerundete Ecken (fest).
+;   Wandfarbe: zufaellig bei jedem neuen Level.
+;   P = Farbraum umschalten:
+;       NORMAL    = Standardfarben (blau / cyan / magenta / gruen)
+;       ERWEITERT = ULAplus (64 Farben): zufaellige Wandfarbe aus 8 Sondertoenen
+;                   (orange, rosa, violett, tuerkis, limone, himmelblau, mint, purpur)
+;   N = neues Level simulieren (Levelzahl +1, neue Wandfarbe)
+; ULAplus: Ports 0xBF3B (Register) / 0xFF3B (Daten). Auf Geraeten ohne ULAplus
+; (und in Emulatoren ohne) bleibt ERWEITERT ohne Wirkung auf die Farben.
 ; ============================================================
 
         org 32768
@@ -37,12 +44,14 @@ maze        equ VARS            ; MAZE_W*MAZE_H Bytes: Feldcodes (588)
 font        equ VARS + 0x300    ; 768 Bytes: Zeichensatz (Zeichen 32..127)
 cur_attr    equ VARS + 0x700    ; Attribut fuer draw_cell
 wall_attr   equ VARS + 0x701    ; Wandfarbe
-wall_style  equ VARS + 0x702    ; 0 rund, 1 eckig, 2 Bloecke
+col_mode    equ VARS + 0x702    ; 0 = Farbraum NORMAL, 1 = ERWEITERT (ULAplus)
 wall_col    equ VARS + 0x703    ; Index in col_tab
-key_s       equ VARS + 0x704    ; Taste S im letzten Frame
-key_c       equ VARS + 0x705    ; Taste C im letzten Frame
-wall_idx    equ VARS + 0x706    ; 2 Bytes: Index-Tabelle des Stils
-wall_gfx    equ VARS + 0x708    ; 2 Bytes: Kacheln des Stils
+key_p       equ VARS + 0x704    ; Taste P im letzten Frame
+ext_col     equ VARS + 0x705    ; Index in ext_tab (Sonderton der Wand)
+key_n       equ VARS + 0x706    ; Taste N im letzten Frame
+level       equ VARS + 0x707    ; Levelnummer 1..99
+rng         equ VARS + 0x708    ; 2 Bytes: Zufallszahl-Zustand
+lvl_txt     equ VARS + 0x70A    ; 3 Bytes: Levelzahl als Text
 
 ; ============================================================
 ; Programmstart
@@ -66,14 +75,18 @@ start:
         ld bc,768
         ldir
         ; Voreinstellungen
-        ld a,0x41               ; hell blau auf schwarz
-        ld (wall_attr),a
         xor a
-        ld (wall_style),a
         ld (wall_col),a
-        ld (key_s),a
-        ld (key_c),a
-        call set_style
+        ld (ext_col),a
+        ld (key_p),a
+        ld (key_n),a
+        ld (col_mode),a
+        ld a,1
+        ld (level),a
+        ld hl,0xA280
+        ld (rng),hl
+        call apply_space        ; ULAplus aus, falls ein Vorgaenger es angelassen hat
+        call pick_color         ; Wandfarbe fuer Level 1
         call load_maze
         call cls
         call draw_hud
@@ -86,34 +99,33 @@ main_loop:
         jr main_loop
 
 ; ============================================================
-; Tasten S (Stil) und C (Farbe), nur bei neuem Druck
+; Tasten P (Farbraum) und N (neues Level), nur bei neuem Druck
 ; ============================================================
 keys:
-        ld a,0xFD
-        in a,(0xFE)             ; Reihe A S D F G
+        ld a,0xDF
+        in a,(0xFE)             ; Reihe P O I U Y
         cpl
-        and 0x02                ; Bit 1 = S
-        ld hl,key_s
+        and 0x01                ; Bit 0 = P
+        ld hl,key_p
         call edge
-        jr z,k_c
-        ld a,(wall_style)
-        inc a
-        cp 3
-        jr c,k_s1
-        xor a
-k_s1:   ld (wall_style),a
-        call set_style
+        jr z,k_n
+        ld a,(col_mode)
+        xor 1
+        ld (col_mode),a
+        call apply_space
+        call draw_foot
         call draw_maze
-k_c:    ld a,0xFE
-        in a,(0xFE)             ; Reihe Shift Z X C V
+k_n:    ld a,0x7F
+        in a,(0xFE)             ; Reihe Leertaste Sym M N B
         cpl
-        and 0x08                ; Bit 3 = C
-        ld hl,key_c
+        and 0x08                ; Bit 3 = N
+        ld hl,key_n
         call edge
         ret z
-        ld a,(wall_col)
-        inc a
-        and 3
+        jp new_level
+
+; Wandfarbe aus Index in A setzen
+set_color:
         ld (wall_col),a
         ld e,a
         ld d,0
@@ -121,6 +133,139 @@ k_c:    ld a,0xFE
         add hl,de
         ld a,(hl)
         ld (wall_attr),a
+        ret
+
+; Farbraum anwenden (col_mode): ULAplus ein/aus und Wandattribut passend setzen
+apply_space:
+        ld a,(col_mode)
+        or a
+        jr nz,as_ext
+        ld d,0x40               ; Modusregister
+        ld e,0                  ; ULAplus aus: Standardfarben
+        call ulp_set
+        ld a,(wall_col)
+        jr set_color
+as_ext: ld d,0x40
+        ld e,1                  ; ULAplus ein
+        call ulp_set
+        call load_pal           ; alle 64 Eintraege = Standardfarben
+        ld a,0x41               ; Wand: hell, Tinte 1 = Palette-Eintrag 17
+        ld (wall_attr),a
+set_ext:
+        ld a,(ext_col)
+        ld c,a
+        ld b,0
+        ld hl,ext_tab
+        add hl,bc
+        ld e,(hl)               ; Farbe (GGGRRRBB)
+        ld d,17                 ; Eintrag 17
+        ; (fall through)
+
+; ULAplus-Register schreiben: D = Register, E = Wert
+ulp_set:
+        ld bc,0xBF3B
+        out (c),d
+        ld b,0xFF               ; BC = 0xFF3B
+        out (c),e
+        ret
+
+; alle 64 Paletteeintraege auf die Standard-Spectrumfarben setzen
+; Eintrag = (Flash*2+Bright)*16 + (0..7 Tinte | 8..15 Papier); Farbe = Eintrag & 7
+load_pal:
+        ld d,0
+lp_1:   ld a,d
+        and 7
+        ld c,a
+        ld b,0
+        ld hl,std_norm
+        bit 4,d                 ; Bright-Bit der Palettengruppe
+        jr z,lp_2
+        ld hl,std_brt
+lp_2:   add hl,bc
+        ld e,(hl)
+        call ulp_set
+        inc d
+        ld a,d
+        cp 64
+        jr nz,lp_1
+        ret
+
+; Zufallsfarbe, immer verschieden von der bisherigen
+pick_color:
+        ld a,r                  ; Zeitpunkt der Eingabe als zusaetzliche Streuung
+        ld hl,(rng)
+        xor l
+        ld l,a
+        ld a,h
+        or l
+        jr nz,pk_1
+        inc l                   ; Zustand 0 waere eine Sackgasse
+pk_1:   ld (rng),hl
+        call rnd
+        ld c,a
+        ld a,(col_mode)
+        or a
+        ld a,c
+        jr nz,pk_ext
+        ld b,3
+        call mod_a
+        ld b,a                  ; 0..2
+        ld a,(wall_col)
+        inc a
+        add a,b                 ; Abstand 1..3 zur alten Farbe
+        and 3
+        jp set_color
+pk_ext: ld b,7
+        call mod_a
+        ld b,a                  ; 0..6
+        ld a,(ext_col)
+        inc a
+        add a,b                 ; Abstand 1..7 zur alten Farbe
+        and 7
+        ld (ext_col),a
+        ld a,0x41
+        ld (wall_attr),a
+        jp set_ext
+
+; A = A mod B (B > 0)
+mod_a:
+        cp b
+        ret c
+        sub b
+        jr mod_a
+
+; 16-Bit-xorshift, out: A = Zufallszahl
+rnd:
+        ld hl,(rng)
+        ld a,h
+        rra
+        ld a,l
+        rra
+        xor h
+        ld h,a
+        ld a,l
+        rra
+        ld a,h
+        rra
+        xor l
+        ld l,a
+        xor h
+        ld h,a
+        ld (rng),hl
+        ret
+
+; Neues Level: Zahl hochzaehlen, bei Zufall neue Wandfarbe, Labyrinth neu zeichnen
+new_level:
+        ld a,(level)
+        inc a
+        cp 100
+        jr c,nl_1
+        ld a,1
+nl_1:   ld (level),a
+        ld a,(col_mode)
+        or a
+        call nz,pick_color
+        call draw_level
         jp draw_maze
 
 ; in: A = Tastenzustand jetzt (0 = nicht gedrueckt), HL = Zeiger auf den Zustand vorher
@@ -132,26 +277,6 @@ edge:
         ld a,b
         cpl
         and c
-        ret
-
-; Wandstil setzen: Zeiger auf Index-Tabelle und Kacheln des Stils holen
-set_style:
-        ld a,(wall_style)
-        add a,a
-        add a,a                 ; * 4 Bytes je Eintrag
-        ld e,a
-        ld d,0
-        ld hl,style_tab
-        add hl,de
-        ld e,(hl)
-        inc hl
-        ld d,(hl)
-        inc hl
-        ld (wall_idx),de
-        ld e,(hl)
-        inc hl
-        ld d,(hl)
-        ld (wall_gfx),de
         ret
 
 ; ============================================================
@@ -304,7 +429,7 @@ draw_code:
         jr dc_draw
 dc_wall:
         call wall_mask          ; A = Maske
-        ld hl,(wall_idx)
+        ld hl,idx_round
         ld c,a
         ld b,0
         add hl,bc
@@ -313,7 +438,7 @@ dc_wall:
         add hl,hl
         add hl,hl
         add hl,hl               ; * 8
-        ld bc,(wall_gfx)
+        ld bc,gfx_round
         add hl,bc
         ld a,(wall_attr)
         ld b,a
@@ -351,14 +476,43 @@ draw_hud:
         ld hl,txt_null6
         ld bc,1*256+12
         call print_at
-        ld hl,txt_lv1
-        ld bc,1*256+24
-        call print_at
+        call draw_level
         ld hl,txt_leben
         ld bc,23*256+2
         call print_at
-        ld hl,txt_keys
-        ld bc,23*256+16
+        ; (fall through)
+
+; Fusszeile: Tastenhilfe mit Zustand der Farbwahl
+draw_foot:
+        ld a,ATTR_TEXT
+        ld (cur_attr),a
+        ld hl,txt_normal
+        ld a,(col_mode)
+        or a
+        jr z,df_1
+        ld hl,txt_ext
+df_1:   ld bc,23*256+10
+        jp print_at
+
+; Levelzahl (2 Stellen) oben rechts
+draw_level:
+        ld a,ATTR_TEXT
+        ld (cur_attr),a
+        ld a,(level)
+        ld b,"0"
+dl_1:   cp 10
+        jr c,dl_2
+        sub 10
+        inc b
+        jr dl_1
+dl_2:   add a,"0"
+        ld (lvl_txt+1),a
+        ld a,b
+        ld (lvl_txt),a
+        xor a
+        ld (lvl_txt+2),a
+        ld hl,lvl_txt
+        ld bc,1*256+24
         jp print_at
 
 ; ============================================================
@@ -455,22 +609,27 @@ txt_level:
         db "LEVEL",0
 txt_null6:
         db "000000",0
-txt_lv1:
-        db "01",0
 txt_leben:
         db "LEBEN 3",0
-txt_keys:
-        db "S=STIL C=FARBE",0
+txt_normal:
+        db "P:NORMAL     N:NEU    ",0
+txt_ext:
+        db "P:ERWEITERT  N:NEU    ",0
 
-; Wandfarben: hell blau, hell cyan, hell magenta, hell gruen
+; Wandfarben (NORMAL): hell blau, hell cyan, hell magenta, hell gruen
 col_tab:
         db 0x41,0x45,0x43,0x44
 
-; Stile: Zeiger auf Index-Tabelle und auf die Kacheln
-style_tab:
-        dw idx_round,gfx_round
-        dw idx_square,gfx_square
-        dw idx_block,gfx_block
+; ULAplus-Sondertoene der Wand (GGGRRRBB):
+; orange, rosa, violett, tuerkis, limone, himmelblau, mint, purpur
+ext_tab:
+        db 0x9C,0x7E,0x2F,0xC3,0xF0,0x8B,0xEE,0x2B
+
+; Standardpalette fuer ULAplus (Farbe 0..7 = schwarz blau rot magenta gruen cyan gelb weiss)
+std_norm:
+        db 0x00,0x02,0x18,0x1A,0xC0,0xC2,0xD8,0xDA
+std_brt:
+        db 0x00,0x03,0x1C,0x1F,0xE0,0xE3,0xFC,0xFF
 
 ; Grafiken der Feldtypen
 gfx_empty:
@@ -509,7 +668,7 @@ map_text:
         db "#..........................#"      ; 19
         db "############################"      ; 20
 
-; ---- Wandgrafiken: je Stil eine Index-Tabelle (Nachbarmaske -> Kachel) und die Kacheln ----
+; ---- Wandgrafiken (abgerundet): eine Index-Tabelle (Nachbarmaske -> Kachel) und die Kacheln ----
 idx_round:
         db 0,1,2,2,3,4,2,2,5,6,7,7,5,6,7,7
         db 8,9,10,10,11,12,10,10,5,6,7,7,5,6,7,7
@@ -575,89 +734,5 @@ gfx_round:      ; 47 Kacheln
         db 0x00,0xFC,0x02,0x02,0x02,0x02,0x82,0x42
         db 0x00,0xFC,0x02,0x02,0x02,0x02,0xFC,0x00
         db 0x00,0x3C,0x42,0x42,0x42,0x42,0x3C,0x00
-idx_square:
-        db 0,1,2,2,3,4,2,2,5,6,7,7,5,6,7,7
-        db 8,9,10,10,11,12,10,10,5,6,7,7,5,6,7,7
-        db 13,14,15,15,16,17,15,15,18,19,20,20,18,19,20,20
-        db 13,14,15,15,16,17,15,15,18,19,20,20,18,19,20,20
-        db 21,22,23,23,24,25,23,23,26,27,28,28,26,27,28,28
-        db 29,30,31,31,32,33,31,31,26,27,28,28,26,27,28,28
-        db 13,14,15,15,16,17,15,15,18,19,20,20,18,19,20,20
-        db 13,14,15,15,16,17,15,15,18,19,20,20,18,19,20,20
-        db 34,34,35,35,36,36,35,35,37,37,38,38,37,37,38,38
-        db 39,39,40,40,41,41,40,40,37,37,38,38,37,37,38,38
-        db 42,42,43,43,44,44,43,43,45,45,46,46,45,45,46,46
-        db 42,42,43,43,44,44,43,43,45,45,46,46,45,45,46,46
-        db 34,34,35,35,36,36,35,35,37,37,38,38,37,37,38,38
-        db 39,39,40,40,41,41,40,40,37,37,38,38,37,37,38,38
-        db 42,42,43,43,44,44,43,43,45,45,46,46,45,45,46,46
-        db 42,42,43,43,44,44,43,43,45,45,46,46,45,45,46,46
-gfx_square:      ; 47 Kacheln
-        db 0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00
-        db 0x40,0xC0,0x00,0x00,0x00,0x00,0x00,0x00
-        db 0x40,0x40,0x40,0x40,0x40,0x40,0x40,0x40
-        db 0x00,0x00,0x00,0x00,0x00,0x00,0xC0,0x40
-        db 0x40,0xC0,0x00,0x00,0x00,0x00,0xC0,0x40
-        db 0x00,0x00,0x00,0x00,0x00,0x00,0xFF,0x00
-        db 0x40,0xC0,0x00,0x00,0x00,0x00,0xFF,0x00
-        db 0x40,0x40,0x40,0x40,0x40,0x40,0x7F,0x00
-        db 0x00,0x00,0x00,0x00,0x00,0x00,0x03,0x02
-        db 0x40,0xC0,0x00,0x00,0x00,0x00,0x03,0x02
-        db 0x40,0x40,0x40,0x40,0x40,0x40,0x43,0x42
-        db 0x00,0x00,0x00,0x00,0x00,0x00,0xC3,0x42
-        db 0x40,0xC0,0x00,0x00,0x00,0x00,0xC3,0x42
-        db 0x02,0x02,0x02,0x02,0x02,0x02,0x02,0x02
-        db 0x42,0xC2,0x02,0x02,0x02,0x02,0x02,0x02
-        db 0x42,0x42,0x42,0x42,0x42,0x42,0x42,0x42
-        db 0x02,0x02,0x02,0x02,0x02,0x02,0xC2,0x42
-        db 0x42,0xC2,0x02,0x02,0x02,0x02,0xC2,0x42
-        db 0x02,0x02,0x02,0x02,0x02,0x02,0xFE,0x00
-        db 0x42,0xC2,0x02,0x02,0x02,0x02,0xFE,0x00
-        db 0x42,0x42,0x42,0x42,0x42,0x42,0x7E,0x00
-        db 0x02,0x03,0x00,0x00,0x00,0x00,0x00,0x00
-        db 0x42,0xC3,0x00,0x00,0x00,0x00,0x00,0x00
-        db 0x42,0x43,0x40,0x40,0x40,0x40,0x40,0x40
-        db 0x02,0x03,0x00,0x00,0x00,0x00,0xC0,0x40
-        db 0x42,0xC3,0x00,0x00,0x00,0x00,0xC0,0x40
-        db 0x02,0x03,0x00,0x00,0x00,0x00,0xFF,0x00
-        db 0x42,0xC3,0x00,0x00,0x00,0x00,0xFF,0x00
-        db 0x42,0x43,0x40,0x40,0x40,0x40,0x7F,0x00
-        db 0x02,0x03,0x00,0x00,0x00,0x00,0x03,0x02
-        db 0x42,0xC3,0x00,0x00,0x00,0x00,0x03,0x02
-        db 0x42,0x43,0x40,0x40,0x40,0x40,0x43,0x42
-        db 0x02,0x03,0x00,0x00,0x00,0x00,0xC3,0x42
-        db 0x42,0xC3,0x00,0x00,0x00,0x00,0xC3,0x42
-        db 0x00,0xFF,0x00,0x00,0x00,0x00,0x00,0x00
-        db 0x00,0x7F,0x40,0x40,0x40,0x40,0x40,0x40
-        db 0x00,0xFF,0x00,0x00,0x00,0x00,0xC0,0x40
-        db 0x00,0xFF,0x00,0x00,0x00,0x00,0xFF,0x00
-        db 0x00,0x7F,0x40,0x40,0x40,0x40,0x7F,0x00
-        db 0x00,0xFF,0x00,0x00,0x00,0x00,0x03,0x02
-        db 0x00,0x7F,0x40,0x40,0x40,0x40,0x43,0x42
-        db 0x00,0xFF,0x00,0x00,0x00,0x00,0xC3,0x42
-        db 0x00,0xFE,0x02,0x02,0x02,0x02,0x02,0x02
-        db 0x00,0x7E,0x42,0x42,0x42,0x42,0x42,0x42
-        db 0x00,0xFE,0x02,0x02,0x02,0x02,0xC2,0x42
-        db 0x00,0xFE,0x02,0x02,0x02,0x02,0xFE,0x00
-        db 0x00,0x7E,0x42,0x42,0x42,0x42,0x7E,0x00
-idx_block:
-        db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-        db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-        db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-        db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-        db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-        db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-        db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-        db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-        db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-        db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-        db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-        db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-        db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-        db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-        db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-        db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-gfx_block:      ; 1 Kacheln
-        db 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF
 
         end start
