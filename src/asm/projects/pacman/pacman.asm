@@ -155,17 +155,39 @@ as_ext: ld d,0x40
         ld e,1                  ; ULAplus ein
         call ulp_set
         call load_pal           ; alle 64 Eintraege = Standardfarben
-        ld a,0x41               ; Wand: hell, Tinte 1 = Palette-Eintrag 17
-        ld (wall_attr),a
-set_ext:
-        ld a,(ext_col)
-        ld c,a
-        ld b,0
+        call load_ext           ; die 8 Sondertoene fest in ihre Eintraege schreiben
+        jp set_ext_attr
+
+; Die 8 Wandtoene liegen dauerhaft in 8 eigenen Paletteneintraegen; beim Levelwechsel
+; wird nur das Attribut gewechselt (genau wie im NORMAL-Farbraum).
+load_ext:
+        ld c,0
+le_1:   ld b,0
+        ld hl,ext_ent
+        add hl,bc
+        ld d,(hl)               ; Eintragsnummer
         ld hl,ext_tab
         add hl,bc
         ld e,(hl)               ; Farbe (GGGRRRBB)
-        ld d,17                 ; Eintrag 17
-        ; (fall through)
+        push bc
+        call ulp_set
+        pop bc
+        inc c
+        ld a,c
+        cp 8
+        jr nz,le_1
+        ret
+
+; Wandattribut fuer den Sonderton ext_col setzen
+set_ext_attr:
+        ld a,(ext_col)
+        ld c,a
+        ld b,0
+        ld hl,ext_atr
+        add hl,bc
+        ld a,(hl)
+        ld (wall_attr),a
+        ret
 
 ; ULAplus-Register schreiben: D = Register, E = Wert
 ulp_set:
@@ -229,9 +251,7 @@ pk_ext: ld b,7
         add a,b                 ; Abstand 1..7 zur alten Farbe
         and 7
         ld (ext_col),a
-        ld a,0x41
-        ld (wall_attr),a
-        jp set_ext
+        jp set_ext_attr
 
 ; A = A mod B (B > 0)
 mod_a:
@@ -628,6 +648,12 @@ col_tab:
 ; orange, rosa, violett, tuerkis, limone, himmelblau, mint, purpur
 ext_tab:
         db 0x9C,0x7E,0x2F,0xC3,0xF0,0x8B,0xEE,0x2B
+; zugehoerige Paletteneintraege und Attribute (hell Tinte 1,2,4,5 und dunkel Tinte 1..4;
+; Tinte 3 hell = Tuer und Tinte 6/7 hell = Kopfzeile/Punkte bleiben unberuehrt)
+ext_ent:
+        db 17,18,20,21,1,2,3,4
+ext_atr:
+        db 0x41,0x42,0x44,0x45,0x01,0x02,0x03,0x04
 
 ; Standardpalette fuer ULAplus (Farbe 0..7 = schwarz blau rot magenta gruen cyan gelb weiss)
 std_norm:
