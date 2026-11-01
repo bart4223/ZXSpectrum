@@ -265,7 +265,8 @@ start:
         ldir
         ld hl,0xA280
         ld (rng),hl
-        call apply_space        ; ULAplus aus, falls ein Vorgaenger es angelassen hat
+        call detect_ulp         ; ULAplus da: erweiterter Farbraum, sonst klassisch
+        call apply_space
         call ay_init
         ld (sp_save),sp
 new_game:
@@ -310,39 +311,26 @@ main_loop:
 ; Tasten P (Farbraum), D (Zielanzeige) und N (neues Level), nur bei neuem Druck
 ; ============================================================
 keys:
-        ld a,0xDF
-        in a,(0xFE)             ; Reihe P O I U Y
+        ld a,0xFE
+        in a,(0xFE)             ; Reihe Shift Z X C V
         cpl
-        and 0x01                ; Bit 0 = P
-        ld hl,key_p
+        and 0x08                ; Bit 3 = C: Farbraum umschalten (Rueckfall)
+        ld hl,key_h
         call edge
-        jr z,k_d
+        jr z,k_t
         ld a,(col_mode)
         xor 1
         ld (col_mode),a
         call apply_space
         call draw_foot
         call draw_maze
-k_d:    ld a,0xFD
-        in a,(0xFE)             ; Reihe A S D F G
-        cpl
-        and 0x04                ; Bit 2 = D
-        ld hl,key_d
-        call edge
-        jr z,k_t
-        ld a,(dbg)              ; Zielanzeige umschalten
-        xor 1
-        ld (dbg),a
-        call draw_foot
-        ld a,1
-        ld (dirty),a
 k_t:    ld a,0xFB
         in a,(0xFE)             ; Reihe Q W E R T
         cpl
         and 0x10                ; Bit 4 = T
         ld hl,key_t
         call edge
-        jr z,k_h
+        jr z,k_p
         ld a,(vol_lvl)          ; Lautstaerke weiterschalten: aus / leise / mittel / laut
         inc a
         and 3
@@ -350,27 +338,39 @@ k_t:    ld a,0xFB
         call set_vol
         call draw_foot
         call sfx_dot            ; zur Probe ein Fressgeraeusch
-k_h:    ld a,0xBF
-        in a,(0xFE)             ; Reihe Enter L K J H
+k_p:    ld a,0xDF
+        in a,(0xFE)             ; Reihe P O I U Y
         cpl
-        and 0x10                ; Bit 4 = H
-        ld hl,key_h
-        call edge
-        call nz,do_pause
-k_n:    ld a,0x7F
-        in a,(0xFE)             ; Reihe Leertaste Sym M N B
-        cpl
-        and 0x09                ; Bit 3 = N, Bit 0 = Leertaste
-        ld d,a
-        ld a,0xBF
-        in a,(0xFE)             ; Reihe Enter L K J H
-        cpl
-        and 0x01                ; Bit 0 = Enter
-        or d                    ; N, Leertaste oder Enter
-        ld hl,key_n
+        and 0x01                ; Bit 0 = P: Pause
+        ld hl,key_p
         call edge
         ret z
-        jp new_level
+        jp do_pause
+
+; ULAplus vorhanden? Palettenregister 0 beschreiben und zuruecklesen -> col_mode (1 = erweitert)
+detect_ulp:
+        ld bc,0xBF3B
+        xor a
+        out (c),a               ; Register 0 waehlen
+        ld b,0xFF
+        ld a,0x5A
+        out (c),a
+        in a,(c)
+        cp 0x5A
+        jr nz,du_no
+        ld a,0xA5
+        out (c),a
+        in a,(c)
+        cp 0xA5
+        jr nz,du_no
+        xor a
+        out (c),a               ; Eintrag 0 wieder schwarz
+        ld a,1
+        ld (col_mode),a
+        ret
+du_no:  xor a
+        ld (col_mode),a
+        ret
 
 ; Wandfarbe aus Index in A setzen
 set_color:
@@ -3051,15 +3051,8 @@ draw_foot:
         ld hl,txt_ext
 df_1:   ld bc,23*256+10
         call print_at
-        ld hl,txt_d_aus
-        ld a,(dbg)
-        or a
-        jr z,df_2
-        ld hl,txt_d_an
-df_2:   ld bc,23*256+19
-        call print_at
-        ld hl,txt_neu
-        ld bc,23*256+25
+        ld hl,txt_pause2
+        ld bc,23*256+19
         call print_at
         ld a,"T"                ; Lautstaerke
         ld (sc_txt),a
@@ -3069,7 +3062,7 @@ df_2:   ld bc,23*256+19
         xor a
         ld (sc_txt+2),a
         ld hl,sc_txt
-        ld bc,23*256+30
+        ld bc,23*256+28
         jp print_at
 
 ; Levelzahl (2 Stellen) oben rechts
@@ -3090,7 +3083,7 @@ dl_2:   add a,"0"
         xor a
         ld (lvl_txt+2),a
         ld hl,lvl_txt
-        ld bc,1*256+24
+        ld bc,1*256+25
         jp print_at
 
 ; ============================================================
@@ -3205,9 +3198,6 @@ title_screen:
         ld hl,txt_ti3
         ld bc,16*256+1
         call print_at
-        ld hl,txt_ti4
-        ld bc,17*256+4
-        call print_at
         ld a,ATTR_HEAD
         ld (cur_attr),a
         ld hl,txt_rekord
@@ -3315,11 +3305,11 @@ do_pause:
         ld bc,15*256+14
         call print_at
 dp_w:   halt
-        ld a,0xBF
+        ld a,0xDF
         in a,(0xFE)
         cpl
-        and 0x10
-        ld hl,key_h
+        and 0x01
+        ld hl,key_p
         call edge
         jr z,dp_w
         ld a,14
@@ -3560,7 +3550,7 @@ txt_ti1:
 txt_ti2:
         db "STEUERUNG: JOYSTICK 1 ODER 2",0
 txt_ti3:
-        db "P FARBRAUM   T TON   H PAUSE",0
+        db "C FARBRAUM   T TON   P PAUSE",0
 txt_ti4:
         db "D ZIELE    N NAECHSTES LEVEL",0
 txt_pause:
@@ -3578,9 +3568,11 @@ txt_level:
 txt_leben:
         db "LEBEN ",0
 txt_normal:
-        db "P:NORMAL ",0
+        db "C:NORMAL ",0
 txt_ext:
-        db "P:ERWEIT ",0
+        db "C:ERWEIT ",0
+txt_pause2:
+        db "P:PAUSE",0
 txt_d_aus:
         db "D:AUS",0
 txt_d_an:
