@@ -99,6 +99,7 @@ D_DOWN      equ 2
 D_LEFT      equ 3
 
 PL_SPEED    equ 10              ; Schritte je 20 Frames (2 Pixel je Schritt)
+LAST_LEVEL  equ 12              ; nach diesem Level folgt der Abspann
 SIREN       equ 0               ; 1 = Sirene im Spiel
 PL_TTL      equ 30              ; Frames, wie lange ein Richtungswunsch gilt
 PL_START_X  equ (13+MAZE_COL)*8 ; Startfeld des Spielers (Kachel 13,15) in Bildschirmpixeln
@@ -197,6 +198,11 @@ snd_run     equ VARS + 0x77F    ; 1 = Sirene laeuft
 dth_p       equ VARS + 0x7F6    ; 2 Bytes: Tonperiode beim Sterben
 seq_n       equ VARS + 0x7F8    ; Notendauer in play_seq
 intro_done  equ VARS + 0x7F9    ; 1 = Titelmelodie schon gespielt
+rb_i        equ VARS + 0x7F5    ; Regenbogen: laufender Farbindex
+key_h       equ VARS + 0x7FB    ; Taste H (Pause) im letzten Frame
+sp_save     equ VARS + 0x7FC    ; 2 Bytes: Stapelzeiger vom Programmstart
+anim_on     equ VARS + 0x7FE    ; 1 = Regenbogen-Schrift bewegen
+rb_phase    equ VARS + 0x7FF    ; Phase der Regenbogen-Schrift
 fr_n        equ VARS + 0x7F0    ; Anzahl Kandidaten bei der Zufallswahl
 fr_list     equ VARS + 0x7F1    ; die Kandidatenrichtungen (4 Bytes)
 ghosts      equ VARS + 0x780    ; 4 Drohnen zu GS_SIZE Bytes
@@ -260,9 +266,22 @@ start:
         ld hl,0xA280
         ld (rng),hl
         call apply_space        ; ULAplus aus, falls ein Vorgaenger es angelassen hat
+        call ay_init
+        ld (sp_save),sp
+new_game:
+        ld sp,(sp_save)         ; auch nach Spielende / Abspann sauberer Stapel
+        call title_screen
+        ld a,3
+        ld (lives),a
+        xor a
+        ld (score),a
+        ld (score+1),a
+        ld (score+2),a
+        ld (extra),a
+        ld a,1
+        ld (level),a
         call pick_color         ; Wandfarbe fuer Level 1
         call reset_level        ; Karte laden, Punkte zaehlen, Spieler an den Start
-        call ay_init
         call cls
         call draw_hud
         call draw_maze
@@ -323,7 +342,7 @@ k_t:    ld a,0xFB
         and 0x10                ; Bit 4 = T
         ld hl,key_t
         call edge
-        jr z,k_n
+        jr z,k_h
         ld a,(vol_lvl)          ; Lautstaerke weiterschalten: aus / leise / mittel / laut
         inc a
         and 3
@@ -331,6 +350,13 @@ k_t:    ld a,0xFB
         call set_vol
         call draw_foot
         call sfx_dot            ; zur Probe ein Fressgeraeusch
+k_h:    ld a,0xBF
+        in a,(0xFE)             ; Reihe Enter L K J H
+        cpl
+        and 0x10                ; Bit 4 = H
+        ld hl,key_h
+        call edge
+        call nz,do_pause
 k_n:    ld a,0x7F
         in a,(0xFE)             ; Reihe Leertaste Sym M N B
         cpl
@@ -1682,7 +1708,10 @@ lc_3:   halt
         pop de
         dec e
         jr nz,lc_1
-        jp new_level
+        ld a,(level)
+        cp LAST_LEVEL
+        jp nz,new_level
+        jp ending
 
 ; in: A = Attribut: alle Wandzellen umfaerben
 set_wall_attr:
@@ -1732,12 +1761,12 @@ ay_init:
         xor a
         ld (key_t),a
         ld (snd_run),a
-        ld (intro_done),a
         ld (sfx_t),a
         ld h,a
         ld l,a
         ld (sfx_d),hl
         ld a,1                  ; Vorgabe: leise
+        ld (intro_done),a       ; die Titelmelodie spielt das Titelbild
         ld (vol_lvl),a
         ; (weiter mit set_vol)
 
@@ -1852,6 +1881,7 @@ ps_n:   ld e,(hl)
         ld d,10
         call ay_wr
 ps_w:   halt
+        call rainbow_step
         ld a,(seq_n)
         dec a
         ld (seq_n),a
@@ -2898,6 +2928,7 @@ bonus_check:
 bc_show:
         ld hl,500               ; 10 Sekunden
         ld (bonus_t),hl
+bonus_draw:
         call bonus_kind
         ld e,a
         ld d,0
@@ -2972,20 +3003,7 @@ game_over:
         ld b,150
 go_w:   halt
         djnz go_w
-        xor a
-        ld (extra),a
-        ld a,3
-        ld (lives),a
-        xor a
-        ld (score),a
-        ld (score+1),a
-        ld (score+2),a
-        ld a,1
-        ld (level),a
-        call reset_level
-        call draw_hud
-        call draw_maze
-        jp ready
+        jp new_game
 
 draw_lives:
         ld a,ATTR_TEXT
@@ -3161,6 +3179,314 @@ print_at:
 ; ============================================================
 ; Daten
 ; ============================================================
+; ============================================================
+; Titelbild, Pause, Abspann
+; ============================================================
+title_screen:
+        call cls
+        ld hl,txt_t1
+        ld bc,4*256+10
+        call big_at
+        ld a,ATTR_TEXT
+        ld (cur_attr),a
+        ld hl,txt_t2
+        ld bc,9*256+5
+        call print_at
+        ld a,ATTR_HEAD
+        ld (cur_attr),a
+        ld hl,txt_ti1
+        ld bc,12*256+4
+        call print_at
+        ld a,ATTR_TEXT
+        ld (cur_attr),a
+        ld hl,txt_ti2
+        ld bc,14*256+2
+        call print_at
+        ld hl,txt_ti3
+        ld bc,16*256+1
+        call print_at
+        ld hl,txt_ti4
+        ld bc,17*256+4
+        call print_at
+        ld a,ATTR_HEAD
+        ld (cur_attr),a
+        ld hl,txt_rekord
+        ld bc,20*256+10
+        call print_at
+        ld hl,record+2
+        ld de,sc_txt
+        call bcd_txt
+        ld hl,sc_txt
+        ld bc,20*256+17
+        call print_at
+        ld a,1
+        ld (anim_on),a
+        xor a
+        ld (rb_phase),a
+        call rainbow_apply
+        ld hl,tune_intro
+        call play_seq
+        jp wait_fire
+
+; Abspann nach dem letzten Level
+ending:
+        call cls
+        ld hl,txt_e1
+        ld bc,4*256+11
+        call big_at
+        ld hl,txt_t3
+        ld bc,7*256+10
+        call big_at
+        ld a,ATTR_HEAD
+        ld (cur_attr),a
+        ld hl,txt_e2
+        ld bc,12*256+6
+        call print_at
+        ld hl,txt_punkte
+        ld bc,14*256+10
+        call print_at
+        ld hl,score+2
+        ld de,sc_txt
+        call bcd_txt
+        ld hl,sc_txt
+        ld bc,14*256+17
+        call print_at
+        ld a,1
+        ld (anim_on),a
+        xor a
+        ld (rb_phase),a
+        call rainbow_apply
+        ld hl,tune_intro
+        call play_seq
+        call wait_fire
+        jp new_game
+
+; Feuer / Enter / Leertaste: erst loslassen, dann druecken (Regenbogen bewegt sich)
+wait_fire:
+wf_r:   halt
+        call rainbow_step
+        call read_fire
+        jr nz,wf_r
+wf_p:   halt
+        call rainbow_step
+        call read_fire
+        jr z,wf_p
+        xor a
+        ld (anim_on),a
+        ret
+
+; out: NZ = Feuer (Joystick 1: 0, Joystick 2: 5), Enter oder Leertaste gedrueckt
+read_fire:
+        ld a,0xBF
+        in a,(0xFE)
+        cpl
+        and 1
+        ld d,a
+        ld a,0x7F
+        in a,(0xFE)
+        cpl
+        and 1
+        or d
+        ld d,a
+        ld a,0xEF
+        in a,(0xFE)
+        cpl
+        and 1
+        or d
+        ld d,a
+        ld a,0xF7
+        in a,(0xFE)
+        cpl
+        and 0x10
+        or d
+        ret
+
+; Pause (Taste H): Text, bis H noch einmal gedrueckt wird
+do_pause:
+        xor a
+        ld (sfx_t),a
+        ld d,10
+        ld e,0
+        call ay_wr
+        call siren_off
+        ld a,ATTR_HEAD
+        ld (cur_attr),a
+        ld hl,txt_pause
+        ld bc,15*256+14
+        call print_at
+dp_w:   halt
+        ld a,0xBF
+        in a,(0xFE)
+        cpl
+        and 0x10
+        ld hl,key_h
+        call edge
+        jr z,dp_w
+        ld a,14
+        ld b,5
+        call clr15
+        ld hl,(bonus_t)         ; Bonusobjekt wieder zeichnen, falls es da war
+        ld a,h
+        or l
+        call nz,bonus_draw
+        ld a,SIREN
+        ld (snd_run),a
+        ld a,1
+        ld (dirty),a
+        ret
+
+; ---- Regenbogen-Schrift ----
+rainbow_step:
+        ld a,(anim_on)
+        or a
+        ret z
+        ld hl,rb_phase
+        inc (hl)
+        ld a,(hl)
+        and 3
+        ret nz
+rainbow_apply:
+        ld b,4
+        call rb_line
+        ld b,7
+        ; (weiter mit rb_line)
+
+; B = erste Zeichenzeile: 2 Zeilen x 12 Felder ab Spalte 10 in wandernden Farben
+rb_line:
+        ld a,b
+        rrca
+        rrca
+        rrca
+        ld e,a
+        and 3
+        or 0x58
+        ld d,a
+        ld a,e
+        and 0xE0
+        add a,10
+        ld e,a
+        ld c,2
+rl_r:   push de
+        ld a,(rb_phase)
+        rrca
+        rrca
+        and 63
+        add a,c
+        ld (rb_i),a
+        ld b,12
+rl_c:   ld a,(rb_i)
+rl_m:   cp 6
+        jr c,rl_k
+        sub 6
+        jr rl_m
+rl_k:   ld l,a
+        ld h,0
+        push de
+        ld de,rb_tab
+        add hl,de
+        pop de
+        ld a,(hl)
+        ld (de),a
+        inc de
+        ld hl,rb_i
+        inc (hl)
+        djnz rl_c
+        pop de
+        ld a,e
+        add a,32
+        ld e,a
+        jr nc,rl_n
+        inc d
+rl_n:   dec c
+        jr nz,rl_r
+        ret
+
+rb_tab:
+        db 0x42,0x46,0x44,0x45,0x41,0x43
+
+; doppelt grosse Schrift: HL = Text, B = Zeile, C = Spalte (jedes Zeichen 2 x 2 Felder)
+big_at:
+        ld a,(hl)
+        or a
+        ret z
+        inc hl
+        push hl
+        push bc
+        ld l,a
+        ld h,0
+        add hl,hl
+        add hl,hl
+        add hl,hl
+        ld de,font-256
+        add hl,de
+        push hl
+        pop ix
+        push bc
+        call big_half
+        pop bc
+        inc b
+        call big_half
+        pop bc
+        inc c
+        inc c
+        pop hl
+        jr big_at
+
+; IX = vier Zeichenzeilen, B = Zeile, C = Spalte: 2 Felder breit, 8 Rasterzeilen hoch
+big_half:
+        ld a,b
+        and 0x18
+        or 0x40
+        ld d,a
+        ld a,b
+        and 7
+        rrca
+        rrca
+        rrca
+        add a,c
+        ld e,a
+        ld b,4
+bh_l:   ld a,(ix+0)
+        inc ix
+        ld c,a
+        push bc
+        ld a,c
+        rrca
+        rrca
+        rrca
+        rrca
+        and 15
+        ld c,a
+        ld b,0
+        ld hl,dbl_tab
+        add hl,bc
+        ld a,(hl)
+        ld (de),a
+        inc d
+        ld (de),a
+        dec d
+        inc e
+        pop bc
+        push bc
+        ld a,c
+        and 15
+        ld c,a
+        ld b,0
+        ld hl,dbl_tab
+        add hl,bc
+        ld a,(hl)
+        ld (de),a
+        inc d
+        ld (de),a
+        inc d
+        dec e
+        pop bc
+        djnz bh_l
+        ret
+
+dbl_tab:
+        db 0x00,0x03,0x0C,0x0F,0x30,0x33,0x3C,0x3F,0xC0,0xC3,0xCC,0xCF,0xF0,0xF3,0xFC,0xFF
+
 ; Melodien: Tonperiode, Dauer in Frames (Ende: 0)
 tune_intro:
         dw 168
@@ -3219,6 +3545,26 @@ tune_clear:
         db 14
         dw 0
 
+txt_t1:
+        db "PACMAN",0
+txt_t2:
+        db "ROBOTER GEGEN DROHNEN",0
+txt_t3:
+        db "PACMAN",0
+txt_e1:
+        db "SUPER",0
+txt_e2:
+        db "ALLE LEVEL GESCHAFFT",0
+txt_ti1:
+        db "FEUER ODER ENTER = START",0
+txt_ti2:
+        db "STEUERUNG: JOYSTICK 1 ODER 2",0
+txt_ti3:
+        db "P FARBRAUM   T TON   H PAUSE",0
+txt_ti4:
+        db "D ZIELE    N NAECHSTES LEVEL",0
+txt_pause:
+        db "PAUSE",0
 txt_bereit:
         db "BEREIT!",0
 txt_ende:
