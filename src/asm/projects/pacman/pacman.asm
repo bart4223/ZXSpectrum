@@ -106,7 +106,7 @@ PL_START_X  equ (13+MAZE_COL)*8 ; Startfeld des Spielers (Kachel 13,15) in Bilds
 PL_START_Y  equ (15+MAZE_ROW)*8
 
 ; ---- Variablen (freier RAM, nicht im TAP) -----------------
-VARS        equ 0xB000
+VARS        equ 0xB400
 maze        equ VARS            ; MAZE_W*MAZE_H Bytes: Feldcodes (588)
 font        equ VARS + 0x300    ; 768 Bytes: Zeichensatz (Zeichen 32..127)
 cur_attr    equ VARS + 0x700    ; Attribut fuer draw_cell
@@ -206,6 +206,13 @@ rb_phase    equ VARS + 0x7FF    ; Phase der Regenbogen-Schrift
 oldr        equ VARS + 0x250    ; 10 Plaetze zu je 5 Bytes: alter Bereich (Spalte, Zeile, Breite, Hoehe, gueltig)
                                 ;   Platz = Figur * 2 + Puffer (Figur 0..3 Drohnen, 4 Spieler)
 spr_m       equ VARS + 0x24D
+p2_blk      equ VARS + 0x290    ; 7 Bytes: Zustand des anderen Roboters (wie pl_x .. pl_cnt)
+p2_score    equ VARS + 0x298    ; 3 Bytes BCD: Punkte des anderen Roboters
+mode2       equ VARS + 0x29C    ; 0 = ein Spieler, 1 = zwei Spieler
+cur_pl      equ VARS + 0x29D    ; welcher Roboter gerade in pl_* / score steht (0 oder 1)
+pl_fig      equ VARS + 0x29E    ; Figurennummer des geladenen Roboters (4 / 5)
+pl_atr      equ VARS + 0x29F    ; Farbe des geladenen Roboters
+sel_on      equ VARS + 0x2A0    ; 1 = Moduswahl auf dem Titel aktiv
 dc_p        equ VARS + 0x24C    ; 0 oder 0x80: Zielpuffer bei der Grafikausgabe
 bk_id       equ VARS + 0x7EA    ; Zeichenpuffer: 0 = Bildschirm 5 (0x4000), 1 = Schattenbildschirm 7 (0xC000)
 bk_set      equ VARS + 0x7EB    ; 0 oder 0x80: ODER-Maske fuer das hohe Adressbyte des Zeichenpuffers
@@ -258,8 +265,14 @@ start:
         ld (sfx_t),a
         ld (sfx_flip),a
         ld (extra),a
+        ld (p2_score),a
+        ld (p2_score+1),a
+        ld (p2_score+2),a
+        ld (cur_pl),a
         ld (wr_mode),a
         ld (bk_set+0),a
+        ld (mode2),a
+        ld (sel_on),a
         ld (dth_sp),a
         ld a,1
         ld (bk_id),a            ; erster Zeichenpuffer: Schattenbildschirm
@@ -267,9 +280,13 @@ start:
         ld (bk_set),a
         ld hl,oldr              ; alte Bereiche ungueltig
         ld de,oldr+1
-        ld bc,49
+        ld bc,59
         ld (hl),0
         ldir
+        ld a,4
+        ld (pl_fig),a
+        ld a,ATTR_PLAYER
+        ld (pl_atr),a
         ld a,1
         ld (level),a
         ld a,3
@@ -313,7 +330,7 @@ main_loop:
         halt
         call flip               ; der im letzten Frame gezeichnete Puffer wird sichtbar
         call blink_pills       ; Pillenfelder (selten)
-        call update_player      ; rechnen
+        call update_players     ; rechnen
         call update_ghosts
         call update_modes
         call release_check
@@ -790,7 +807,16 @@ get_joy:
 gj_rev: rr e
         rl d
         djnz gj_rev
+        ld a,(mode2)
+        or a
+        jr z,gj_or
+        ld a,(cur_pl)           ; zwei Spieler: Roboter 1 = Joystick 1, Roboter 2 = Joystick 2
+        or a
+        ld a,h
+        ret z
         ld a,d
+        ret
+gj_or:  ld a,d
         or h
         ret
 
@@ -838,6 +864,56 @@ ri_rel: ld a,(pl_ttl)
 ; ============================================================
 ; Spieler bewegen
 ; ============================================================
+update_players:
+        call update_player
+        ld a,(mode2)
+        or a
+        ret z
+        call swap_ctx
+        call update_player
+        jp swap_ctx
+
+; Roboter 1 und 2 vertauschen (Zustand und Punkte); veraendert keine Register
+swap_ctx:
+        push af
+        push bc
+        push de
+        push hl
+        ld hl,pl_x
+        ld de,p2_blk
+        ld b,7
+        call sw_l
+        ld hl,score
+        ld de,p2_score
+        ld b,3
+        call sw_l
+        ld a,(cur_pl)
+        xor 1
+        ld (cur_pl),a
+        ld c,ATTR_PLAYER
+        ld b,4
+        jr z,sw_s
+        ld c,0x44               ; Roboter 2: hell gruen
+        ld b,5
+sw_s:   ld a,b
+        ld (pl_fig),a
+        ld a,c
+        ld (pl_atr),a
+        pop hl
+        pop de
+        pop bc
+        pop af
+        ret
+sw_l:   ld a,(de)
+        ld c,(hl)
+        ld (hl),a
+        ld a,c
+        ld (de),a
+        inc hl
+        inc de
+        djnz sw_l
+        ret
+
 update_player:
         call read_input
         ld a,(pl_acc)
@@ -1007,6 +1083,8 @@ rd_e:   push bc
         djnz rd_e
         ld a,4
         call erase_fig
+        ld a,5
+        call erase_fig
         ld ix,ghosts            ; ... dann alle Figuren neu zeichnen
         ld b,4
 rd_g:   push bc
@@ -1016,7 +1094,13 @@ rd_g:   push bc
         add ix,de
         djnz rd_g
         call draw_player
-        xor a
+        ld a,(mode2)
+        or a
+        jr z,rd_x
+        call swap_ctx
+        call draw_player
+        call swap_ctx
+rd_x:   xor a
         ld (wr_mode),a
         ret
 
@@ -1158,9 +1242,9 @@ draw_player:
         ld b,a
         ld a,(pl_y)
         ld c,a
-        ld a,ATTR_PLAYER
+        ld a,(pl_atr)
         call draw_sprite
-        ld a,4
+        ld a,(pl_fig)
         jp store_slot
 
 ; alle Figuren noch einmal zeichnen (ODER, ohne zu loeschen)
@@ -1485,7 +1569,26 @@ reset_actors:
         ld a,D_LEFT
         ld (pl_dir),a
         ld (pl_want),a
-        ld hl,ghost_init
+        ld a,(mode2)
+        or a
+        jr z,ra_1
+        ld a,PL_START_X-24      ; zwei Spieler: Roboter 1 links, Roboter 2 rechts vom Start
+        ld (pl_x),a
+        ld hl,p2_blk
+        ld (hl),PL_START_X+24
+        inc hl
+        ld (hl),PL_START_Y
+        inc hl
+        ld (hl),D_RIGHT
+        inc hl
+        ld (hl),D_RIGHT
+        inc hl
+        ld (hl),0
+        inc hl
+        ld (hl),0
+        inc hl
+        ld (hl),0
+ra_1:   ld hl,ghost_init
         ld de,ghosts
         ld bc,4*GS_SIZE
         ldir
@@ -1714,7 +1817,10 @@ score_post:
         call draw_lives
         ld hl,tune_extra
         call play_seq
-sp_r:   ld a,(score+2)          ; Rekord = max(Rekord, Punkte)
+sp_r:   ld a,(mode2)
+        or a
+        jr nz,draw_score        ; im Zweispielermodus kein Rekord
+        ld a,(score+2)          ; Rekord = max(Rekord, Punkte)
         ld b,a
         ld a,(record+2)
         cp b
@@ -1740,7 +1846,20 @@ as_new: ld hl,score
 draw_score:
         ld a,ATTR_TEXT
         ld (cur_attr),a
+        ld a,(mode2)
+        or a
+        jr z,ds_1
         ld hl,score+2
+        ld de,sc_txt
+        call bcd_txt
+        ld a,(cur_pl)
+        or a
+        ld bc,1*256+2
+        jr z,ds_2
+        ld bc,1*256+12
+ds_2:   ld hl,sc_txt
+        jp print_at
+ds_1:   ld hl,score+2
         ld de,sc_txt
         call bcd_txt
         ld hl,sc_txt
@@ -2130,7 +2249,7 @@ wipe_figs:
         ld (wr_mode),a
         ld (old_valid),a
         ld hl,oldr
-        ld b,10
+        ld b,12
 wf_l:   push bc
         push hl
         ld de,4
@@ -2635,6 +2754,37 @@ mk_addr:
 
 ; Ziel der Drohne IX in der Jagd -> gc_tc, gc_tr (Zeichenzellen, auf 0..31 begrenzt)
 ghost_target:
+        ld a,(mode2)
+        or a
+        jr z,ghost_target1
+        ld hl,pl_x              ; zwei Spieler: der naehere Roboter ist das Ziel
+        call dist_h
+        ld b,a
+        ld hl,p2_blk
+        call dist_h
+        cp b
+        jr nc,ghost_target1
+        call swap_ctx
+        call ghost_target1
+        jp swap_ctx
+
+; HL -> (x, y): out A = ungefaehrer Abstand zur Drohne IX (halbiert)
+dist_h: ld a,(hl)
+        sub (ix+G_X)
+        jr nc,dh_a
+        neg
+dh_a:   srl a
+        ld c,a
+        inc hl
+        ld a,(hl)
+        sub (ix+G_Y)
+        jr nc,dh_b
+        neg
+dh_b:   srl a
+        add a,c
+        ret
+
+ghost_target1:
         ld a,(gmode)
         or a
         jr nz,gt_chs
@@ -2911,6 +3061,15 @@ cand_dirs:
 
 ; Beruehrung Spieler - Drohne
 check_hits:
+        call check_hits1
+        ld a,(mode2)
+        or a
+        ret z
+        call swap_ctx
+        call check_hits1
+        jp swap_ctx
+
+check_hits1:
         ld ix,ghosts
         ld b,4
 ch_l:   ld a,(ix+G_MODE)
@@ -2950,6 +3109,9 @@ ll_p:   halt
         call bonus_hide
         call wipe_figs          ; Drohnen verschwinden, der Roboter zerfaellt
         call death_anim
+        ld a,(cur_pl)           ; wieder Roboter 1 laden
+        or a
+        call nz,swap_ctx
         ld a,(lives)
         dec a
         ld (lives),a
@@ -3025,7 +3187,7 @@ da_ds:  ld hl,(dth_sp)
         ld b,a
         ld a,(pl_y)
         ld c,a
-        ld a,ATTR_PLAYER
+        ld a,(pl_atr)
         jp draw_sprite
 
 ; BEREIT!-Pause: Figuren stehen am Start, Text unter dem Haus
@@ -3163,6 +3325,35 @@ game_over:
         ld bc,15*256+12
         call print_at
         ld b,150
+        ld a,(mode2)
+        or a
+        jr z,go_w
+        ld a,(score+2)          ; Sieger: mehr Punkte
+        ld b,a
+        ld a,(p2_score+2)
+        cp b
+        jr nz,go_c
+        ld a,(score+1)
+        ld b,a
+        ld a,(p2_score+1)
+        cp b
+        jr nz,go_c
+        ld a,(score)
+        ld b,a
+        ld a,(p2_score)
+        cp b
+go_c:   ld hl,txt_w1
+        ld a,ATTR_PLAYER
+        jr c,go_t
+        ld hl,txt_w2
+        ld a,0x44
+        jr nz,go_t
+        ld hl,txt_w0
+        ld a,ATTR_DOT
+go_t:   ld (cur_attr),a
+        ld bc,17*256+7
+        call print_at
+        ld b,250
 go_w:   halt
         djnz go_w
         jp new_game
@@ -3192,13 +3383,27 @@ draw_hud:
         ld bc,0*256+2
         call print_at
         ld hl,txt_rekord
-        ld bc,0*256+12
+        ld a,(mode2)
+        or a
+        jr z,dh_r
+        ld hl,txt_punkte
+        ld a,0x44
+        ld (cur_attr),a
+dh_r:   ld bc,0*256+12
         call print_at
+        ld a,ATTR_HEAD
+        ld (cur_attr),a
         ld hl,txt_level
         ld bc,0*256+24
         call print_at
         call draw_score
-        call draw_level
+        ld a,(mode2)
+        or a
+        jr z,dh_1
+        call swap_ctx
+        call draw_score
+        call swap_ctx
+dh_1:   call draw_level
         call draw_lives
         ; (fall through)
 
@@ -3404,13 +3609,13 @@ title_screen:
         ld a,ATTR_HEAD
         ld (cur_attr),a
         ld hl,txt_rekord
-        ld bc,20*256+10
+        ld bc,22*256+10
         call print_at
         ld hl,record+2
         ld de,sc_txt
         call bcd_txt
         ld hl,sc_txt
-        ld bc,20*256+17
+        ld bc,22*256+17
         call print_at
         ld a,1
         ld (anim_on),a
@@ -3419,7 +3624,65 @@ title_screen:
         call rainbow_apply
         ld hl,tune_intro
         call play_seq
+        ld a,1
+        ld (sel_on),a
+        call draw_mode
         jp wait_fire
+
+; Moduswahl auf dem Titel per Joystick: links/hoch = ein Spieler, rechts/runter = zwei Spieler
+sel_poll:
+        ld a,(sel_on)
+        or a
+        ret z
+        ld a,0xEF
+        in a,(0xFE)
+        cpl
+        ld d,a                  ; Joystick 1: Bit 4 links, 1 hoch, 3 rechts, 2 runter
+        ld a,0xF7
+        in a,(0xFE)
+        cpl
+        ld e,a                  ; Joystick 2 (Tasten 1..5): Bit 0 links, 3 hoch, 1 rechts, 2 runter
+        ld a,(mode2)
+        ld c,a
+        bit 4,d
+        jr nz,sp_a
+        bit 1,d
+        jr nz,sp_a
+        bit 0,e
+        jr nz,sp_a
+        bit 3,e
+        jr z,sp_1
+sp_a:   xor a
+sp_1:   bit 3,d
+        jr nz,sp_b
+        bit 2,d
+        jr nz,sp_b
+        bit 1,e
+        jr nz,sp_b
+        bit 2,e
+        jr z,sp_2
+sp_b:   ld a,1
+sp_2:   cp c
+        ret z
+        ld (mode2),a
+draw_mode:
+        ld a,ATTR_HEAD
+        ld (cur_attr),a
+        ld hl,txt_m1
+        ld de,txt_j0
+        ld a,(mode2)
+        or a
+        jr z,dm_1
+        ld hl,txt_m2
+        ld de,txt_j1
+dm_1:   push de
+        ld bc,18*256+7
+        call print_at
+        ld a,ATTR_TEXT
+        ld (cur_attr),a
+        pop hl
+        ld bc,20*256+1
+        jp print_at
 
 ; Abspann nach dem letzten Level
 ending:
@@ -3457,15 +3720,18 @@ ending:
 ; Feuer / Enter / Leertaste: erst loslassen, dann druecken (Regenbogen bewegt sich)
 wait_fire:
 wf_r:   halt
+        call sel_poll
         call rainbow_step
         call read_fire
         jr nz,wf_r
 wf_p:   halt
+        call sel_poll
         call rainbow_step
         call read_fire
         jr z,wf_p
         xor a
         ld (anim_on),a
+        ld (sel_on),a
         ret
 
 ; out: NZ = Feuer (Joystick 1: 0, Joystick 2: 5), Enter oder Leertaste gedrueckt
@@ -3778,6 +4044,20 @@ txt_bereit:
         db "BEREIT!",0
 txt_ende:
         db "SPIELENDE",0
+txt_m1:
+        db "LINKS: EIN SPIELER   ",0
+txt_m2:
+        db "RECHTS: ZWEI SPIELER ",0
+txt_j0:
+        db "                              ",0
+txt_j1:
+        db "S1: JOYSTICK 1  S2: JOYSTICK 2",0
+txt_w1:
+        db "SPIELER 1 GEWINNT",0
+txt_w2:
+        db "SPIELER 2 GEWINNT",0
+txt_w0:
+        db "UNENTSCHIEDEN    ",0
 txt_punkte:
         db "PUNKTE",0
 txt_rekord:
