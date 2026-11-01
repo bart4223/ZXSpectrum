@@ -183,6 +183,10 @@ dot_cnt     equ VARS + 0x76E    ; gefressene Punkte seit Levelbeginn / Lebensver
 idle_tmr    equ VARS + 0x76F    ; Frames seit dem letzten gefressenen Punkt (bis 255)
 idle_lim    equ VARS + 0x770    ; ab so vielen Frames ohne Punkt wird eine Drohne freigelassen
 lvl_cls     equ VARS + 0x771    ; Levelklasse 0..2
+dth_f       equ VARS + 0x772    ; Bildnummer der Sterbeanimation / Spaltenzaehler
+extra       equ VARS + 0x773    ; 1 = Extraleben schon vergeben
+bonus_t     equ VARS + 0x774    ; 2 Bytes: Restdauer des Bonusobjekts in Frames (0 = keins da)
+dots_tot    equ VARS + 0x776    ; 2 Bytes: Punkte und Pillen zu Levelbeginn
 fr_n        equ VARS + 0x7F0    ; Anzahl Kandidaten bei der Zufallswahl
 fr_list     equ VARS + 0x7F1    ; die Kandidatenrichtungen (4 Bytes)
 ghosts      equ VARS + 0x780    ; 4 Drohnen zu GS_SIZE Bytes
@@ -229,6 +233,7 @@ start:
         ld (blink_cnt),a
         ld (sfx_t),a
         ld (sfx_flip),a
+        ld (extra),a
         ld a,1
         ld (level),a
         ld a,3
@@ -251,6 +256,7 @@ start:
         call cls
         call draw_hud
         call draw_maze
+        call ready
 
 ; ---- Hauptschleife: ein Durchlauf pro Frame (50 Hz) -------
 main_loop:
@@ -264,6 +270,7 @@ main_loop:
         call check_hits
         call keys
         call sfx_tick
+        call bonus_tick
         ld a,(win_flag)
         or a
         call nz,level_clear
@@ -478,7 +485,8 @@ nl_1:   ld (level),a
         call pick_color         ; in beiden Farbraeumen eine neue Wandfarbe
         call reset_level
         call draw_level
-        jp draw_maze
+        call draw_maze
+        jp ready
 
 ; in: A = Tastenzustand jetzt (0 = nicht gedrueckt), HL = Zeiger auf den Zustand vorher
 ; out: NZ = Taste wurde neu gedrueckt
@@ -1312,6 +1320,7 @@ reset_actors:
         ld h,a
         ld l,a
         ld (fright_tmr),hl
+        ld (bonus_t),hl
         ld hl,(tm_ptr)
         ld e,(hl)
         inc hl
@@ -1408,6 +1417,7 @@ cd_n:   dec bc
         or c
         jr nz,cd_1
         ld (dots_left),de
+        ld (dots_tot),de
         ret
 
 ; Der Spieler steht auf einer Kachelmitte: Punkt oder Pille fressen
@@ -1430,7 +1440,22 @@ eat:
         cp MAZE_H
         ret nc
         ld c,a
-        call maze_addr
+        ld hl,(bonus_t)         ; Bonusobjekt (Kachel 13/14, Zeile 13) aufgesammelt?
+        ld a,h
+        or l
+        jr z,ea_nb
+        ld a,c
+        cp 13
+        jr nz,ea_nb
+        ld a,b
+        cp 13
+        jr z,ea_bo
+        cp 14
+        jr nz,ea_nb
+ea_bo:  push bc
+        call bonus_eat
+        pop bc
+ea_nb:  call maze_addr
         ld a,(hl)
         cp C_DOT
         jr z,ea_dot
@@ -1454,6 +1479,9 @@ ea_i:   xor a
         ld hl,(dots_left)
         dec hl
         ld (dots_left),hl
+        push hl
+        call bonus_check
+        pop hl
         ld a,h
         or l
         ret nz
@@ -1491,7 +1519,24 @@ add_score:
         daa
         ld (hl),a
 score_post:
-        ld a,(score+2)          ; Rekord = max(Rekord, Punkte)
+        ld a,(extra)            ; Extraleben bei 10000 Punkten (einmal)
+        or a
+        jr nz,sp_r
+        ld a,(score+2)
+        or a
+        jr z,sp_r
+        ld a,1
+        ld (extra),a
+        ld a,(lives)
+        cp 9
+        jr nc,sp_r
+        inc a
+        ld (lives),a
+        call draw_lives
+        ld hl,400
+        ld bc,0x1406
+        call sfx_go
+sp_r:   ld a,(score+2)          ; Rekord = max(Rekord, Punkte)
         ld b,a
         ld a,(record+2)
         cp b
@@ -2495,19 +2540,179 @@ ch_n:   ld de,GS_SIZE
 
 ; Leben verlieren (noch ohne Animation): kurze Pause, alle an den Start
 life_lost:
-        call erase_all
+        ld b,30                 ; kurz einfrieren
+ll_p:   halt
+        djnz ll_p
+        call bonus_hide
+        call erase_all          ; Drohnen verschwinden, der Roboter zerfaellt
+        call death_anim
         ld a,(lives)
         dec a
         ld (lives),a
-        jr z,game_over
+        jp z,game_over
         call draw_lives
-        ld b,50
-ll_w:   halt
-        djnz ll_w
-        jp reset_actors
+        call reset_actors
+        jp ready
 
-; keine Leben mehr: neues Spiel
+; Sterbeanimation an der Stelle des Roboters
+death_anim:
+        xor a
+da_l:   ld (dth_f),a
+        call erase_player
+        ld a,(dth_f)
+        ld l,a
+        ld h,0
+        add hl,hl
+        add hl,hl
+        add hl,hl
+        add hl,hl
+        add hl,hl
+        add hl,hl               ; * 64
+        ld de,spr_death
+        add hl,de
+        ld a,(pl_x)
+        ld b,a
+        ld a,(pl_y)
+        ld c,a
+        ld a,ATTR_PLAYER
+        call draw_sprite
+        ld hl,spr_c
+        ld de,old_c
+        ld bc,4
+        ldir
+        ld a,1
+        ld (old_valid),a
+        ld b,8
+da_w:   halt
+        djnz da_w
+        ld a,(dth_f)
+        inc a
+        cp 6
+        jr nz,da_l
+        jp erase_player
+
+; BEREIT!-Pause: Figuren stehen am Start, Text unter dem Haus
+ready:
+        ld a,1
+        ld (dirty),a
+        call redraw
+        ld a,ATTR_HEAD
+        ld (cur_attr),a
+        ld hl,txt_bereit
+        ld bc,15*256+13
+        call print_at
+        ld b,100
+rdy_w:  halt
+        djnz rdy_w
+        ld a,13
+        ld b,7
+        jp clr15
+
+; B Felder der Zeile 15 ab Spalte A aus der Karte neu zeichnen
+clr15:  ld (dth_f),a
+c15_l:  push bc
+        ld a,(dth_f)
+        ld b,a
+        ld c,15
+        call erase_cell
+        ld a,(dth_f)
+        inc a
+        ld (dth_f),a
+        pop bc
+        djnz c15_l
+        ret
+
+; ---- Bonusobjekt (Kachel 13/13 = Zeichenfeld 15/15) ----
+; HL = verbleibende Punkte: nach 70 und 170 gefressenen erscheint es
+bonus_check:
+        ex de,hl
+        ld hl,(dots_tot)
+        or a
+        sbc hl,de
+        ld a,h
+        or a
+        ret nz
+        ld a,l
+        cp 70
+        jr z,bc_show
+        cp 170
+        ret nz
+bc_show:
+        ld hl,500               ; 10 Sekunden
+        ld (bonus_t),hl
+        call bonus_kind
+        ld e,a
+        ld d,0
+        ld hl,bonus_atr
+        add hl,de
+        ld a,(hl)
+        ld (cur_attr),a
+        ld a,e
+        add a,a
+        add a,a
+        add a,a
+        ld e,a
+        ld hl,bonus_gfx
+        add hl,de
+        ld bc,15*256+15
+        jp draw_cell
+
+; out: A = Symbolnummer 0..7 nach dem Level
+bonus_kind:
+        ld a,(level)
+        cp 9
+        jr c,bk_1
+        ld a,8
+bk_1:   dec a
+        ret
+
+; Bonusobjekt verschwindet (Feld aus der Karte neu zeichnen)
+bonus_hide:
+        ld hl,0
+        ld (bonus_t),hl
+        ld bc,15*256+15
+        call erase_cell
+        ld a,1
+        ld (dirty),a
+        ret
+
+bonus_eat:
+        call bonus_hide
+        call bonus_kind
+        ld e,a
+        ld d,0
+        ld hl,bonus_pts
+        add hl,de
+        ld a,(hl)
+        call add_score100
+        ld hl,250
+        ld bc,0x1008
+        jp sfx_go
+
+bonus_tick:
+        ld hl,(bonus_t)
+        ld a,h
+        or l
+        ret z
+        dec hl
+        ld (bonus_t),hl
+        ld a,h
+        or l
+        ret nz
+        jp bonus_hide
+
+; keine Leben mehr: Text, dann neues Spiel
 game_over:
+        ld a,0x42
+        ld (cur_attr),a
+        ld hl,txt_ende
+        ld bc,15*256+12
+        call print_at
+        ld b,150
+go_w:   halt
+        djnz go_w
+        xor a
+        ld (extra),a
         ld a,3
         ld (lives),a
         xor a
@@ -2518,7 +2723,8 @@ game_over:
         ld (level),a
         call reset_level
         call draw_hud
-        jp draw_maze
+        call draw_maze
+        jp ready
 
 draw_lives:
         ld a,ATTR_TEXT
@@ -2684,6 +2890,10 @@ print_at:
 ; ============================================================
 ; Daten
 ; ============================================================
+txt_bereit:
+        db "BEREIT!",0
+txt_ende:
+        db "SPIELENDE",0
 txt_punkte:
         db "PUNKTE",0
 txt_rekord:
@@ -2908,6 +3118,47 @@ spr_eyes:
         db 0x00,0x00,0x00,0x00,0x39,0xC0,0x39,0xC0,0x39,0xC0,0x39,0xC0,0x00,0x00,0x00,0x00
         db 0x00,0x00,0x00,0x00,0x0E,0x70,0x0E,0x70,0x0E,0x70,0x0E,0x70,0x00,0x00,0x00,0x00
         db 0x00,0x00,0x00,0x00,0x03,0x9C,0x03,0x9C,0x03,0x9C,0x03,0x9C,0x00,0x00,0x00,0x00
+; Sterbebilder des Roboters: 6 Bilder (zerfaellt), je 4 Verschiebungen
+spr_death:
+        db 0x7E,0x00,0xFF,0x00,0xF7,0x00,0xFF,0x00,0xFF,0x00,0xFF,0x00,0xFF,0x00,0x7E,0x00
+        db 0x1F,0x80,0x3F,0xC0,0x3D,0xC0,0x3F,0xC0,0x3F,0xC0,0x3F,0xC0,0x3F,0xC0,0x1F,0x80
+        db 0x07,0xE0,0x0F,0xF0,0x0F,0x70,0x0F,0xF0,0x0F,0xF0,0x0F,0xF0,0x0F,0xF0,0x07,0xE0
+        db 0x01,0xF8,0x03,0xFC,0x03,0xDC,0x03,0xFC,0x03,0xFC,0x03,0xFC,0x03,0xFC,0x01,0xF8
+        db 0x00,0x00,0x76,0x00,0x62,0x00,0x76,0x00,0x7E,0x00,0x7E,0x00,0x7E,0x00,0x00,0x00
+        db 0x00,0x00,0x1D,0x80,0x18,0x80,0x1D,0x80,0x1F,0x80,0x1F,0x80,0x1F,0x80,0x00,0x00
+        db 0x00,0x00,0x07,0x60,0x06,0x20,0x07,0x60,0x07,0xE0,0x07,0xE0,0x07,0xE0,0x00,0x00
+        db 0x00,0x00,0x01,0xD8,0x01,0x88,0x01,0xD8,0x01,0xF8,0x01,0xF8,0x01,0xF8,0x00,0x00
+        db 0x00,0x00,0x00,0x00,0x00,0x00,0x20,0x00,0x34,0x00,0x3C,0x00,0x00,0x00,0x00,0x00
+        db 0x00,0x00,0x00,0x00,0x00,0x00,0x08,0x00,0x0D,0x00,0x0F,0x00,0x00,0x00,0x00,0x00
+        db 0x00,0x00,0x00,0x00,0x00,0x00,0x02,0x00,0x03,0x40,0x03,0xC0,0x00,0x00,0x00,0x00
+        db 0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x80,0x00,0xD0,0x00,0xF0,0x00,0x00,0x00,0x00
+        db 0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00
+        db 0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00
+        db 0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00
+        db 0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00
+        db 0x92,0x00,0x24,0x00,0x00,0x00,0x88,0x00,0x20,0x00,0x05,0x00,0xA0,0x00,0x22,0x00
+        db 0x24,0x80,0x09,0x00,0x00,0x00,0x22,0x00,0x08,0x00,0x01,0x40,0x28,0x00,0x08,0x80
+        db 0x09,0x20,0x02,0x40,0x00,0x00,0x08,0x80,0x02,0x00,0x00,0x50,0x0A,0x00,0x02,0x20
+        db 0x02,0x48,0x00,0x90,0x00,0x00,0x02,0x20,0x00,0x80,0x00,0x14,0x02,0x80,0x00,0x88
+        db 0x81,0x00,0x00,0x00,0x10,0x00,0x00,0x00,0x08,0x00,0x00,0x00,0x81,0x00,0x00,0x00
+        db 0x20,0x40,0x00,0x00,0x04,0x00,0x00,0x00,0x02,0x00,0x00,0x00,0x20,0x40,0x00,0x00
+        db 0x08,0x10,0x00,0x00,0x01,0x00,0x00,0x00,0x00,0x80,0x00,0x00,0x08,0x10,0x00,0x00
+        db 0x02,0x04,0x00,0x00,0x00,0x40,0x00,0x00,0x00,0x20,0x00,0x00,0x02,0x04,0x00,0x00
+; Bonusobjekte (Level 1..8, ab 8 gleich), 8 Bytes je Symbol
+bonus_gfx:
+        db 0x18,0x3C,0x7E,0xFF,0x7E,0x3C,0x18,0x00
+        db 0x18,0x18,0x18,0xFF,0xFF,0x18,0x18,0x18
+        db 0x3C,0x7E,0xE7,0xC3,0xE7,0x7E,0x3C,0x00
+        db 0x0E,0x1C,0x38,0x7E,0x1C,0x38,0x70,0xE0
+        db 0x3C,0x42,0x42,0x3C,0x18,0x1C,0x18,0x1C
+        db 0x18,0x3C,0x3C,0x7E,0x7E,0xFF,0x00,0x18
+        db 0xAA,0xFF,0xBD,0xFF,0xBD,0xFF,0xAA,0x00
+        db 0x18,0x18,0xFF,0x7E,0x3C,0x66,0xC3,0x00
+; Farbe, Punkte in Hundertern (BCD): 100 300 500 700 1000 2000 3000 5000
+bonus_atr:
+        db 0x42,0x46,0x43,0x47,0x42,0x46,0x43,0x47
+bonus_pts:
+        db 0x01,0x03,0x05,0x07,0x10,0x20,0x30,0x50
 ; ---- Tabellen je Levelklasse (0 = Level 1, 1 = Level 2..4, 2 = ab Level 5) ----
 ; Spielertempo, Drohnenzuschlag, Tempo der verwirrten Drohnen (je 20 Frames), Wartegrenze (Frames)
 lvl_tab:

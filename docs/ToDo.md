@@ -69,7 +69,7 @@ Ziel: Labyrinth-Jagd im Stil von Pacman in Z80-Assembler, nur 128K, AY-Sound.
 - Pille → verängstigt (zufällige Richtungswahl, langsamer, Blinken vor Ende), Geist fressen → Augen laufen zurück in den Käfig, Kettenpunkte 200/400/800/1600
 - Tabellen je Level: Tempo, Modus-Zeiten, Pillendauer
 
-- State: InProgress
+- State: Done
 
 ### Stufe 6 – Spielablauf
 - Leben, Todesanimation, Neustart-Pause „BEREIT", Game Over
@@ -77,7 +77,7 @@ Ziel: Labyrinth-Jagd im Stil von Pacman in Z80-Assembler, nur 128K, AY-Sound.
 - Extraleben bei Punktestand X
 
 - 1 . Meilenstein
-- State: Open
+- State: InProgress
 
 ### Stufe 7 – Sound (AY, 128K)
 - Eigene Titelmelodie, Sirene im Spiel (wechselnd je Modus), Fress-, Geister-fressen-, Tod-, Bonus- und Extraleben-Effekte
