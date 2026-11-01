@@ -1,5 +1,5 @@
 ; ============================================================
-; Pacman-Variante fuer den ZX Spectrum 128K - Stufe 4: Individuelle Zielwahl
+; Pacman-Variante fuer den ZX Spectrum 128K - Stufe 5: Streuen/Jagd, Haus, Pillen
 ; Assembler: pasmo   (pasmo --tapbas pacman.asm pacman.tap)
 ; ============================================================
 ; Nur 128K. Das Labyrinth ist eine Textkarte (map_text weiter unten), 28 x 21
@@ -7,6 +7,12 @@
 ; fuer jede Wandkachel werden die 8 Nachbarn untersucht (Maske), daraus waehlt
 ; eine Tabelle die passende Kachel (Linien dort, wo ein Gang angrenzt).
 ;
+; Stufe 5: Die Drohnen wechseln nach einer Zeittabelle zwischen Streuen (jede laeuft zu ihrer
+; Ecke) und Jagd, beim Wechsel kehren die jagenden um. Die Drohnen im Haus kommen nach
+; gefressenen Punkten (oder wenn zu lange keiner gefressen wird) heraus. Eine Pille macht
+; jagende Drohnen blau und langsam (zufaellige Richtung, blinken vor dem Ende); fressen bringt
+; 200/400/800/1600, die Augen laufen zum Haus zurueck und kommen als Jaeger wieder heraus.
+; Tempo, Pillendauer, Zeit- und Freigabetabellen haengen vom Level ab (Tabellen am Dateiende).
 ; Stufe 4: Jede Drohne hat ihre eigene Zielwahl (nur in der Jagd):
 ;   Jaeger (rot)         : der Roboter selbst
 ;   Abfangjaeger (rosa)  : 4 Felder vor dem Roboter (in seiner Laufrichtung)
@@ -63,7 +69,10 @@ ATTR_PLAYER equ 0x46            ; Spieler: hell gelb
 
 M_WAIT      equ 0               ; Drohnenzustaende
 M_EXIT      equ 1               ; verlaesst das Haus
-M_CHASE     equ 2               ; jagt den Spieler
+M_CHASE     equ 2               ; jagt den Spieler (oder streunt zur eigenen Ecke)
+M_FRIGHT    equ 3               ; verwirrt (Pille): blau, zufaellige Richtung, langsamer
+M_EATEN     equ 4               ; gefressen: nur Augen, laufen zum Haus zurueck
+M_ENTER     equ 5               ; Augen sinken durch die Tuer ins Haus
 
 G_X         equ 0               ; Drohnen-Struktur (GS_SIZE Bytes je Drohne)
 G_Y         equ 1
@@ -160,6 +169,22 @@ gt_pc       equ VARS + 0x75B    ; Zelle des Spielers (Spalte, Zeile)
 gt_pr       equ VARS + 0x75C
 key_d       equ VARS + 0x75D    ; Taste D im letzten Frame
 dbg         equ VARS + 0x75E    ; 1 = Zielanzeige an
+gmode       equ VARS + 0x760    ; 0 = Streuen (Ecken), 1 = Jagd
+mode_idx    equ VARS + 0x761    ; Abschnitt 0..7 der Streu-/Jagdtabelle
+mode_tmr    equ VARS + 0x762    ; 2 Bytes: Restdauer des Abschnitts (65535 = ohne Ende)
+tm_ptr      equ VARS + 0x764    ; 2 Bytes: Zeiger auf die Abschnittsdauern der Levelklasse
+fright_tmr  equ VARS + 0x766    ; 2 Bytes: Restdauer der Pillenwirkung (0 = keine)
+fr_frames   equ VARS + 0x768    ; 2 Bytes: Pillendauer dieses Levels
+chain       equ VARS + 0x76A    ; wie viele Drohnen seit der letzten Pille gefressen (0..3)
+pl_spd      equ VARS + 0x76B    ; Spielertempo dieses Levels
+gbonus      equ VARS + 0x76C    ; Zuschlag aufs Drohnentempo
+fr_spd      equ VARS + 0x76D    ; Tempo verwirrter Drohnen
+dot_cnt     equ VARS + 0x76E    ; gefressene Punkte seit Levelbeginn / Lebensverlust
+idle_tmr    equ VARS + 0x76F    ; Frames seit dem letzten gefressenen Punkt (bis 255)
+idle_lim    equ VARS + 0x770    ; ab so vielen Frames ohne Punkt wird eine Drohne freigelassen
+lvl_cls     equ VARS + 0x771    ; Levelklasse 0..2
+fr_n        equ VARS + 0x7F0    ; Anzahl Kandidaten bei der Zufallswahl
+fr_list     equ VARS + 0x7F1    ; die Kandidatenrichtungen (4 Bytes)
 ghosts      equ VARS + 0x780    ; 4 Drohnen zu GS_SIZE Bytes
 mk          equ VARS + 0x7C0    ; Zielmarker je Drohne (8 Bytes): Ziel x,y, alter Bereich c,r,w,h, gueltig
 
@@ -234,6 +259,8 @@ main_loop:
         call redraw             ; Zeichnen direkt nach HALT, mit dem Stand des letzten Frames
         call update_player      ; danach erst rechnen
         call update_ghosts
+        call update_modes
+        call release_check
         call check_hits
         call keys
         call sfx_tick
@@ -331,7 +358,7 @@ le_1:   ld b,0
         pop bc
         inc c
         ld a,c
-        cp 8
+        cp 7
         jr nz,le_1
         ret
 
@@ -400,15 +427,15 @@ pk_1:   ld (rng),hl
         add a,b                 ; Abstand 1..3 zur alten Farbe
         and 3
         jp set_color
-pk_ext: ld b,5
+pk_ext: ld b,4
         call mod_a
-        ld b,a                  ; 0..4
+        ld b,a                  ; 0..3
         ld a,(ext_col)
         inc a
-        add a,b                 ; Abstand 1..5 zur alten Farbe
-pk_x:   cp 6
+        add a,b                 ; Abstand 1..4 zur alten Farbe
+pk_x:   cp 5
         jr c,pk_y
-        sub 6
+        sub 5
         jr pk_x
 pk_y:   ld (ext_col),a
         jp set_ext_attr
@@ -720,7 +747,8 @@ ri_rel: ld a,(pl_ttl)
 update_player:
         call read_input
         ld a,(pl_acc)
-        add a,PL_SPEED
+        ld hl,pl_spd
+        add a,(hl)
         cp 20
         jr c,up_st
         sub 20
@@ -893,6 +921,30 @@ rd_g:   push bc
 
 ; Drohne IX zeichnen und ihren Bereich merken
 draw_ghost:
+        ld a,(ix+G_MODE)
+        cp M_EATEN
+        jr c,dg_n
+        ld a,0x47               ; Augen: hell weiss
+        push af
+        ld hl,spr_eyes
+        jr dg_s
+dg_n:   cp M_FRIGHT
+        ld a,(ix+G_ATTR)
+        jr nz,dg_f
+        ld a,(fright_tmr+1)     ; verwirrt: blau, in den letzten 100 Frames blau/weiss blinkend
+        or a
+        ld a,0x01
+        jr nz,dg_f
+        ld a,(fright_tmr)
+        cp 100
+        ld a,0x01
+        jr nc,dg_f
+        ld a,(fright_tmr)
+        and 8
+        ld a,0x01
+        jr z,dg_f
+        ld a,0x07
+dg_f:   push af
         ld a,(ix+G_CNT)
         rrca
         rrca
@@ -907,9 +959,9 @@ draw_ghost:
         add hl,hl               ; * 64
         ld de,spr_drone
         add hl,de
-        ld b,(ix+G_X)
+dg_s:   ld b,(ix+G_X)
         ld c,(ix+G_Y)
-        ld a,(ix+G_ATTR)
+        pop af
         call draw_sprite
         ld a,(spr_c)
         ld (ix+G_OC),a
@@ -1250,8 +1302,94 @@ reset_actors:
         ld de,ghosts
         ld bc,4*GS_SIZE
         ldir
+        call set_level_params
+        xor a
+        ld (gmode),a            ; jedes Level / jedes Leben beginnt mit Streuen
+        ld (mode_idx),a
+        ld (chain),a
+        ld (dot_cnt),a
+        ld (idle_tmr),a
+        ld h,a
+        ld l,a
+        ld (fright_tmr),hl
+        ld hl,(tm_ptr)
+        ld e,(hl)
+        inc hl
+        ld d,(hl)
+        ld (mode_tmr),de
+        ld a,(lvl_cls)          ; Freigabeschwellen der Drohnen 2..4
+        ld e,a
+        add a,a
+        add a,e
+        ld e,a
+        ld d,0
+        ld hl,rel_tab
+        add hl,de
+        ld a,(hl)
+        ld (ghosts+GS_SIZE+G_TMR),a
+        inc hl
+        ld a,(hl)
+        ld (ghosts+2*GS_SIZE+G_TMR),a
+        inc hl
+        ld a,(hl)
+        ld (ghosts+3*GS_SIZE+G_TMR),a
         ld a,1
         ld (dirty),a
+        ret
+
+; Tempo, Pillendauer und Zeittabelle aus der Levelnummer
+set_level_params:
+        ld a,(level)
+        ld b,0
+        cp 2
+        jr c,sl_c               ; Level 1 -> Klasse 0
+        inc b
+        cp 5
+        jr c,sl_c               ; Level 2..4 -> Klasse 1
+        inc b                   ; ab Level 5 -> Klasse 2
+sl_c:   ld a,b
+        ld (lvl_cls),a
+        add a,a
+        add a,a
+        ld e,a
+        ld d,0
+        ld hl,lvl_tab
+        add hl,de
+        ld a,(hl)
+        ld (pl_spd),a
+        inc hl
+        ld a,(hl)
+        ld (gbonus),a
+        inc hl
+        ld a,(hl)
+        ld (fr_spd),a
+        inc hl
+        ld a,(hl)
+        ld (idle_lim),a
+        ld a,(lvl_cls)          ; Zeiger auf 8 Abschnitte zu je 2 Bytes
+        ld l,a
+        ld h,0
+        add hl,hl
+        add hl,hl
+        add hl,hl
+        add hl,hl
+        ld de,tm_tab
+        add hl,de
+        ld (tm_ptr),hl
+        ld a,(level)            ; Pillendauer: Level 1..21, danach wie 21
+        cp 22
+        jr c,sl_f
+        ld a,21
+sl_f:   dec a
+        ld l,a
+        ld h,0
+        add hl,hl
+        ld de,fr_tab
+        add hl,de
+        ld e,(hl)
+        inc hl
+        ld d,(hl)
+        ld (fr_frames),de
         ret
 
 count_dots:
@@ -1300,12 +1438,19 @@ eat:
         ret nz
         ld (hl),C_EMPTY
         call sfx_pill
+        call start_fright
         ld a,0x50
         jr ea_sc
 ea_dot: ld (hl),C_EMPTY
         call sfx_dot
         ld a,0x10
 ea_sc:  call add_score
+        ld a,(dot_cnt)          ; fuer die Freigabe der Drohnen mitzaehlen
+        inc a
+        jr z,ea_i
+        ld (dot_cnt),a
+ea_i:   xor a
+        ld (idle_tmr),a
         ld hl,(dots_left)
         dec hl
         ld (dots_left),hl
@@ -1315,6 +1460,19 @@ ea_sc:  call add_score
         ld a,1
         ld (win_flag),a
         ret
+
+; in: A = Punkte in Hundertern (BCD, 0x02 = 200)
+add_score100:
+        ld hl,score+1
+        add a,(hl)
+        daa
+        ld (hl),a
+        inc hl
+        ld a,(hl)
+        adc a,0
+        daa
+        ld (hl),a
+        jp score_post
 
 ; in: A = Punkte (BCD, 0x10 / 0x50); aktualisiert Punktestand und Rekord
 add_score:
@@ -1332,6 +1490,7 @@ add_score:
         adc a,0
         daa
         ld (hl),a
+score_post:
         ld a,(score+2)          ; Rekord = max(Rekord, Punkte)
         ld b,a
         ld a,(record+2)
@@ -1567,19 +1726,11 @@ ug_l:   push bc
 update_ghost:
         ld a,(ix+G_MODE)
         or a
-        jr nz,ug_act
-        ld a,(blink_cnt)        ; Wartezeit: alle 2 Frames um 1 herunter
-        and 1
-        ret nz
-        ld a,(ix+G_TMR)
-        or a
-        jr z,ug_rel
-        dec (ix+G_TMR)
-        ret
-ug_rel: ld (ix+G_MODE),M_EXIT
-        ld (ix+G_DIR),D_UP
-        ret
-ug_act: ld a,(ix+G_Y)           ; im Tunnel langsamer
+        ret z                   ; wartet im Haus (Freigabe: release_check)
+        cp M_EATEN
+        ld a,20
+        jr nc,ug_a              ; Augen: ein Schritt je Frame
+        ld a,(ix+G_Y)           ; im Tunnel langsamer
         cp GT_Y
         jr nz,ug_n
         ld a,(ix+G_X)
@@ -1590,14 +1741,234 @@ ug_act: ld a,(ix+G_Y)           ; im Tunnel langsamer
 ug_slow:
         ld a,4
         jr ug_a
-ug_n:   ld a,(ix+G_SPD)
+ug_n:   ld a,(ix+G_MODE)
+        cp M_FRIGHT
+        ld a,(fr_spd)
+        jr z,ug_a
+        ld a,(gbonus)
+        add a,(ix+G_SPD)
 ug_a:   add a,(ix+G_ACC)
         cp 20
         jr c,ug_st
         sub 20
         ld (ix+G_ACC),a
-        jr ghost_step
+        jp ghost_step
 ug_st:  ld (ix+G_ACC),a
+        ret
+
+; ---- Streu-/Jagdzeiten, Pillenwirkung, Freigabe ------------------------------------
+; einmal je Frame
+update_modes:
+        ld hl,(fright_tmr)
+        ld a,h
+        or l
+        jr z,um_mode
+        dec hl                  ; waehrend der Pillenwirkung steht die Streu-/Jagduhr still
+        ld (fright_tmr),hl
+        ld a,l
+        and 7
+        jr nz,um_f1
+        ld a,1                  ; alle 8 Frames neu zeichnen (Blinken)
+        ld (dirty),a
+um_f1:  ld a,h
+        or l
+        ret nz
+        ; (weiter mit end_fright)
+
+; Pillenwirkung vorbei: verwirrte Drohnen jagen wieder
+end_fright:
+        ld ix,ghosts
+        ld b,4
+ef_l:   ld a,(ix+G_MODE)
+        cp M_FRIGHT
+        jr nz,ef_n
+        ld (ix+G_MODE),M_CHASE
+ef_n:   ld de,GS_SIZE
+        add ix,de
+        djnz ef_l
+        ld a,1
+        ld (dirty),a
+        ret
+
+um_mode:
+        ld hl,(mode_tmr)
+        ld a,h
+        and l
+        inc a
+        ret z                   ; 65535 = ohne Ende
+        dec hl
+        ld (mode_tmr),hl
+        ld a,h
+        or l
+        ret nz
+        ld a,(mode_idx)         ; naechster Abschnitt: gerade = Streuen, ungerade = Jagd
+        inc a
+        ld (mode_idx),a
+        ld c,a
+        and 1
+        ld (gmode),a
+        ld a,c
+        add a,a
+        ld e,a
+        ld d,0
+        ld hl,(tm_ptr)
+        add hl,de
+        ld e,(hl)
+        inc hl
+        ld d,(hl)
+        ld (mode_tmr),de
+        ld ix,ghosts            ; alle jagenden Drohnen kehren um
+        ld b,4
+um_l:   ld a,(ix+G_MODE)
+        cp M_CHASE
+        jr nz,um_n
+        ld a,(ix+G_DIR)
+        xor 2
+        ld (ix+G_DIR),a
+um_n:   ld de,GS_SIZE
+        add ix,de
+        djnz um_l
+        ret
+
+; Pille gefressen: jagende Drohnen werden verwirrt und kehren um
+start_fright:
+        ld hl,(fr_frames)
+        ld a,h
+        or l
+        ret z                   ; in diesem Level wirkt die Pille nicht
+        ld (fright_tmr),hl
+        xor a
+        ld (chain),a
+        push ix
+        ld ix,ghosts
+        ld b,4
+sf_l:   ld a,(ix+G_MODE)
+        cp M_CHASE
+        jr nz,sf_n
+        ld (ix+G_MODE),M_FRIGHT
+        ld a,(ix+G_DIR)
+        xor 2
+        ld (ix+G_DIR),a
+sf_n:   ld de,GS_SIZE
+        add ix,de
+        djnz sf_l
+        pop ix
+        ld a,1
+        ld (dirty),a
+        ret
+
+; Drohnen im Haus freilassen: die naechste wartende, wenn genug Punkte gefressen sind
+; oder zu lange kein Punkt gefressen wurde
+release_check:
+        ld a,(idle_tmr)
+        inc a
+        jr z,rc_0
+        ld (idle_tmr),a
+rc_0:   ld ix,ghosts+GS_SIZE
+        ld b,3
+rc_l:   ld a,(ix+G_MODE)
+        or a
+        jr z,rc_w
+        ld de,GS_SIZE
+        add ix,de
+        djnz rc_l
+        ret
+rc_w:   ld a,(dot_cnt)          ; nur die erste wartende Drohne kommt in Frage
+        cp (ix+G_TMR)
+        jr nc,rc_go
+        ld a,(idle_tmr)
+        ld hl,idle_lim
+        cp (hl)
+        ret c
+rc_go:  ld (ix+G_MODE),M_EXIT
+        ld (ix+G_DIR),D_UP
+        xor a
+        ld (idle_tmr),a
+        ret
+
+; verwirrte Drohne IX gefressen
+eat_ghost:
+        ld (ix+G_MODE),M_EATEN
+        ld a,(chain)
+        ld e,a
+        ld d,0
+        ld hl,chain_tab
+        add hl,de
+        ld a,(hl)
+        push ix
+        call add_score100
+        pop ix
+        ld a,(chain)
+        cp 3
+        jr nc,eg_s
+        inc a
+        ld (chain),a
+eg_s:   ld hl,300
+        ld bc,0x0A08
+        call sfx_go
+        ld a,1
+        ld (dirty),a
+        ret
+
+; verwirrte Drohne: an der Kachelmitte zufaellig eine der freien Richtungen (ohne Umkehren)
+choose_random:
+        xor a
+        ld (fr_n),a
+        ld (gc_i),a
+cr_l:   ld a,(gc_i)
+        ld e,a
+        ld d,0
+        ld hl,cand_dirs
+        add hl,de
+        ld a,(hl)
+        ld (gc_d),a
+        ld b,a
+        ld a,(ix+G_DIR)
+        xor 2
+        cp b
+        jr z,cr_n
+        ld a,(gc_cc)
+        ld b,a
+        ld a,(gc_rr)
+        ld c,a
+        ld a,(gc_d)
+        call apply_dir
+        ld a,b
+        and 0x1F
+        ld b,a
+        call passable
+        jr z,cr_n
+        ld a,(fr_n)
+        ld e,a
+        ld d,0
+        ld hl,fr_list
+        add hl,de
+        ld a,(gc_d)
+        ld (hl),a
+        ld a,(fr_n)
+        inc a
+        ld (fr_n),a
+cr_n:   ld a,(gc_i)
+        inc a
+        ld (gc_i),a
+        cp 4
+        jr nz,cr_l
+        ld a,(fr_n)
+        or a
+        jr z,cr_rev
+        ld b,a
+        call rnd
+        call mod_a
+        ld e,a
+        ld d,0
+        ld hl,fr_list
+        add hl,de
+        ld a,(hl)
+        ld (ix+G_DIR),a
+        ret
+cr_rev: ld a,(ix+G_DIR)         ; Sackgasse: umkehren
+        xor 2
+        ld (ix+G_DIR),a
         ret
 
 ; ein Schritt (2 Pixel); auf einer Kachelmitte zuerst die Richtung waehlen
@@ -1640,11 +2011,31 @@ gs_done:
         ld (dirty),a
         ld a,(ix+G_MODE)
         cp M_EXIT
+        jr z,gd_ex
+        cp M_EATEN
+        jr z,gd_eat
+        cp M_ENTER
         ret nz
-        ld a,(ix+G_Y)           ; draussen vor dem Haus: jagen
+        ld a,(ix+G_Y)           ; Augen im Haus angekommen: gleich wieder hinaus
+        cp 96
+        ret c
+        ld (ix+G_MODE),M_EXIT
+        ld (ix+G_DIR),D_UP
+        ret
+gd_ex:  ld a,(ix+G_Y)           ; draussen vor dem Haus: jagen
         cp 73
         ret nc
         ld (ix+G_MODE),M_CHASE
+        ret
+gd_eat: ld a,(ix+G_Y)           ; Augen ueber der Haustuer: hinein
+        cp 72
+        ret nz
+        ld a,(ix+G_X)
+        cp 120
+        jr z,gd_in
+        cp 128
+        ret nz
+gd_in:  ld (ix+G_MODE),M_ENTER
         ret
 
 ; Richtung an einer Kachelmitte waehlen (IX = Drohne): von den Nachbarfeldern (ohne Umkehren,
@@ -1663,16 +2054,29 @@ ghost_choose:
         and 0x1F
         ld (gc_rr),a
         ld a,(ix+G_MODE)
+        cp M_FRIGHT
+        jp z,choose_random      ; verwirrt: keine Zielwahl
         cp M_EXIT
-        jr nz,gc_t1
-        ld a,15                 ; Ziel beim Verlassen des Hauses: ueber der Tuer
-        ld (gc_tc),a
-        ld a,7
+        jr z,gc_ex
+        cp M_EATEN
+        jr z,gc_eat
+        cp M_ENTER
+        jr z,gc_ent
+        call ghost_target       ; Ziel je nach Drohnenart
+        jr gc_t2
+gc_ex:  ld a,7                  ; Verlassen des Hauses: Ziel ueber der Tuer
+        jr gc_dr
+gc_eat: ld a,9                  ; Augen: Ziel direkt vor der Tuer (Tuer noch zu)
         ld (gc_tr),a
+        ld a,15
+        ld (gc_tc),a
+        jr gc_t2
+gc_ent: ld a,12                 ; Augen: Ziel mitten im Haus (Tuer offen)
+gc_dr:  ld (gc_tr),a
+        ld a,15
+        ld (gc_tc),a
         ld a,1
         ld (door_ok),a
-        jr gc_t2
-gc_t1:  call ghost_target       ; Ziel je nach Drohnenart
 gc_t2:  call mk_addr            ; Ziel fuer die Anzeige merken
         ld a,(gc_tc)
         ld (hl),a
@@ -1783,7 +2187,20 @@ mk_addr:
 
 ; Ziel der Drohne IX in der Jagd -> gc_tc, gc_tr (Zeichenzellen, auf 0..31 begrenzt)
 ghost_target:
-        ld a,(pl_x)
+        ld a,(gmode)
+        or a
+        jr nz,gt_chs
+        ld a,(ix+G_TYPE)        ; Streuphase: jede Drohne zu ihrer Ecke
+        add a,a
+        ld e,a
+        ld d,0
+        ld hl,scat_tab
+        add hl,de
+        ld b,(hl)
+        inc hl
+        ld c,(hl)
+        jp gt_set
+gt_chs: ld a,(pl_x)
         rrca
         rrca
         rrca
@@ -2051,6 +2468,8 @@ check_hits:
 ch_l:   ld a,(ix+G_MODE)
         or a
         jr z,ch_n               ; wartende Drohnen im Haus: nein
+        cp M_EATEN
+        jr nc,ch_n              ; Augen sind harmlos
         ld a,(pl_x)
         sub (ix+G_X)
         jr nc,ch_1
@@ -2063,7 +2482,12 @@ ch_1:   cp 6
         neg
 ch_2:   cp 6
         jr nc,ch_n
-        jp life_lost
+        ld a,(ix+G_MODE)
+        cp M_FRIGHT
+        jp nz,life_lost
+        push bc                 ; verwirrte Drohne: fressen
+        call eat_ghost
+        pop bc
 ch_n:   ld de,GS_SIZE
         add ix,de
         djnz ch_l
@@ -2286,14 +2710,14 @@ col_tab:
 ; ULAplus-Sondertoene (GGGRRRBB): 6 Wandtoene (violett, tuerkis, limone, himmelblau, mint,
 ; purpur) und 2 Drohnentoene
 ext_tab:
-        db 0x2F,0xC3,0xF0,0x8B,0xEE,0x2B
+        db 0x2F,0xC3,0xF0,0x8B,0xEE
         db 0x7E,0x9C                    ; Drohnen: rosa (Eintrag 3), orange (Eintrag 6)
 ; zugehoerige Paletteneintraege und Attribute (hell Tinte 1,2,4,5 und dunkel Tinte 1..4;
 ; Tinte 3 hell = Tuer und Tinte 6/7 hell = Kopfzeile/Punkte bleiben unberuehrt)
 ext_ent:
-        db 17,20,21,1,2,4,3,6
+        db 17,20,21,2,4,3,6
 ext_atr:
-        db 0x41,0x44,0x45,0x01,0x02,0x04
+        db 0x41,0x44,0x45,0x02,0x04
 
 ; Standardpalette fuer ULAplus (Farbe 0..7 = schwarz blau rot magenta gruen cyan gelb weiss)
 std_norm:
@@ -2478,6 +2902,37 @@ spr_drone:
         db 0x19,0x80,0x1F,0x80,0x3F,0xC0,0x36,0xC0,0x3F,0xC0,0x3F,0xC0,0x16,0x80,0x10,0x80
         db 0x06,0x60,0x07,0xE0,0x0F,0xF0,0x0D,0xB0,0x0F,0xF0,0x0F,0xF0,0x05,0xA0,0x04,0x20
         db 0x01,0x98,0x01,0xF8,0x03,0xFC,0x03,0x6C,0x03,0xFC,0x03,0xFC,0x01,0x68,0x01,0x08
+; Augen einer gefressenen Drohne: 1 Bild, 4 Verschiebungen
+spr_eyes:
+        db 0x00,0x00,0x00,0x00,0xE7,0x00,0xE7,0x00,0xE7,0x00,0xE7,0x00,0x00,0x00,0x00,0x00
+        db 0x00,0x00,0x00,0x00,0x39,0xC0,0x39,0xC0,0x39,0xC0,0x39,0xC0,0x00,0x00,0x00,0x00
+        db 0x00,0x00,0x00,0x00,0x0E,0x70,0x0E,0x70,0x0E,0x70,0x0E,0x70,0x00,0x00,0x00,0x00
+        db 0x00,0x00,0x00,0x00,0x03,0x9C,0x03,0x9C,0x03,0x9C,0x03,0x9C,0x00,0x00,0x00,0x00
+; ---- Tabellen je Levelklasse (0 = Level 1, 1 = Level 2..4, 2 = ab Level 5) ----
+; Spielertempo, Drohnenzuschlag, Tempo der verwirrten Drohnen (je 20 Frames), Wartegrenze (Frames)
+lvl_tab:
+        db 10,0,5,200
+        db 11,1,6,150
+        db 12,2,7,150
+; Dauer von Streuen / Jagd, 8 Abschnitte je Klasse (65535 = ohne Ende)
+tm_tab:
+        dw 350,1000,350,1000,250,1000,250,65535
+        dw 350,1000,350,1000,250,51650,1,65535
+        dw 250,1000,250,1000,250,51850,1,65535
+; Pillenwirkung in Sekunden fuer Level 1..21 (ab 22 wie 21), als Frames
+fr_tab:
+        dw 300,250,200,150,100,250,100,100,50,250,100,50,50,150,50,50,0,50,0,0,0
+; Freigabe der Drohnen 2..4 nach so vielen gefressenen Punkten (je Klasse)
+rel_tab:
+        db 0,30,60
+        db 0,0,50
+        db 0,0,0
+; Ecken fuer die Streuphase (Zeichenspalte, Zeichenzeile): Jaeger, Abfang, Flank, Zoegerer
+scat_tab:
+        db 29,0, 2,0, 29,23, 2,23
+; Punkte fuer gefressene Drohnen (BCD, in Hundertern): 200 400 800 1600
+chain_tab:
+        db 0x02,0x04,0x08,0x16
 ; Startwerte der vier Drohnen (GS_SIZE = 16 Bytes): x, y, Richtung, Tempo-Summe, Tempo,
 ;   Attribut, Zustand (0 wartet, 2 jagt), Freigabe (Zwei-Frame-Takte), Zaehler, alter Bereich (5), 2 frei
 ghost_init:

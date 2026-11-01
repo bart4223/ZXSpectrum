@@ -61,7 +61,7 @@ Ziel: Labyrinth-Jagd im Stil von Pacman in Z80-Assembler, nur 128K, AY-Sound.
 - Zögerer: Spieler, solange weit weg, sonst eigene Ecke
 - Debug-Overlay (Taste D): Zielkachel jedes Geistes als farbiger Punkt, Modus und Timer in der HUD-Zeile
 
-- State: InProgress
+- State: Done
 
 ### Stufe 5 – Modi und Käfig
 - Scatter/Chase nach Zeittabelle, Richtungsumkehr beim Moduswechsel
@@ -69,7 +69,7 @@ Ziel: Labyrinth-Jagd im Stil von Pacman in Z80-Assembler, nur 128K, AY-Sound.
 - Pille → verängstigt (zufällige Richtungswahl, langsamer, Blinken vor Ende), Geist fressen → Augen laufen zurück in den Käfig, Kettenpunkte 200/400/800/1600
 - Tabellen je Level: Tempo, Modus-Zeiten, Pillendauer
 
-- State: Open
+- State: InProgress
 
 ### Stufe 6 – Spielablauf
 - Leben, Todesanimation, Neustart-Pause „BEREIT", Game Over
