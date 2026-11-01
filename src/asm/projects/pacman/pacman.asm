@@ -99,6 +99,7 @@ D_DOWN      equ 2
 D_LEFT      equ 3
 
 PL_SPEED    equ 10              ; Schritte je 20 Frames (2 Pixel je Schritt)
+SIREN       equ 0               ; 1 = Sirene im Spiel
 PL_TTL      equ 30              ; Frames, wie lange ein Richtungswunsch gilt
 PL_START_X  equ (13+MAZE_COL)*8 ; Startfeld des Spielers (Kachel 13,15) in Bildschirmpixeln
 PL_START_Y  equ (15+MAZE_ROW)*8
@@ -2859,7 +2860,7 @@ ready:
 rdy_n:  ld b,100
 rdy_w:  halt
         djnz rdy_w
-rdy_x:  ld a,1
+rdy_x:  ld a,SIREN               ; Sirene (1 = an) ist vorerst abgeschaltet
         ld (snd_run),a
         ld a,13
         ld b,7
