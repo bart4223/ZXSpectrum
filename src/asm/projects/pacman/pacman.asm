@@ -128,6 +128,13 @@ spr_h       equ VARS + 0x723
 spr_attr    equ VARS + 0x724
 spr_x       equ VARS + 0x725
 spr_y       equ VARS + 0x726
+era_c       equ VARS + 0x727    ; zu loeschender Bereich (Spalte, Zeile, Breite, Hoehe) fuer erase_old
+era_r       equ VARS + 0x728
+era_w       equ VARS + 0x729
+era_h       equ VARS + 0x72A
+dk_c        equ VARS + 0x72B    ; Zielmarker: neue Spalte, Zeile
+dk_row      equ VARS + 0x72C
+pos         equ VARS + 0x7E0    ; 5 Positionen (x, y) fuer die Ueberlappungspruefung
 score       equ VARS + 0x730    ; 3 Bytes BCD, niedrigstes Byte zuerst
 record      equ VARS + 0x733    ; 3 Bytes BCD
 dots_left   equ VARS + 0x736    ; 2 Bytes: noch nicht gefressene Punkte und Pillen
@@ -223,11 +230,11 @@ start:
 ; ---- Hauptschleife: ein Durchlauf pro Frame (50 Hz) -------
 main_loop:
         halt
-        call update_player      ; Bewegung (nur Zahlen)
+        call blink_pills       ; Pillenfelder (selten)
+        call redraw             ; Zeichnen direkt nach HALT, mit dem Stand des letzten Frames
+        call update_player      ; danach erst rechnen
         call update_ghosts
         call check_hits
-        call blink_pills
-        call redraw             ; Zeichnen direkt nach HALT
         call keys
         call sfx_tick
         ld a,(win_flag)
@@ -863,13 +870,29 @@ redraw:
         ret z
         xor a
         ld (dirty),a
-        call erase_all          ; alle alten Bereiche aus der Karte wiederherstellen
-        ld a,(dbg)
-        or a
-        call nz,draw_markers
-        ld ix,ghosts            ; Drohnen
+        ; Jede Figur einzeln: erst ihren alten Bereich loeschen, gleich danach neu zeichnen
+        ; (so ist der Bereich nur ganz kurz leer und flackert kaum)
+        ld ix,ghosts
         ld b,4
 rd_g:   push bc
+        call erase_ghost
+        call draw_ghost
+        pop bc
+        ld de,GS_SIZE
+        add ix,de
+        djnz rd_g
+        call erase_player
+        call draw_player
+        call check_overlap      ; zwei Figuren so nah, dass das Loeschen der einen
+        call c,repair           ; die andere angekratzt haben koennte: nochmal zeichnen
+        ld a,(dbg)
+        or a
+        jp z,erase_markers
+        call draw_markers
+        jp draw_player          ; Spielerfarbe wiederherstellen (der Jaeger-Marker liegt auf ihm)
+
+; Drohne IX zeichnen und ihren Bereich merken
+draw_ghost:
         ld a,(ix+G_CNT)
         rrca
         rrca
@@ -897,11 +920,11 @@ rd_g:   push bc
         ld a,(spr_h)
         ld (ix+G_OH),a
         ld (ix+G_OV),1
-        pop bc
-        ld de,GS_SIZE
-        add ix,de
-        djnz rd_g
-        ld a,(pl_cnt)           ; Spieler: Bild nach Richtung und Animationsschritt
+        ret
+
+; Spieler zeichnen und seinen Bereich merken
+draw_player:
+        ld a,(pl_cnt)           ; Bild nach Richtung und Animationsschritt
         and 3
         ld e,a
         ld d,0
@@ -937,18 +960,80 @@ rd_g:   push bc
         ld (old_valid),a
         ret
 
+; alle Figuren noch einmal zeichnen (ODER, ohne zu loeschen)
+repair:
+        ld ix,ghosts
+        ld b,4
+rp_g:   push bc
+        call draw_ghost
+        pop bc
+        ld de,GS_SIZE
+        add ix,de
+        djnz rp_g
+        jp draw_player
+
+; out: Carry = zwei Figuren liegen weniger als 16 Pixel auseinander (in x und y)
+check_overlap:
+        ld hl,pos
+        ld ix,ghosts
+        ld b,4
+co_f:   ld a,(ix+G_X)
+        ld (hl),a
+        inc hl
+        ld a,(ix+G_Y)
+        ld (hl),a
+        inc hl
+        ld de,GS_SIZE
+        add ix,de
+        djnz co_f
+        ld a,(pl_x)
+        ld (hl),a
+        inc hl
+        ld a,(pl_y)
+        ld (hl),a
+        ld ix,pos
+        ld c,4
+co_o:   push ix
+        pop hl
+        inc hl
+        inc hl
+        ld b,c
+co_i:   ld a,(ix+0)
+        sub (hl)
+        jr nc,co_a
+        neg
+co_a:   inc hl
+        cp 16
+        jr nc,co_nx
+        ld a,(ix+1)
+        sub (hl)
+        jr nc,co_b
+        neg
+co_b:   cp 16
+        jr nc,co_nx
+        scf
+        ret
+co_nx:  inc hl
+        djnz co_i
+        inc ix
+        inc ix
+        dec c
+        jr nz,co_o
+        or a
+        ret
+
 anim_seq:
         db 0,1,2,1
 
 ; alten Bereich des Spielers aus der Karte wiederherstellen
 erase_old:
-        ld a,(old_r)
+        ld a,(era_r)
         ld c,a
-        ld a,(old_h)
+        ld a,(era_h)
         ld d,a
-eo_row: ld a,(old_c)
+eo_row: ld a,(era_c)
         ld b,a
-        ld a,(old_w)
+        ld a,(era_w)
         ld e,a
 eo_col: push bc
         push de
@@ -962,6 +1047,33 @@ eo_col: push bc
         dec d
         jr nz,eo_row
         ret
+
+; Spieler: gemerkten Bereich loeschen (nur wenn gueltig)
+erase_player:
+        ld a,(old_valid)
+        or a
+        ret z
+        ld hl,old_c
+        ld de,era_c
+        ld bc,4
+        ldir
+        jp erase_old
+
+; Drohne IX: gemerkten Bereich loeschen (nur wenn gueltig)
+erase_ghost:
+        ld a,(ix+G_OV)
+        or a
+        ret z
+        ld a,(ix+G_OC)
+        ld (era_c),a
+        ld a,(ix+G_OR)
+        ld (era_r),a
+        ld a,(ix+G_OW)
+        ld (era_w),a
+        ld a,(ix+G_OH)
+        ld (era_h),a
+        ld (ix+G_OV),0
+        jp erase_old
 
 ; in: B = Zeichenspalte, C = Zeichenzeile: Feld aus der Karte neu zeichnen
 ; (ausserhalb des Labyrinths: leer)
@@ -1422,35 +1534,20 @@ sfx_tick:
         jp ay_wr
 
 
-; alte Bereiche von Spieler und Drohnen aus der Karte wiederherstellen
+; alle alten Bereiche (Spieler, Drohnen, Zielmarker) aus der Karte wiederherstellen
 erase_all:
-        ld a,(old_valid)
-        or a
-        call nz,erase_old
+        call erase_player
         xor a
         ld (old_valid),a
-        call erase_markers      ; (nutzt old_c.. und muss nach dem Spieler kommen)
         ld ix,ghosts
         ld b,4
 ea_l:   push bc
-        ld a,(ix+G_OV)
-        or a
-        jr z,ea_n
-        ld a,(ix+G_OC)
-        ld (old_c),a
-        ld a,(ix+G_OR)
-        ld (old_r),a
-        ld a,(ix+G_OW)
-        ld (old_w),a
-        ld a,(ix+G_OH)
-        ld (old_h),a
-        call erase_old
-        ld (ix+G_OV),0
-ea_n:   pop bc
+        call erase_ghost
+        pop bc
         ld de,GS_SIZE
         add ix,de
         djnz ea_l
-        ret
+        jp erase_markers
 
 ; ============================================================
 ; Drohnen
@@ -1826,7 +1923,8 @@ cl_1:   cp 32
 dirvec:
         db 0,255, 1,0, 0,1, 255,0       ; hoch, rechts, runter, links (dx, dy)
 
-; Zielmarker zeichnen (nur bei eingeschalteter Anzeige)
+; Zielmarker zeichnen: ein Marker wird nur geloescht, wenn sein Ziel wandert; sonst einfach
+; nochmal darueber gezeichnet (ODER) - das flackert nicht
 draw_markers:
         ld ix,ghosts
         ld b,4
@@ -1836,22 +1934,49 @@ dk_l:   push bc
         jr z,dk_n               ; wartende Drohnen haben noch kein Ziel
         call mk_addr
         ld a,(hl)
-        add a,a
-        add a,a
-        add a,a
-        ld b,a                  ; x
+        ld (dk_c),a
         inc hl
         ld a,(hl)
         cp 2                    ; Marker nur im Bereich des Labyrinths (Zeilen 2..22)
         jr nc,dk_a
         ld a,2
 dk_a:   cp 23
-        jr c,dk_r
+        jr c,dk_b
         ld a,22
-dk_r:   add a,a
+dk_b:   ld (dk_row),a
+        call mk_addr
+        push hl
+        ld de,6
+        add hl,de
+        ld a,(hl)               ; alter Marker gueltig?
+        pop hl
+        or a
+        jr z,dk_draw
+        inc hl
+        inc hl                  ; HL -> alte Spalte
+        ld a,(dk_c)
+        cp (hl)
+        jr nz,dk_er
+        inc hl
+        ld a,(dk_row)
+        cp (hl)
+        jr z,dk_draw            ; gleiches Feld: nicht loeschen
+        dec hl
+dk_er:  ld de,era_c
+        ld bc,4
+        ldir
+        call erase_old
+dk_draw:
+        ld a,(dk_c)
         add a,a
         add a,a
-        ld c,a                  ; y
+        add a,a
+        ld b,a
+        ld a,(dk_row)
+        add a,a
+        add a,a
+        add a,a
+        ld c,a
         ld a,(ix+G_ATTR)
         ld hl,mark_gfx
         call draw_sprite
@@ -1870,7 +1995,7 @@ dk_n:   pop bc
         djnz dk_l
         ret
 
-; Zielmarker aus der Karte wegzeichnen
+; alle Zielmarker aus der Karte wegzeichnen
 erase_markers:
         ld ix,ghosts
         ld b,4
@@ -1886,7 +2011,7 @@ em_l:   push bc
         jr z,em_n
         inc hl
         inc hl
-        ld de,old_c
+        ld de,era_c
         ld bc,4
         ldir
         call erase_old
