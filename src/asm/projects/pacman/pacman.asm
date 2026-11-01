@@ -187,6 +187,15 @@ dth_f       equ VARS + 0x772    ; Bildnummer der Sterbeanimation / Spaltenzaehle
 extra       equ VARS + 0x773    ; 1 = Extraleben schon vergeben
 bonus_t     equ VARS + 0x774    ; 2 Bytes: Restdauer des Bonusobjekts in Frames (0 = keins da)
 dots_tot    equ VARS + 0x776    ; 2 Bytes: Punkte und Pillen zu Levelbeginn
+vol_lvl     equ VARS + 0x778    ; Lautstaerke 0..3 (Taste T)
+vol_mul     equ VARS + 0x779    ; Faktor (Viertel) zur Lautstaerke
+key_t       equ VARS + 0x77A    ; Taste T im letzten Frame
+sfx_p       equ VARS + 0x77B    ; 2 Bytes: aktuelle Tonperiode des Effekts
+sfx_d       equ VARS + 0x77D    ; 2 Bytes: Aenderung je Frame (Tonrutsch), vorzeichenbehaftet
+snd_run     equ VARS + 0x77F    ; 1 = Sirene laeuft
+dth_p       equ VARS + 0x7F6    ; 2 Bytes: Tonperiode beim Sterben
+seq_n       equ VARS + 0x7F8    ; Notendauer in play_seq
+intro_done  equ VARS + 0x7F9    ; 1 = Titelmelodie schon gespielt
 fr_n        equ VARS + 0x7F0    ; Anzahl Kandidaten bei der Zufallswahl
 fr_list     equ VARS + 0x7F1    ; die Kandidatenrichtungen (4 Bytes)
 ghosts      equ VARS + 0x780    ; 4 Drohnen zu GS_SIZE Bytes
@@ -270,6 +279,7 @@ main_loop:
         call check_hits
         call keys
         call sfx_tick
+        call siren_tick
         call bonus_tick
         ld a,(win_flag)
         or a
@@ -299,13 +309,27 @@ k_d:    ld a,0xFD
         and 0x04                ; Bit 2 = D
         ld hl,key_d
         call edge
-        jr z,k_n
+        jr z,k_t
         ld a,(dbg)              ; Zielanzeige umschalten
         xor 1
         ld (dbg),a
         call draw_foot
         ld a,1
         ld (dirty),a
+k_t:    ld a,0xFB
+        in a,(0xFE)             ; Reihe Q W E R T
+        cpl
+        and 0x10                ; Bit 4 = T
+        ld hl,key_t
+        call edge
+        jr z,k_n
+        ld a,(vol_lvl)          ; Lautstaerke weiterschalten: aus / leise / mittel / laut
+        inc a
+        and 3
+        ld (vol_lvl),a
+        call set_vol
+        call draw_foot
+        call sfx_dot            ; zur Probe ein Fressgeraeusch
 k_n:    ld a,0x7F
         in a,(0xFE)             ; Reihe Leertaste Sym M N B
         cpl
@@ -1533,9 +1557,8 @@ score_post:
         inc a
         ld (lives),a
         call draw_lives
-        ld hl,400
-        ld bc,0x1406
-        call sfx_go
+        ld hl,tune_extra
+        call play_seq
 sp_r:   ld a,(score+2)          ; Rekord = max(Rekord, Punkte)
         ld b,a
         ld a,(record+2)
@@ -1635,6 +1658,9 @@ bp_n:   inc hl
 
 ; Alles gefressen: Waende blinken, dann naechstes Level
 level_clear:
+        call siren_off
+        ld hl,tune_clear
+        call play_seq
         xor a
         ld (win_flag),a
         ld e,25
@@ -1694,11 +1720,54 @@ ay_wr:
 
 ay_init:
         ld d,7
-        ld e,0x3B               ; nur Ton C an, kein Rauschen
+        ld e,0x3A               ; Ton A (Sirene) und Ton C (Effekte), kein Rauschen
         call ay_wr
         ld d,10
         ld e,0
-        jp ay_wr
+        call ay_wr
+        ld d,8
+        ld e,0
+        call ay_wr
+        xor a
+        ld (key_t),a
+        ld (snd_run),a
+        ld (intro_done),a
+        ld (sfx_t),a
+        ld h,a
+        ld l,a
+        ld (sfx_d),hl
+        ld a,1                  ; Vorgabe: leise
+        ld (vol_lvl),a
+        ; (weiter mit set_vol)
+
+set_vol:
+        ld a,(vol_lvl)
+        ld e,a
+        ld d,0
+        ld hl,vol_tab
+        add hl,de
+        ld a,(hl)
+        ld (vol_mul),a
+        ret
+vol_tab:
+        db 0,4,8,12
+
+; in: A = Grundlautstaerke 0..15; out: A = mit der gewaehlten Lautstaerke skaliert (max. 15)
+vol_sc:
+        ld c,a
+        ld a,(vol_mul)
+        ld b,a
+        or a
+        ret z
+        xor a
+vs_l:   add a,c
+        djnz vs_l
+        srl a
+        srl a
+        cp 16
+        ret c
+        ld a,15
+        ret
 
 sfx_dot:
         ld a,(sfx_flip)
@@ -1707,23 +1776,39 @@ sfx_dot:
         ld hl,200               ; zwei abwechselnde Toene
         jr z,sd_1
         ld hl,150
-sd_1:   ld bc,0x0404            ; Lautstaerke 4 (leise), 4 Frames
+sd_1:   ld bc,0x0404            ; Lautstaerke 4, 4 Frames
         jr sfx_go
 sfx_pill:
-        ld hl,600
-        ld bc,0x0E06            ; Lautstaerke 6 (leise), 14 Frames
+        ld hl,600               ; Ton rutscht nach oben
+        ld bc,0x0E06
+        call sfx_go
+        ld hl,-20
+        ld (sfx_d),hl
+        ret
+
+; HL = Tonperiode, B = Dauer in Frames, C = Lautstaerke (Kanal C)
 sfx_go: ld a,b
         ld (sfx_t),a
+        ld (sfx_p),hl
+        ld hl,0
+        ld (sfx_d),hl
         push bc
+        call sfx_tone
+        pop bc
+        ld a,c
+        call vol_sc
+        ld e,a
+        ld d,10
+        jp ay_wr
+
+sfx_tone:
+        ld hl,(sfx_p)
         ld d,4
         ld e,l
         call ay_wr
         ld d,5
-        ld e,h
-        call ay_wr
-        pop bc
-        ld d,10
-        ld e,c
+        ld a,(sfx_p+1)
+        ld e,a
         jp ay_wr
 
 sfx_tick:
@@ -1732,11 +1817,150 @@ sfx_tick:
         ret z
         dec a
         ld (sfx_t),a
-        ret nz
-        ld d,10
+        jr z,st_off
+        ld hl,(sfx_d)
+        ld a,h
+        or l
+        ret z
+        ld de,(sfx_p)
+        add hl,de
+        ld (sfx_p),hl
+        jp sfx_tone
+st_off: ld d,10
         ld e,0                  ; Ton aus
         jp ay_wr
 
+; Melodie spielen und warten: HL = Tabelle (Periode, Dauer in Frames >= 2; Ende mit Periode 0)
+play_seq:
+ps_n:   ld e,(hl)
+        inc hl
+        ld d,(hl)
+        inc hl
+        ld a,d
+        or e
+        ret z
+        ld a,(hl)
+        inc hl
+        ld (seq_n),a
+        push hl
+        ld (sfx_p),de
+        call sfx_tone
+        ld a,8
+        call vol_sc
+        ld e,a
+        ld d,10
+        call ay_wr
+ps_w:   halt
+        ld a,(seq_n)
+        dec a
+        ld (seq_n),a
+        cp 1
+        jr nz,ps_w
+        ld d,10                 ; kurze Luecke zwischen den Noten
+        ld e,0
+        call ay_wr
+        halt
+        pop hl
+        jr ps_n
+
+; Sirene (Kanal A): Hoehe je nach Lage, steigt mit den gefressenen Punkten
+siren_tick:
+        ld a,(snd_run)
+        or a
+        ret z
+        ld hl,ghosts+G_MODE     ; Augen unterwegs: schnelles Piepen
+        ld de,GS_SIZE
+        ld b,4
+sr_g:   ld a,(hl)
+        cp M_EATEN
+        jr nc,sr_eyes
+        add hl,de
+        djnz sr_g
+        ld hl,(fright_tmr)
+        ld a,h
+        or l
+        jr nz,sr_fr
+        ld a,(blink_cnt)        ; normal: Dreieckschwingung, Grundton steigt mit den Punkten
+        and 31
+        cp 16
+        jr c,sr_t
+        cpl
+        and 15
+sr_t:   ld c,a
+        add a,a
+        add a,c
+        add a,a                 ; * 6
+        ld e,a
+        ld d,0
+        ld hl,(dots_tot)
+        ld bc,(dots_left)
+        or a
+        sbc hl,bc               ; gefressene Punkte
+        ld a,h
+        add a,a
+        add a,a
+        ld b,a
+        ld a,l
+        rlca
+        rlca
+        and 3
+        add a,b                 ; Stufe = gefressen / 64
+        cp 4
+        jr c,sr_s
+        ld a,3
+sr_s:   ld c,a
+        add a,a
+        add a,a
+        add a,c
+        add a,a
+        add a,a
+        add a,a                 ; Stufe * 40
+        ld c,a
+        ld hl,420
+        ld b,0
+        or a
+        sbc hl,bc               ; 420 - Stufe*40
+        add hl,de               ; + Dreieck
+        ld a,(gmode)
+        or a
+        jr nz,sr_w
+        ld bc,30                ; Streuphase etwas tiefer
+        add hl,bc
+sr_w:   ld a,3
+        jr sr_out
+sr_fr:  ld a,(blink_cnt)        ; verwirrt: Trillern
+        and 8
+        ld hl,270
+        jr z,sr_f2
+        ld hl,330
+sr_f2:  ld a,4
+        jr sr_out
+sr_eyes:
+        ld a,(blink_cnt)
+        and 4
+        ld hl,150
+        jr z,sr_e2
+        ld hl,110
+sr_e2:  ld a,5
+sr_out: push af
+        ld d,0
+        ld e,l
+        call ay_wr
+        ld d,1
+        ld e,h
+        call ay_wr
+        pop af
+        call vol_sc
+        ld e,a
+        ld d,8
+        jp ay_wr
+
+siren_off:
+        xor a
+        ld (snd_run),a
+        ld d,8
+        ld e,0
+        jp ay_wr
 
 ; alle alten Bereiche (Spieler, Drohnen, Zielmarker) aus der Karte wiederherstellen
 erase_all:
@@ -1948,9 +2172,11 @@ eat_ghost:
         jr nc,eg_s
         inc a
         ld (chain),a
-eg_s:   ld hl,300
-        ld bc,0x0A08
+eg_s:   ld hl,500
+        ld bc,0x1008
         call sfx_go
+        ld hl,-25
+        ld (sfx_d),hl
         ld a,1
         ld (dirty),a
         ret
@@ -2540,6 +2766,7 @@ ch_n:   ld de,GS_SIZE
 
 ; Leben verlieren (noch ohne Animation): kurze Pause, alle an den Start
 life_lost:
+        call siren_off
         ld b,30                 ; kurz einfrieren
 ll_p:   halt
         djnz ll_p
@@ -2556,6 +2783,15 @@ ll_p:   halt
 
 ; Sterbeanimation an der Stelle des Roboters
 death_anim:
+        ld hl,180               ; Ton faellt waehrend des Zerfalls
+        ld (dth_p),hl
+        xor a
+        ld (sfx_t),a
+        ld a,9
+        call vol_sc
+        ld e,a
+        ld d,10
+        call ay_wr
         xor a
 da_l:   ld (dth_f),a
         call erase_player
@@ -2584,11 +2820,22 @@ da_l:   ld (dth_f),a
         ld (old_valid),a
         ld b,8
 da_w:   halt
+        push bc
+        ld hl,(dth_p)
+        ld de,10
+        add hl,de
+        ld (dth_p),hl
+        ld (sfx_p),hl
+        call sfx_tone
+        pop bc
         djnz da_w
         ld a,(dth_f)
         inc a
         cp 6
         jr nz,da_l
+        ld d,10
+        ld e,0
+        call ay_wr
         jp erase_player
 
 ; BEREIT!-Pause: Figuren stehen am Start, Text unter dem Haus
@@ -2601,9 +2848,19 @@ ready:
         ld hl,txt_bereit
         ld bc,15*256+13
         call print_at
-        ld b,100
+        ld a,(intro_done)       ; beim ersten Mal die Titelmelodie, sonst zwei Sekunden Stille
+        or a
+        jr nz,rdy_n
+        ld a,1
+        ld (intro_done),a
+        ld hl,tune_intro
+        call play_seq
+        jr rdy_x
+rdy_n:  ld b,100
 rdy_w:  halt
         djnz rdy_w
+rdy_x:  ld a,1
+        ld (snd_run),a
         ld a,13
         ld b,7
         jp clr15
@@ -2685,9 +2942,12 @@ bonus_eat:
         add hl,de
         ld a,(hl)
         call add_score100
-        ld hl,250
-        ld bc,0x1008
-        jp sfx_go
+        ld hl,400
+        ld bc,0x1408
+        call sfx_go
+        ld hl,-14
+        ld (sfx_d),hl
+        ret
 
 bonus_tick:
         ld hl,(bonus_t)
@@ -2781,6 +3041,16 @@ df_2:   ld bc,23*256+19
         call print_at
         ld hl,txt_neu
         ld bc,23*256+25
+        call print_at
+        ld a,"T"                ; Lautstaerke
+        ld (sc_txt),a
+        ld a,(vol_lvl)
+        add a,"0"
+        ld (sc_txt+1),a
+        xor a
+        ld (sc_txt+2),a
+        ld hl,sc_txt
+        ld bc,23*256+30
         jp print_at
 
 ; Levelzahl (2 Stellen) oben rechts
@@ -2890,6 +3160,64 @@ print_at:
 ; ============================================================
 ; Daten
 ; ============================================================
+; Melodien: Tonperiode, Dauer in Frames (Ende: 0)
+tune_intro:
+        dw 168
+        db 6
+        dw 141
+        db 6
+        dw 126
+        db 6
+        dw 168
+        db 6
+        dw 106
+        db 6
+        dw 126
+        db 6
+        dw 141
+        db 6
+        dw 168
+        db 6
+        dw 189
+        db 6
+        dw 159
+        db 6
+        dw 126
+        db 6
+        dw 95
+        db 6
+        dw 126
+        db 6
+        dw 159
+        db 6
+        dw 168
+        db 16
+        dw 0
+tune_extra:
+        dw 168
+        db 5
+        dw 141
+        db 5
+        dw 126
+        db 5
+        dw 106
+        db 12
+        dw 0
+tune_clear:
+        dw 212
+        db 5
+        dw 168
+        db 5
+        dw 141
+        db 5
+        dw 106
+        db 5
+        dw 141
+        db 5
+        dw 106
+        db 14
+        dw 0
+
 txt_bereit:
         db "BEREIT!",0
 txt_ende:

@@ -77,13 +77,13 @@ Ziel: Labyrinth-Jagd im Stil von Pacman in Z80-Assembler, nur 128K, AY-Sound.
 - Extraleben bei Punktestand X
 
 - 1 . Meilenstein
-- State: InProgress
+- State: Done
 
 ### Stufe 7 – Sound (AY, 128K)
 - Eigene Titelmelodie, Sirene im Spiel (wechselnd je Modus), Fress-, Geister-fressen-, Tod-, Bonus- und Extraleben-Effekte
 - Lautstärke per T kein Dauermusik-Zwang im Spiel
 
-- State: Open
+- State: InProgress
 
 ### Stufe 8 – Titelbild und Rundherum
 - Titelbild mit Regenbogen-Schrift, Spielstart per Feuer
