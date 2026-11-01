@@ -90,19 +90,20 @@ Ziel: Labyrinth-Jagd im Stil von Pacman in Z80-Assembler, nur 128K, AY-Sound.
 - Sitzungsrekord, Pause (P), Abspann nach dem letzten Level
 
 - 2 . Meilenstein
-- State: InProgress
+- State: Done
 
 ### Stufe 9 – Feinschliff
 - Flimmerfrei: wenn sichtbar, zweiter Bildschirm (Bank 7) mit Umschalten pro Frame
 - 2–4 Labyrinthe im Wechsel
 - Feintuning der Tempi und Zeiten auf dem Gerät
 
-- State: Open
+- 3 . Meilenstein
+- State: InProgress
 
 ### Stufe 10 – Zwei Spieler
 - beide Spieler laufen gleichzeitig, wer mehr frisst, gewinnt
 
-- 3 . Meilenstein
+- 4 . Meilenstein
 - State: Open
 
 ## Risiken
@@ -113,7 +114,6 @@ Ziel: Labyrinth-Jagd im Stil von Pacman in Z80-Assembler, nur 128K, AY-Sound.
 | Zu langsame Frames | Geister-KI nur an Kachelmitten; Zeitbudget pro Frame messen (Rand-Farbstreifen) |
 | Zielwahl-Fehler schwer zu sehen | Debug-Overlay ab Stufe 4 |
 | Kurven-Gefühl ungewohnt | Gepufferter Richtungswunsch, ggf. „Vorab-Abbiegen" um 1–2 Pixel |
-| Figurenstil unklar | Entscheidung in Stufe 0 anhand fertigen Labyrinths |
 
 ---
 
