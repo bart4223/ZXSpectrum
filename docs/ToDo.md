@@ -104,7 +104,7 @@ Ziel: Labyrinth-Jagd im Stil von Pacman in Z80-Assembler, nur 128K, AY-Sound.
 - beide Spieler laufen gleichzeitig, wer mehr frisst, gewinnt
 
 - 4 . Meilenstein
-- State: InProgress
+- State: Done
 
 ## Risiken
 
