@@ -525,3 +525,5 @@ tst0:           ld (ix+0),0
                 inc ix
                 ret
                 endif
+
+                end start

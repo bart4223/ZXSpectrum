@@ -484,3 +484,5 @@ objects:
                 db 00Ah,018h,00Ah
                 db 0FFh
 
+
+                end start
