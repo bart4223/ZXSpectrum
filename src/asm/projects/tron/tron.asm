@@ -149,8 +149,7 @@ df2:            ld e,COL_FRAME_L
                 jr nz,df2
                 ret
 
-; Attribute von Rahmen und Spielfeld; mit ULAplus Schachbrett aus Paper 0/1
-; (dezentes Neon-Gitter), im Classic-Modus komplett schwarz
+; Attribute von Rahmen und Spielfeld (Feld schwarz, Rahmen violett)
 draw_field_attrs:
                 ld d,ROW_FRAME_TOP
 dfa_r:          ld e,0
@@ -164,18 +163,7 @@ dfa_c:          ld a,d
                 jr z,dfa_frame
                 cp COL_FRAME_R
                 jr z,dfa_frame
-                ld c,ATTR_FIELD
-                ld a,(plus_on)
-                or a
-                jr z,dfa_set
-                ld a,d
-                add a,e
-                and 1
-                add a,a
-                add a,a
-                add a,a                 ; Paper = 0 oder 1
-                or ATTR_FIELD
-                ld c,a
+                ld c,ATTR_FIELD         ; Feld komplett schwarz (Gitter entfernt)
                 jr dfa_set
 dfa_frame:      ld c,ATTR_FRAME
 dfa_set:        push de
@@ -463,7 +451,6 @@ read_keys:
                 xor 1
                 ld (plus_on),a
                 call apply_mode
-                call draw_field_attrs
                 ret
 
 ; ------------------------------------------------------------
