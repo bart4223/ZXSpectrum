@@ -1,5 +1,5 @@
 ; ============================================================
-;  TRON fuer den ZX Spectrum 128K  -  Stufe 0: Spielfeld und Geruest
+;  TRON fuer den ZX Spectrum 128K  -  Stufe 1: Ein Motorrad faehrt
 ;  Assembler: pasmo (--tapbas)    Dateien: tron.asm / tron.tap
 ; ============================================================
 ;  Bildschirm: 32x24 Zellen
@@ -21,7 +21,17 @@ plus_avail      equ VARS+0x200  ; 1 = ULAplus vorhanden
 plus_on         equ VARS+0x201  ; 1 = erweiterter Farbraum aktiv
 key_prev        equ VARS+0x202  ; letzter Zustand Taste C (Bit 3, 0 = gedrueckt)
 txt_attr        equ VARS+0x203  ; Attribut fuer print_str
+bx              equ VARS+0x210  ; Kopf X (Pixel)
+by              equ VARS+0x211  ; Kopf Y (Pixel)
+bdir            equ VARS+0x212  ; gewuenschte Richtung 0=hoch 1=rechts 2=runter 3=links
+mdir            equ VARS+0x213  ; zuletzt gefahrene Richtung (Umkehrsperre)
+tick            equ VARS+0x214  ; Frame-Zaehler fuer das Tempo
 testres         equ VARS+0x300  ; Ergebnisse des Selbsttests
+owner           equ VARS+0x400  ; Besitzer-Tabelle 32x24 (0 leer, 1 = P1, 2 = P2, 3 = beide)
+
+STEP_FRAMES     equ 1           ; Frames pro Schritt (1 = 50 Pixel/s, Feldbreite in ca. 5 s)
+START_X         equ 64
+START_Y         equ 104
 
 ATTR_FIELD      equ 0x47        ; BRIGHT, Paper 0, Ink 7
 ATTR_FRAME      equ 0x43        ; BRIGHT, Paper 0, Ink 3 (Magenta/Violett)
@@ -55,10 +65,7 @@ start:
                 call apply_mode
 
                 call init_ytab
-                call cls
-                call draw_frame
-                call draw_field_attrs
-                call draw_hud
+                call new_round
 
                 if TESTMODE
                 call selftest
@@ -69,7 +76,155 @@ start:
 main:
                 halt
                 call read_keys
+                call read_joy1
+                call game_step
                 jr main
+
+; ------------------------------------------------------------
+;  Spielablauf (Stufe 1: ein Motorrad, noch keine Kollision)
+; ------------------------------------------------------------
+; Neues Spielfeld aufbauen und Motorrad an den Start setzen
+new_round:
+                call cls
+                call draw_frame
+                call draw_field_attrs
+                call draw_hud
+                ; weiter mit init_game
+
+init_game:
+                ld hl,owner
+                ld de,owner+1
+                ld bc,767
+                ld (hl),0
+                ldir
+                ld a,START_X
+                ld (bx),a
+                ld e,a
+                ld a,START_Y
+                ld (by),a
+                ld d,a
+                ld a,1                  ; faehrt nach rechts los
+                ld (bdir),a
+                ld (mdir),a
+                xor a
+                ld (tick),a
+                jp plot_trail           ; Startpixel setzen
+
+; Sinclair-Joystick 1 (Tasten 6-0, Port 0xEFFE, Bit = 0 wenn gedrueckt):
+; Bit 4 links, Bit 3 rechts, Bit 2 runter, Bit 1 hoch, Bit 0 Feuer
+; Richtungswunsch wird gemerkt; Umkehr um 180 Grad (gegenueber der zuletzt
+; gefahrenen Richtung) wird ignoriert. Feuer = neue Runde (Stufe 1: Neustart).
+read_joy1:
+                ld a,0xEF
+                in a,(0xFE)
+                ld b,a
+                bit 0,b
+                jp z,new_round          ; Feuer
+                ld a,(mdir)
+                ld c,a
+                bit 1,b
+                jr nz,rj_noup
+                ld a,0                  ; hoch
+                jr rj_try
+rj_noup:  bit 2,b
+                jr nz,rj_nodown
+                ld a,2                  ; runter
+                jr rj_try
+rj_nodown:  bit 4,b
+                jr nz,rj_noleft
+                ld a,3                  ; links
+                jr rj_try
+rj_noleft: bit 3,b
+                ret nz
+                ld a,1                  ; rechts
+rj_try:
+                ld d,a
+                xor c
+                cp 2                    ; Gegenrichtung der zuletzt gefahrenen?
+                ret z
+                ld a,d
+                ld (bdir),a
+                ret
+
+; Einen Schritt, wenn das Tempo es erlaubt
+game_step:
+                ld a,(tick)
+                inc a
+                ld (tick),a
+                cp STEP_FRAMES
+                ret c
+                xor a
+                ld (tick),a
+                ld a,(bx)
+                ld e,a
+                ld a,(by)
+                ld d,a
+                ld a,(bdir)
+                or a
+                jr z,gs_up
+                cp 1
+                jr z,gs_right
+                cp 2
+                jr z,gs_down
+                dec e                   ; links
+                jr gs_go
+gs_up:          dec d
+                jr gs_go
+gs_right:       inc e
+                jr gs_go
+gs_down:        inc d
+gs_go:          push de
+                call pixel_test
+                pop de
+                ret nz                  ; Wand oder Spur: stehen bleiben (bis Stufe 2)
+                ld a,(bdir)
+                ld (mdir),a
+                ld a,e
+                ld (bx),a
+                ld a,d
+                ld (by),a
+                ; weiter mit plot_trail
+
+; D=y, E=x: Spurpixel setzen, Besitzer eintragen, Zelle faerben
+plot_trail:
+                push de
+                call pixel_set
+                pop de
+                call cell_index
+                push hl
+                ld bc,owner
+                add hl,bc
+                ld a,(hl)
+                or 1
+                ld (hl),a
+                pop hl
+                ld bc,0x5800
+                add hl,bc
+                ld (hl),ATTR_P1
+                ret
+
+; D=y, E=x -> HL = Zellindex (Zeile*32 + Spalte), DE bleibt erhalten
+cell_index:
+                ld a,d
+                rrca
+                rrca
+                rrca
+                and 0x1F
+                ld l,a
+                ld h,0
+                add hl,hl
+                add hl,hl
+                add hl,hl
+                add hl,hl
+                add hl,hl
+                ld a,e
+                rrca
+                rrca
+                rrca
+                and 0x1F
+                add a,l
+                ld l,a
+                ret
 
 ; ------------------------------------------------------------
 ;  Bildschirm

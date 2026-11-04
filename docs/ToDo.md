@@ -38,22 +38,30 @@ Der Spectrum kennt nur eine Ink-Farbe pro 8x8-Zelle. Zwei Spuren in derselben Ze
 - Zeilenadress-Tabelle für Y (192 Einträge) und Bitmasken-Tabelle für X.
 - Ergebnis: leeres Spielfeld im Emulator und auf dem Gerät.
 
+- State: Done
+
 ### Stufe 1 – Ein Kopf läuft
 - Ein Lichtmotorrad, Joystick 1 steuert vier Richtungen, Umkehr gesperrt.
 - Kopf setzt pro Schritt ein Pixel (Spur), Besitzer-Tabelle wird gepflegt.
 - Tempo über Frames pro Schritt, Startwert so, dass die Querung des Felds etwa 5 Sekunden dauert.
 - Noch keine Kollision.
 
+- State: InProgress
+
 ### Stufe 2 – Kollision und Crash
 - Pixeltest am Zielpixel: Wand, eigene Spur, fremde Spur.
 - Crash-Animation (kleine Explosion aus Pixeln/Zellen), Crash-Sound (Beeper-Rauschen).
 - Rundenende, kurze Pause, Neustart des Felds.
+
+- State: Open
 
 ### Stufe 3 – Zwei Spieler
 - Zweiter Kopf mit Joystick 2, Kontext-Tausch per `swap_ctx` wie bei Pacman.
 - Gleichzeitige Zugermittlung: beide Ziele zuerst prüfen, dann setzen.
 - Frontalzusammenstoß und gleicher Zielpixel = **Remis**.
 - Sieger/Remis-Anzeige am Rundenende.
+
+- State: Open
 
 ### Stufe 4 – Farben und Kreuzungen
 - Besitzer-Tabelle steuert Zellfarbe: Spur 1, Spur 2, Kreuzung.
@@ -65,17 +73,23 @@ Der Spectrum kennt nur eine Ink-Farbe pro 8x8-Zelle. Zwei Spuren in derselben Ze
 - Pause (P), Rundenende-Jingle, Matchende-Anzeige.
 - Startsequenz: kurzer Countdown, Köpfe stehen sichtbar am Start.
 
+- State: Open
+
 ### Stufe 6 – Titelbild und Menü
 - Titelbild im Neon-Look, Moduswahl per Joystick (links/hoch = 1 Spieler, rechts/runter = 2 Spieler).
 - Tempo-Auswahl vor dem Start (wie bei Pong).
 - Lautstärke per T (fünf Stufen plus Aus).
 - Rekord/Siegesserie im Titelbild.
 
+- State: Open
+
 ### Stufe 7 – Computergegner (Einzelspieler)
 - 7a: Geradeaus fahren, 1-3 Pixel vorausschauen, bei Hindernis abbiegen (Seite mit mehr freiem Raum).
 - 7b: Raumbewertung per begrenztem Flood-Fill (welche Richtung lässt mehr freie Fläche?), Fehlerquote einstellbar.
 - 7c: Schwierigkeitsstufen (leicht / mittel / schwer) über Vorausschau-Tiefe und Reaktionszufall.
 - Test: Headless-Läufe computer gegen computer, um Endlosschleifen und Selbstmordmuster zu finden.
+
+- State: Open
 
 ### Stufe 8 – Sound (128K)
 - AY-Titelmusik, Crash- und Siegeseffekte, kein Dauergeräusch im Spiel (wie bei XBlast Pro).
@@ -86,11 +100,15 @@ Der Spectrum kennt nur eine Ink-Farbe pro 8x8-Zelle. Zwei Spuren in derselben Ze
 - Hindernisse werden als gesetzte Pixel/Zellen angelegt und bekommen eigene Wandfarbe.
 - Zufällige Arena pro Runde oder wählbar im Menü.
 
+- State: Open
+
 ### Stufe 10 – Feinschliff und Extras (optional, einzeln freigebbar)
 - Boost mit Feuertaste (kurz schneller, begrenzt).
 - Lücken-Sprung (ein Pixel Lücke in der eigenen Spur).
 - Abspann/Siegerbild, Rekord-Anzeige verfeinern.
 - Weitere Ideen nach Geschmack.
+
+- State: Open
 
 ## Technische Hinweise
 
