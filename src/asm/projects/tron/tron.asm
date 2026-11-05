@@ -1,5 +1,5 @@
 ; ============================================================
-;  TRON fuer den ZX Spectrum 128K  -  Stufe 1: Ein Motorrad faehrt
+;  TRON fuer den ZX Spectrum 128K  -  Stufe 2: Kollision, Crash (AY-Sound), Rundenende
 ;  Assembler: pasmo (--tapbas)    Dateien: tron.asm / tron.tap
 ; ============================================================
 ;  Bildschirm: 32x24 Zellen
@@ -26,12 +26,16 @@ by              equ VARS+0x211  ; Kopf Y (Pixel)
 bdir            equ VARS+0x212  ; gewuenschte Richtung 0=hoch 1=rechts 2=runter 3=links
 mdir            equ VARS+0x213  ; zuletzt gefahrene Richtung (Umkehrsperre)
 tick            equ VARS+0x214  ; Frame-Zaehler fuer das Tempo
+state           equ VARS+0x215  ; 0 = Fahrt, 1 = Crash-Animation, 2 = Pause nach dem Crash
+anim            equ VARS+0x216  ; Bildzaehler fuer Animation und Pause
 testres         equ VARS+0x300  ; Ergebnisse des Selbsttests
 owner           equ VARS+0x400  ; Besitzer-Tabelle 32x24 (0 leer, 1 = P1, 2 = P2, 3 = beide)
 
 STEP_FRAMES     equ 1           ; Frames pro Schritt (1 = 50 Pixel/s, Feldbreite in ca. 5 s)
 START_X         equ 64
 START_Y         equ 104
+CRASH_FRAMES    equ 30          ; Dauer der Funken-Animation (Frames)
+WAIT_FRAMES     equ 75          ; Pause nach der Animation bis zur neuen Runde (1,5 s)
 
 ATTR_FIELD      equ 0x47        ; BRIGHT, Paper 0, Ink 7
 ATTR_FRAME      equ 0x43        ; BRIGHT, Paper 0, Ink 3 (Magenta/Violett)
@@ -77,11 +81,20 @@ main:
                 halt
                 call read_keys
                 call read_joy1
+                ld a,(state)
+                or a
+                jr nz,m_other
                 call game_step
+                jr main
+m_other:        cp 1
+                jr nz,m_wait
+                call crash_step
+                jr main
+m_wait:         call wait_step
                 jr main
 
 ; ------------------------------------------------------------
-;  Spielablauf (Stufe 1: ein Motorrad, noch keine Kollision)
+;  Spielablauf (Stufe 2: ein Motorrad, Kollision, Crash, Neustart)
 ; ------------------------------------------------------------
 ; Neues Spielfeld aufbauen und Motorrad an den Start setzen
 new_round:
@@ -92,6 +105,7 @@ new_round:
                 ; weiter mit init_game
 
 init_game:
+                call ay_silence
                 ld hl,owner
                 ld de,owner+1
                 ld bc,767
@@ -108,12 +122,14 @@ init_game:
                 ld (mdir),a
                 xor a
                 ld (tick),a
+                ld (state),a
+                ld (anim),a
                 jp plot_trail           ; Startpixel setzen
 
 ; Sinclair-Joystick 1 (Tasten 6-0, Port 0xEFFE, Bit = 0 wenn gedrueckt):
 ; Bit 4 links, Bit 3 rechts, Bit 2 runter, Bit 1 hoch, Bit 0 Feuer
 ; Richtungswunsch wird gemerkt; Umkehr um 180 Grad (gegenueber der zuletzt
-; gefahrenen Richtung) wird ignoriert. Feuer = neue Runde (Stufe 1: Neustart).
+; gefahrenen Richtung) wird ignoriert. Feuer = sofort neue Runde (jederzeit).
 read_joy1:
                 ld a,0xEF
                 in a,(0xFE)
@@ -176,7 +192,7 @@ gs_down:        inc d
 gs_go:          push de
                 call pixel_test
                 pop de
-                ret nz                  ; Wand oder Spur: stehen bleiben (bis Stufe 2)
+                jr nz,crash_start       ; Wand oder Spur im Weg: Crash
                 ld a,(bdir)
                 ld (mdir),a
                 ld a,e
@@ -225,6 +241,225 @@ cell_index:
                 add a,l
                 ld l,a
                 ret
+
+; ------------------------------------------------------------
+;  Crash (Stufe 2)
+; ------------------------------------------------------------
+crash_start:
+                ld a,1
+                ld (state),a
+                xor a
+                ld (anim),a
+                ld a,7
+                ld e,0x23               ; Mixer: Ton C + Rauschen A und B an, Rest aus
+                jp ay_wr
+
+; Ein Bild der Funken-Animation: alten Ring loeschen, neuen zeichnen, Rauschen
+; (Funken werden per XOR gesetzt; das zweite XOR stellt den Untergrund exakt her)
+crash_step:
+                ld a,(anim)
+                or a
+                jr z,cs_nodel
+                call sparks_xor         ; A = Radius des zuletzt gezeichneten Rings
+cs_nodel:
+                ld a,(anim)
+                inc a
+                ld (anim),a
+                cp CRASH_FRAMES+1
+                jr nc,cs_end
+                call sparks_xor
+                jp crash_sound
+cs_end:
+                call ay_silence
+                ld a,2
+                ld (state),a
+                xor a
+                ld (anim),a
+                ret
+
+; Pause nach dem Crash, danach neue Runde
+wait_step:
+                ld a,(anim)
+                inc a
+                ld (anim),a
+                cp WAIT_FRAMES
+                ret c
+                jp new_round
+
+; A = Radius: drei Ringe (Radius, Radius-3, Radius-6) mit je 8 Funken per XOR
+sparks_xor:
+                ld c,a
+                or a
+                ret z
+                ld b,3
+sx1:            push bc
+                call ring8
+                pop bc
+                ld a,c
+                sub 3
+                ret z
+                ret c
+                ld c,a
+                djnz sx1
+                ret
+
+; C = Radius (>= 1), Mitte = Kopf (bx,by); Funken ausserhalb des Bildes entfallen
+ring8:
+                ld ix,dirtab
+                ld b,8
+r8l:            push bc
+                ld a,(bx)
+                ld l,a
+                ld h,0
+                ld a,(ix+0)
+                call add_off
+                ld a,h
+                or a
+                jr nz,r8skip
+                ld e,l
+                ld a,(by)
+                ld l,a
+                ld h,0
+                ld a,(ix+1)
+                call add_off
+                ld a,h
+                or a
+                jr nz,r8skip
+                ld a,l
+                cp 192
+                jr nc,r8skip
+                ld d,a
+                call pixel_xor
+r8skip:         inc ix
+                inc ix
+                pop bc
+                djnz r8l
+                ret
+
+; HL = HL + A * C   (A = 0, 1 oder 0xFF; C = Radius; 16 Bit)
+add_off:
+                or a
+                ret z
+                cp 1
+                jr z,ao_plus
+                ld a,l
+                sub c
+                ld l,a
+                ret nc
+                dec h
+                ret
+ao_plus:        ld a,l
+                add a,c
+                ld l,a
+                ret nc
+                inc h
+                ret
+
+; D=y, E=x: Pixel umschalten
+pixel_xor:
+                call pixel_addr
+                xor (hl)
+                ld (hl),a
+                ret
+
+; Richtungen (dx,dy): hoch, hoch-rechts, rechts, runter-rechts, runter, runter-links, links, hoch-links
+dirtab:         db 0,0xFF, 1,0xFF, 1,0, 1,1, 0,1, 0xFF,1, 0xFF,0, 0xFF,0xFF
+
+; ------------------------------------------------------------
+;  Sound ueber den AY-3-8912 (128K): Register 0xFFFD, Daten 0xBFFD
+; ------------------------------------------------------------
+; A = Register, E = Wert
+ay_wr:
+                ld bc,0xFFFD
+                out (c),a
+                ld b,0xBF
+                out (c),e
+                ret
+
+; A = Register, (HL) = Wert, HL wird weitergezaehlt
+ay_out_hl:
+                ld bc,0xFFFD
+                out (c),a
+                ld a,(hl)
+                inc hl
+                ld b,0xBF
+                out (c),a
+                ret
+
+; alles stumm: Lautstaerken 0, Mixer alles aus
+ay_silence:
+                ld e,0
+                ld a,8
+                call ay_wr
+                ld a,9
+                call ay_wr
+                ld a,10
+                call ay_wr
+                ld a,7
+                ld e,0x3F
+                jp ay_wr
+
+; Crash-Sound pro Bild k = anim (1..30): sechs Register aus aytab
+; Kanal A+B: Rauschen (hell -> dumpf, laut -> leise), Kanal C: tiefer fallender Ton
+crash_sound:
+                ld a,(anim)
+                dec a
+                ld l,a
+                ld h,0
+                ld d,h
+                ld e,l
+                add hl,hl
+                add hl,hl               ; 4k
+                add hl,de
+                add hl,de               ; 6k
+                ld de,aytab
+                add hl,de
+                ld a,6                  ; Rauschperiode
+                call ay_out_hl
+                ld a,8                  ; Lautstaerke A
+                call ay_out_hl
+                ld a,9                  ; Lautstaerke B
+                call ay_out_hl
+                ld a,10                 ; Lautstaerke C
+                call ay_out_hl
+                ld a,4                  ; Tonperiode C, tief
+                call ay_out_hl
+                ld a,5                  ; Tonperiode C, hoch
+                jp ay_out_hl
+
+; je Bild: Rauschperiode, Lautstaerke A, B, C, Tonperiode C (lo, hi)   [erzeugt von tools/aytab.py]
+aytab:
+                db 3,15,13,13,144,1
+                db 4,15,13,12,213,1
+                db 4,14,12,12,26,2
+                db 5,14,12,11,95,2
+                db 6,13,11,11,164,2
+                db 7,13,11,10,233,2
+                db 7,12,10,9,46,3
+                db 8,12,10,9,115,3
+                db 9,11,9,8,184,3
+                db 10,11,9,8,253,3
+                db 10,10,8,7,66,4
+                db 11,10,8,6,135,4
+                db 12,9,7,6,204,4
+                db 12,9,7,5,17,5
+                db 13,8,6,5,86,5
+                db 14,8,6,4,154,5
+                db 15,7,5,4,223,5
+                db 15,7,5,3,36,6
+                db 16,6,4,2,105,6
+                db 17,6,4,2,174,6
+                db 17,5,3,1,243,6
+                db 18,5,3,1,56,7
+                db 19,4,2,0,125,7
+                db 20,4,2,0,194,7
+                db 20,3,1,0,7,8
+                db 21,3,1,0,76,8
+                db 22,2,0,0,145,8
+                db 23,2,0,0,214,8
+                db 23,1,0,0,27,9
+                db 24,1,0,0,96,9
+
 
 ; ------------------------------------------------------------
 ;  Bildschirm

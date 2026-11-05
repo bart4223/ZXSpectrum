@@ -15,7 +15,7 @@
 | Tempo | Takt über HALT (50 Hz), Schritte pro Frame einstellbar; bei zwei Schritten pro Frame wird jeder Schritt einzeln geprüft |
 | Gleichzeitigkeit | Beide Köpfe ermitteln zuerst ihr Zielpixel, dann wird geprüft, erst danach gesetzt (fair, Remis möglich) |
 | Farben | ULAplus automatisch an, "Classic" nur als Fallback; Spur 1 und Spur 2 in je einer Ink-Farbe, Hintergrund schwarz |
-| Ton | Beeper-Effekte in allen Stufen, AY-Musik/Effekte in Stufe 8; Taste T schaltet die Lautstärke durch |
+| Ton | alle Stufen AY-Musik/Effekte und Taste T schaltet die Lautstärke durch |
 | Taste P | Pause |
 
 ### Das Attribut-Problem (1-Pixel-Spur)
@@ -46,14 +46,14 @@ Der Spectrum kennt nur eine Ink-Farbe pro 8x8-Zelle. Zwei Spuren in derselben Ze
 - Tempo über Frames pro Schritt, Startwert so, dass die Querung des Felds etwa 5 Sekunden dauert.
 - Noch keine Kollision.
 
-- State: InProgress
+- State: Done
 
 ### Stufe 2 – Kollision und Crash
 - Pixeltest am Zielpixel: Wand, eigene Spur, fremde Spur.
 - Crash-Animation (kleine Explosion aus Pixeln/Zellen), Crash-Sound (Beeper-Rauschen).
 - Rundenende, kurze Pause, Neustart des Felds.
 
-- State: Open
+- State: InProgress
 
 ### Stufe 3 – Zwei Spieler
 - Zweiter Kopf mit Joystick 2, Kontext-Tausch per `swap_ctx` wie bei Pacman.
