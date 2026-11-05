@@ -1,5 +1,5 @@
 ; ============================================================
-;  TRON fuer den ZX Spectrum 128K  -  Stufe 2: Kollision, Crash (AY-Sound), Rundenende
+;  TRON fuer den ZX Spectrum 128K  -  Stufe 3: Zwei Spieler, Remis, Sieger-Anzeige
 ;  Assembler: pasmo (--tapbas)    Dateien: tron.asm / tron.tap
 ; ============================================================
 ;  Bildschirm: 32x24 Zellen
@@ -21,16 +21,19 @@ plus_avail      equ VARS+0x200  ; 1 = ULAplus vorhanden
 plus_on         equ VARS+0x201  ; 1 = erweiterter Farbraum aktiv
 key_prev        equ VARS+0x202  ; letzter Zustand Taste C (Bit 3, 0 = gedrueckt)
 txt_attr        equ VARS+0x203  ; Attribut fuer print_str
-bx              equ VARS+0x210  ; Kopf X (Pixel)
-by              equ VARS+0x211  ; Kopf Y (Pixel)
-bdir            equ VARS+0x212  ; gewuenschte Richtung 0=hoch 1=rechts 2=runter 3=links
-mdir            equ VARS+0x213  ; zuletzt gefahrene Richtung (Umkehrsperre)
-tick            equ VARS+0x214  ; Frame-Zaehler fuer das Tempo
-state           equ VARS+0x215  ; 0 = Fahrt, 1 = Crash-Animation, 2 = Pause nach dem Crash
-anim            equ VARS+0x216  ; Bildzaehler fuer Animation und Pause
+CTX1            equ VARS+0x210  ; Kontext Spieler 1 (16 Byte, siehe Spielablauf)
+CTX2            equ VARS+0x220  ; Kontext Spieler 2
+tick            equ VARS+0x240  ; Frame-Zaehler fuer das Tempo
+state           equ VARS+0x241  ; 0 = Fahrt, 1 = Crash-Animation, 2 = Pause nach dem Crash
+anim            equ VARS+0x242  ; Bildzaehler fuer Animation und Pause
+result          equ VARS+0x243  ; Rundenergebnis: 0 offen, 1 = P1 gewinnt, 2 = P2 gewinnt, 3 = Remis
+scx             equ VARS+0x244  ; Mitte der Funken (X)
+scy             equ VARS+0x245  ; Mitte der Funken (Y)
+spk_r           equ VARS+0x246  ; Radius der Funken
 testres         equ VARS+0x300  ; Ergebnisse des Selbsttests
 owner           equ VARS+0x400  ; Besitzer-Tabelle 32x24 (0 leer, 1 = P1, 2 = P2, 3 = beide)
 
+TWO_PLAYERS     equ 1           ; 0 = nur Spieler 1 (Testbau)
 STEP_FRAMES     equ 1           ; Frames pro Schritt (1 = 50 Pixel/s, Feldbreite in ca. 5 s)
 START_X         equ 64
 START_Y         equ 104
@@ -43,6 +46,7 @@ ATTR_BLACK      equ 0x40
 ATTR_P1         equ 0x45        ; Cyan
 ATTR_P2         equ 0x42        ; Rot/Orange
 ATTR_TITLE      equ 0x46        ; Gelb
+ATTR_CROSS      equ 0x47        ; Weiss: Zelle von beiden Spuren befahren
 
 ROW_FRAME_TOP   equ 2
 ROW_FRAME_BOT   equ 23
@@ -81,6 +85,7 @@ main:
                 halt
                 call read_keys
                 call read_joy1
+                call read_joy2
                 ld a,(state)
                 or a
                 jr nz,m_other
@@ -94,9 +99,22 @@ m_wait:         call wait_step
                 jr main
 
 ; ------------------------------------------------------------
-;  Spielablauf (Stufe 2: ein Motorrad, Kollision, Crash, Neustart)
+;  Spielablauf (Stufe 3: zwei Motorraeder, Kollision, Crash, Neustart)
 ; ------------------------------------------------------------
-; Neues Spielfeld aufbauen und Motorrad an den Start setzen
+; Kontext je Spieler (16 Byte, Zugriff ueber IX):
+;   +0 X   +1 Y   +2 Wunschrichtung   +3 zuletzt gefahrene Richtung   +4 Kennung (1/2)
+;   +5 Status (0 nicht dabei, 1 faehrt, 2 gecrasht)   +6/+7 Zielpixel X/Y   +8 Ziel belegt
+C_X             equ 0
+C_Y             equ 1
+C_DIR           equ 2
+C_MDIR          equ 3
+C_ID            equ 4
+C_STAT          equ 5
+C_TX            equ 6
+C_TY            equ 7
+C_HIT           equ 8
+
+; Neues Spielfeld aufbauen und beide Motorraeder an den Start setzen
 new_round:
                 call cls
                 call draw_frame
@@ -111,58 +129,99 @@ init_game:
                 ld bc,767
                 ld (hl),0
                 ldir
-                ld a,START_X
-                ld (bx),a
-                ld e,a
-                ld a,START_Y
-                ld (by),a
-                ld d,a
-                ld a,1                  ; faehrt nach rechts los
-                ld (bdir),a
-                ld (mdir),a
+                ld hl,ctx_init1
+                ld de,CTX1
+                ld bc,9
+                ldir
+                ld hl,ctx_init2
+                ld de,CTX2
+                ld bc,9
+                ldir
                 xor a
                 ld (tick),a
                 ld (state),a
                 ld (anim),a
-                jp plot_trail           ; Startpixel setzen
+                ld (result),a
+                ld ix,CTX1
+                call plot_head          ; Startpixel
+                ld a,(CTX2+C_STAT)
+                or a
+                ret z
+                ld ix,CTX2
+                jp plot_head
+
+; X, Y, Wunschrichtung, letzte Richtung, Kennung, Status (TWO_PLAYERS), Ziel X/Y, belegt
+ctx_init1:      db START_X,START_Y,1,1,1,1,0,0,0
+ctx_init2:      db 255-START_X,START_Y,3,3,2,TWO_PLAYERS,0,0,0
 
 ; Sinclair-Joystick 1 (Tasten 6-0, Port 0xEFFE, Bit = 0 wenn gedrueckt):
 ; Bit 4 links, Bit 3 rechts, Bit 2 runter, Bit 1 hoch, Bit 0 Feuer
-; Richtungswunsch wird gemerkt; Umkehr um 180 Grad (gegenueber der zuletzt
-; gefahrenen Richtung) wird ignoriert. Feuer = sofort neue Runde (jederzeit).
 read_joy1:
                 ld a,0xEF
                 in a,(0xFE)
                 ld b,a
                 bit 0,b
-                jp z,new_round          ; Feuer
-                ld a,(mdir)
-                ld c,a
+                jp z,new_round          ; Feuer: sofort neue Runde
+                ld ix,CTX1
                 bit 1,b
-                jr nz,rj_noup
-                ld a,0                  ; hoch
-                jr rj_try
-rj_noup:  bit 2,b
-                jr nz,rj_nodown
+                jr nz,rj1_nu
+                xor a                   ; hoch
+                jr apply_dir
+rj1_nu:         bit 2,b
+                jr nz,rj1_nd
                 ld a,2                  ; runter
-                jr rj_try
-rj_nodown:  bit 4,b
-                jr nz,rj_noleft
+                jr apply_dir
+rj1_nd:         bit 4,b
+                jr nz,rj1_nl
                 ld a,3                  ; links
-                jr rj_try
-rj_noleft: bit 3,b
+                jr apply_dir
+rj1_nl:         bit 3,b
                 ret nz
                 ld a,1                  ; rechts
-rj_try:
+                jr apply_dir
+
+; Sinclair-Joystick 2 (Tasten 1-5, Port 0xF7FE, Bit = 0 wenn gedrueckt):
+; Bit 0 links, Bit 1 rechts, Bit 2 runter, Bit 3 hoch, Bit 4 Feuer
+read_joy2:
+                ld a,0xF7
+                in a,(0xFE)
+                ld b,a
+                bit 4,b
+                jp z,new_round          ; Feuer: sofort neue Runde
+                ld ix,CTX2
+                bit 3,b
+                jr nz,rj2_nu
+                xor a                   ; hoch
+                jr apply_dir
+rj2_nu:         bit 2,b
+                jr nz,rj2_nd
+                ld a,2                  ; runter
+                jr apply_dir
+rj2_nd:         bit 0,b
+                jr nz,rj2_nl
+                ld a,3                  ; links
+                jr apply_dir
+rj2_nl:         bit 1,b
+                ret nz
+                ld a,1                  ; rechts
+                ; weiter mit apply_dir
+
+; A = gewuenschte Richtung, IX = Kontext. Umkehr um 180 Grad gegenueber der
+; zuletzt gefahrenen Richtung wird ignoriert.
+apply_dir:
                 ld d,a
-                xor c
-                cp 2                    ; Gegenrichtung der zuletzt gefahrenen?
+                xor (ix+C_MDIR)
+                cp 2
                 ret z
                 ld a,d
-                ld (bdir),a
+                ld (ix+C_DIR),a
                 ret
 
-; Einen Schritt, wenn das Tempo es erlaubt
+; Ein Schritt fuer beide Spieler, wenn das Tempo es erlaubt:
+;  1. Ziele beider Spieler bestimmen und auf Belegung pruefen (noch nichts zeichnen)
+;  2. gleiches Ziel: beide verlieren (Remis)
+;  3. Zuege ausfuehren bzw. Crash eintragen
+;  4. Rundenende pruefen
 game_step:
                 ld a,(tick)
                 inc a
@@ -171,38 +230,104 @@ game_step:
                 ret c
                 xor a
                 ld (tick),a
-                ld a,(bx)
-                ld e,a
-                ld a,(by)
-                ld d,a
-                ld a,(bdir)
-                or a
-                jr z,gs_up
-                cp 1
-                jr z,gs_right
+                ld ix,CTX1
+                call calc_target
+                ld ix,CTX2
+                call calc_target
+                ld a,(CTX1+C_STAT)
+                ld b,a
+                ld a,(CTX2+C_STAT)
+                and b
+                jr z,gs_noshare
+                ld a,(CTX1+C_TX)
+                ld b,a
+                ld a,(CTX2+C_TX)
+                cp b
+                jr nz,gs_noshare
+                ld a,(CTX1+C_TY)
+                ld b,a
+                ld a,(CTX2+C_TY)
+                cp b
+                jr nz,gs_noshare
+                ld a,1                  ; beide wollen dasselbe Pixel: beide crashen
+                ld (CTX1+C_HIT),a
+                ld (CTX2+C_HIT),a
+gs_noshare:
+                ld ix,CTX1
+                call move_or_crash
+                ld ix,CTX2
+                call move_or_crash
+                ld b,0
+                ld a,(CTX1+C_STAT)
                 cp 2
-                jr z,gs_down
-                dec e                   ; links
-                jr gs_go
-gs_up:          dec d
-                jr gs_go
-gs_right:       inc e
-                jr gs_go
-gs_down:        inc d
-gs_go:          push de
-                call pixel_test
-                pop de
-                jr nz,crash_start       ; Wand oder Spur im Weg: Crash
-                ld a,(bdir)
-                ld (mdir),a
-                ld a,e
-                ld (bx),a
-                ld a,d
-                ld (by),a
-                ; weiter mit plot_trail
+                jr nz,ge1
+                set 0,b                 ; P1 gecrasht
+ge1:            ld a,(CTX2+C_STAT)
+                cp 2
+                jr nz,ge2
+                set 1,b                 ; P2 gecrasht
+ge2:            ld a,b
+                or a
+                ret z                   ; niemand gecrasht: weiterfahren
+                cp 3
+                jr z,ge_set             ; beide: Remis (3)
+                xor 3                   ; nur P1 gecrasht -> P2 gewinnt (2), nur P2 -> P1 gewinnt (1)
+ge_set:         ld (result),a
+                jp crash_start
 
-; D=y, E=x: Spurpixel setzen, Besitzer eintragen, Zelle faerben
-plot_trail:
+; IX = Kontext: Zielpixel bestimmen, Belegung (Wand oder Spur) merken
+calc_target:
+                ld a,(ix+C_STAT)
+                cp 1
+                ret nz
+                ld e,(ix+C_X)
+                ld d,(ix+C_Y)
+                ld a,(ix+C_DIR)
+                or a
+                jr z,ct_up
+                cp 1
+                jr z,ct_right
+                cp 2
+                jr z,ct_down
+                dec e                   ; links
+                jr ct_go
+ct_up:          dec d
+                jr ct_go
+ct_right:       inc e
+                jr ct_go
+ct_down:        inc d
+ct_go:          ld (ix+C_TX),e
+                ld (ix+C_TY),d
+                call pixel_test         ; Z = frei, NZ = belegt (DE bleibt erhalten)
+                ld a,0
+                jr z,ct_set
+                inc a
+ct_set:         ld (ix+C_HIT),a
+                ret
+
+; IX = Kontext: Zielpixel belegt -> gecrasht, sonst Kopf ziehen und Spur setzen
+move_or_crash:
+                ld a,(ix+C_STAT)
+                cp 1
+                ret nz
+                ld a,(ix+C_HIT)
+                or a
+                jr z,moc_move
+                ld (ix+C_STAT),2
+                ret
+moc_move:       ld a,(ix+C_DIR)
+                ld (ix+C_MDIR),a
+                ld a,(ix+C_TX)
+                ld (ix+C_X),a
+                ld a,(ix+C_TY)
+                ld (ix+C_Y),a
+                ; weiter mit plot_head
+
+; IX = Kontext: Kopfpixel setzen, Besitzer eintragen, Zelle nach Besitzer faerben
+; (1 = P1 cyan, 2 = P2 orange, 3 = beide: Kreuzungsfarbe)
+plot_head:
+                ld d,(ix+C_Y)
+                ld e,(ix+C_X)
                 push de
                 call pixel_set
                 pop de
@@ -211,13 +336,20 @@ plot_trail:
                 ld bc,owner
                 add hl,bc
                 ld a,(hl)
-                or 1
+                or (ix+C_ID)
                 ld (hl),a
+                ld e,a
+                ld d,0
+                ld hl,attr_by_owner
+                add hl,de
+                ld a,(hl)
                 pop hl
                 ld bc,0x5800
                 add hl,bc
-                ld (hl),ATTR_P1
+                ld (hl),a
                 ret
+
+attr_by_owner:  db ATTR_FIELD,ATTR_P1,ATTR_P2,ATTR_CROSS
 
 ; D=y, E=x -> HL = Zellindex (Zeile*32 + Spalte), DE bleibt erhalten
 cell_index:
@@ -250,6 +382,7 @@ crash_start:
                 ld (state),a
                 xor a
                 ld (anim),a
+                call show_result
                 ld a,7
                 ld e,0x23               ; Mixer: Ton C + Rauschen A und B an, Rest aus
                 jp ay_wr
@@ -260,14 +393,14 @@ crash_step:
                 ld a,(anim)
                 or a
                 jr z,cs_nodel
-                call sparks_xor         ; A = Radius des zuletzt gezeichneten Rings
+                call sparks_both        ; A = Radius des zuletzt gezeichneten Rings
 cs_nodel:
                 ld a,(anim)
                 inc a
                 ld (anim),a
                 cp CRASH_FRAMES+1
                 jr nc,cs_end
-                call sparks_xor
+                call sparks_both
                 jp crash_sound
 cs_end:
                 call ay_silence
@@ -286,6 +419,23 @@ wait_step:
                 ret c
                 jp new_round
 
+; A = Radius: Funken fuer jeden gecrashten Spieler (Mitte = sein Kopf)
+sparks_both:
+                ld (spk_r),a
+                ld ix,CTX1
+                call spark_ctx
+                ld ix,CTX2
+spark_ctx:
+                ld a,(ix+C_STAT)
+                cp 2
+                ret nz
+                ld a,(ix+C_X)
+                ld (scx),a
+                ld a,(ix+C_Y)
+                ld (scy),a
+                ld a,(spk_r)
+                jp sparks_xor
+
 ; A = Radius: drei Ringe (Radius, Radius-3, Radius-6) mit je 8 Funken per XOR
 sparks_xor:
                 ld c,a
@@ -303,12 +453,12 @@ sx1:            push bc
                 djnz sx1
                 ret
 
-; C = Radius (>= 1), Mitte = Kopf (bx,by); Funken ausserhalb des Bildes entfallen
+; C = Radius (>= 1), Mitte = (scx,scy); Funken ausserhalb des Bildes entfallen
 ring8:
                 ld ix,dirtab
                 ld b,8
 r8l:            push bc
-                ld a,(bx)
+                ld a,(scx)
                 ld l,a
                 ld h,0
                 ld a,(ix+0)
@@ -317,7 +467,7 @@ r8l:            push bc
                 or a
                 jr nz,r8skip
                 ld e,l
-                ld a,(by)
+                ld a,(scy)
                 ld l,a
                 ld h,0
                 ld a,(ix+1)
@@ -572,7 +722,8 @@ dfa_set:        push de
 
 ; ------------------------------------------------------------
 ;  Text (eigener Mini-Zeichensatz, unabhaengig von der ROM)
-;  Glyphen: 0-9 Ziffern, 10=P, 11=T, 12=R, 13=O, 14=N, 15=Leerzeichen
+;  Glyphen: 0-9 Ziffern, 10=P, 11=T, 12=R, 13=O, 14=N, 15=Leerzeichen,
+;           16=G, 17=E, 18=W, 19=I, 20=M, 21=S
 ; ------------------------------------------------------------
 ; A=Glyphe, D=Zeile, E=Spalte (DE bleibt erhalten)
 put_glyph:
@@ -639,6 +790,32 @@ str_p1:         db 10,1,15,0,0,0,0xFF
 str_title:      db 11,12,13,14,0xFF
 str_p2:         db 10,2,15,0,0,0,0xFF
 
+; Ergebnis in HUD-Zeile 1: "P1 GEWINNT", "P2 GEWINNT" oder "REMIS"
+show_result:
+                ld a,(result)
+                cp 3
+                jr z,sr_draw
+                cp 2
+                jr z,sr_p2
+                ld a,ATTR_P1
+                ld hl,str_p1win
+                ld e,11
+                jr sr_print
+sr_p2:          ld a,ATTR_P2
+                ld hl,str_p2win
+                ld e,11
+                jr sr_print
+sr_draw:        ld a,ATTR_TITLE
+                ld hl,str_draw
+                ld e,13
+sr_print:       ld (txt_attr),a
+                ld d,1
+                jp print_str
+
+str_p1win:      db 10,1,15,16,17,18,19,14,14,11,0xFF
+str_p2win:      db 10,2,15,16,17,18,19,14,14,11,0xFF
+str_draw:       db 12,17,20,19,21,0xFF
+
 font:           ; 0-9
                 db 0x00,0x3C,0x46,0x4A,0x52,0x62,0x3C,0x00
                 db 0x00,0x18,0x28,0x08,0x08,0x08,0x3E,0x00
@@ -657,6 +834,13 @@ font:           ; 0-9
                 db 0x00,0x3C,0x42,0x42,0x42,0x42,0x3C,0x00
                 db 0x00,0x42,0x62,0x52,0x4A,0x46,0x42,0x00
                 db 0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00
+                ; G E W I M S
+                db 0x00,0x3C,0x42,0x40,0x4E,0x42,0x3C,0x00
+                db 0x00,0x7E,0x40,0x7C,0x40,0x40,0x7E,0x00
+                db 0x00,0x42,0x42,0x42,0x5A,0x66,0x42,0x00
+                db 0x00,0x3E,0x08,0x08,0x08,0x08,0x3E,0x00
+                db 0x00,0x42,0x66,0x5A,0x42,0x42,0x42,0x00
+                db 0x00,0x3C,0x40,0x3C,0x02,0x42,0x3C,0x00
 
 ; ------------------------------------------------------------
 ;  Pixelroutinen (fuer die naechsten Stufen)

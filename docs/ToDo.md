@@ -53,7 +53,7 @@ Der Spectrum kennt nur eine Ink-Farbe pro 8x8-Zelle. Zwei Spuren in derselben Ze
 - Crash-Animation (kleine Explosion aus Pixeln/Zellen), Crash-Sound (Beeper-Rauschen).
 - Rundenende, kurze Pause, Neustart des Felds.
 
-- State: InProgress
+- State: Done
 
 ### Stufe 3 – Zwei Spieler
 - Zweiter Kopf mit Joystick 2, Kontext-Tausch per `swap_ctx` wie bei Pacman.
@@ -61,18 +61,21 @@ Der Spectrum kennt nur eine Ink-Farbe pro 8x8-Zelle. Zwei Spuren in derselben Ze
 - Frontalzusammenstoß und gleicher Zielpixel = **Remis**.
 - Sieger/Remis-Anzeige am Rundenende.
 
-- State: Open
+- State: InProgress
 
 ### Stufe 4 – Farben und Kreuzungen
 - Besitzer-Tabelle steuert Zellfarbe: Spur 1, Spur 2, Kreuzung.
 - Kopfhervorhebung über BRIGHT, ULAplus-Palette für kräftige Neonfarben.
 - Prüfen, dass sich keine Zelle ungewollt umfärbt (Test mit Skript, Speicherdump der Attribute).
 
+- State: Open
+
 ### Stufe 5 – Spielablauf
 - Runden und Match (z. B. "best of 5"), Punktestand im HUD.
 - Pause (P), Rundenende-Jingle, Matchende-Anzeige.
 - Startsequenz: kurzer Countdown, Köpfe stehen sichtbar am Start.
 
+- 1. Meilenstein
 - State: Open
 
 ### Stufe 6 – Titelbild und Menü
@@ -89,6 +92,7 @@ Der Spectrum kennt nur eine Ink-Farbe pro 8x8-Zelle. Zwei Spuren in derselben Ze
 - 7c: Schwierigkeitsstufen (leicht / mittel / schwer) über Vorausschau-Tiefe und Reaktionszufall.
 - Test: Headless-Läufe computer gegen computer, um Endlosschleifen und Selbstmordmuster zu finden.
 
+- 2. Meilenstein
 - State: Open
 
 ### Stufe 8 – Sound (128K)
@@ -100,6 +104,7 @@ Der Spectrum kennt nur eine Ink-Farbe pro 8x8-Zelle. Zwei Spuren in derselben Ze
 - Hindernisse werden als gesetzte Pixel/Zellen angelegt und bekommen eigene Wandfarbe.
 - Zufällige Arena pro Runde oder wählbar im Menü.
 
+- 3. Meilenstein
 - State: Open
 
 ### Stufe 10 – Feinschliff und Extras (optional, einzeln freigebbar)
@@ -108,6 +113,7 @@ Der Spectrum kennt nur eine Ink-Farbe pro 8x8-Zelle. Zwei Spuren in derselben Ze
 - Abspann/Siegerbild, Rekord-Anzeige verfeinern.
 - Weitere Ideen nach Geschmack.
 
+- 4. Meilenstein
 - State: Open
 
 ## Technische Hinweise
