@@ -1,5 +1,5 @@
 ; ============================================================
-;  TRON fuer den ZX Spectrum 128K  -  Stufe 4: Farben, Kopfhervorhebung, Neon-Palette
+;  TRON fuer den ZX Spectrum 128K  -  Stufe 5: Match, Countdown, Pause, Jingles
 ;  Assembler: pasmo (--tapbas)    Dateien: tron.asm / tron.tap
 ; ============================================================
 ;  Bildschirm: 32x24 Zellen
@@ -12,6 +12,7 @@
 ; ============================================================
 
 TESTMODE        equ 0           ; 1 = Selbsttest der Pixelroutinen (nur Build-Skript)
+TESTBUILD       equ 0           ; 1 = Testbau: kein Countdown, Feuer startet die Runde sofort neu
 
                 org 0x8000
 
@@ -30,6 +31,16 @@ result          equ VARS+0x243  ; Rundenergebnis: 0 offen, 1 = P1 gewinnt, 2 = P
 scx             equ VARS+0x244  ; Mitte der Funken (X)
 scy             equ VARS+0x245  ; Mitte der Funken (Y)
 spk_r           equ VARS+0x246  ; Radius der Funken
+score1          equ VARS+0x247  ; gewonnene Runden Spieler 1
+score2          equ VARS+0x248  ; gewonnene Runden Spieler 2
+match_over      equ VARS+0x249  ; 0 laeuft, 1/2 = Sieger des Matches
+paused          equ VARS+0x24A  ; 1 = Pause
+p_prev          equ VARS+0x24B  ; letzter Zustand Taste P (Bit 0, 0 = gedrueckt)
+jptr            equ VARS+0x24C  ; Zeiger auf die laufende Jingle-Tabelle (0 = keiner)
+jcnt            equ VARS+0x24E  ; Restbilder der aktuellen Jingle-Note
+sd_buf          equ VARS+0x250  ; Textpuffer fuer ein einzelnes Zeichen
+pts1            equ VARS+0x254  ; Gesamtpunkte Spieler 1: 4 Dezimalziffern (Tausender zuerst)
+pts2            equ VARS+0x258  ; Gesamtpunkte Spieler 2
 testres         equ VARS+0x300  ; Ergebnisse des Selbsttests
 owner           equ VARS+0x400  ; Besitzer-Tabelle 32x24 (0 leer, 1 = P1, 2 = P2, 3 = beide)
 
@@ -39,6 +50,9 @@ START_X         equ 64
 START_Y         equ 104
 CRASH_FRAMES    equ 30          ; Dauer der Funken-Animation (Frames)
 WAIT_FRAMES     equ 75          ; Pause nach der Animation bis zur neuen Runde (1,5 s)
+POINTS_WIN     equ 2           ; Rundensieg: +100 (Hunderterstelle um 2 Ziffern vor Einer)
+WINS_NEEDED     equ 3           ; Match: Best of 5 = 3 Siege
+CD_STEP         equ 50          ; Countdown: Bilder pro Ziffer (3 - 2 - 1)
 
 ATTR_FIELD      equ 0x47        ; BRIGHT, Paper 0, Ink 7
 ATTR_FRAME      equ 0x43        ; BRIGHT, Paper 0, Ink 3 (Magenta/Violett)
@@ -74,6 +88,15 @@ start:
                 ld (plus_on),a          ; ULAplus automatisch an, wenn vorhanden
                 call apply_mode
 
+                ld hl,score1            ; Match-Variablen loeschen
+                ld de,score1+1
+                ld bc,8
+                ld (hl),0
+                ldir
+                call clear_pts
+                ld a,1
+                ld (p_prev),a           ; Taste P losgelassen
+
                 call init_ytab
                 call new_round
 
@@ -86,19 +109,28 @@ start:
 main:
                 halt
                 call read_keys
+                call read_pause
+                ld a,(paused)
+                or a
+                jr nz,main              ; Pause: nichts bewegt sich
                 call read_joy1
                 call read_joy2
+                call dispatch
+                call jingle_step
+                jr main
+
+; Zustand: 0 Fahrt, 1 Crash-Animation, 2 Pause nach der Runde, 3 Countdown, 4 Match zu Ende
+dispatch:
                 ld a,(state)
                 or a
-                jr nz,m_other
-                call game_step
-                jr main
-m_other:        cp 1
-                jr nz,m_wait
-                call crash_step
-                jr main
-m_wait:         call wait_step
-                jr main
+                jp z,game_step
+                cp 1
+                jp z,crash_step
+                cp 2
+                jp z,wait_step
+                cp 3
+                jp z,countdown_step
+                jp match_step
 
 ; ------------------------------------------------------------
 ;  Spielablauf (Stufe 3: zwei Motorraeder, Kollision, Crash, Neustart)
@@ -127,9 +159,23 @@ new_round:
                 call draw_frame
                 call draw_field_attrs
                 call draw_hud
-                ; weiter mit init_game
+                call init_game
+                if TESTBUILD
+                else
+                ld a,3                  ; Countdown: Koepfe stehen sichtbar am Start
+                ld (state),a
+                ld a,3
+                ld d,1
+                ld e,15
+                call show_digit
+                ld hl,beep_cd
+                jp jingle_start
+                endif
+                ret
 
 init_game:
+                ld hl,0
+                ld (jptr),hl            ; kein Jingle
                 call ay_silence
                 ld hl,owner
                 ld de,owner+1
@@ -161,6 +207,25 @@ init_game:
 ctx_init1:      db START_X,START_Y,1,1,1,1,0,0,0,START_X,START_Y
 ctx_init2:      db 255-START_X,START_Y,3,3,2,TWO_PLAYERS,0,0,0,255-START_X,START_Y
 
+; Feuer: nur nach dem Matchende (neues Match); im Testbau startet es die Runde neu
+fire_pressed:
+                if TESTBUILD
+                jp new_round
+                else
+                ld a,(state)
+                cp 4
+                ret nz
+                ld a,(anim)
+                cp 50
+                ret c                   ; kurze Sperre, damit gedrueckt gehaltenes Feuer nicht sofort durchschlaegt
+                xor a
+                ld (score1),a
+                ld (score2),a
+                ld (match_over),a
+                call clear_pts
+                jp new_round
+                endif
+
 ; Sinclair-Joystick 1 (Tasten 6-0, Port 0xEFFE, Bit = 0 wenn gedrueckt):
 ; Bit 4 links, Bit 3 rechts, Bit 2 runter, Bit 1 hoch, Bit 0 Feuer
 read_joy1:
@@ -168,7 +233,7 @@ read_joy1:
                 in a,(0xFE)
                 ld b,a
                 bit 0,b
-                jp z,new_round          ; Feuer: sofort neue Runde
+                jp z,fire_pressed
                 ld ix,CTX1
                 bit 1,b
                 jr nz,rj1_nu
@@ -194,7 +259,7 @@ read_joy2:
                 in a,(0xFE)
                 ld b,a
                 bit 4,b
-                jp z,new_round          ; Feuer: sofort neue Runde
+                jp z,fire_pressed
                 ld ix,CTX2
                 bit 3,b
                 jr nz,rj2_nu
@@ -332,6 +397,7 @@ moc_move:       ld a,(ix+C_X)
                 ld (ix+C_X),a
                 ld a,(ix+C_TY)
                 ld (ix+C_Y),a
+                call pts_step           ; 1 Punkt je gefahrenem Schritt
                 ; weiter mit plot_head
 
 ; IX = Kontext: Kopfpixel setzen, Besitzer eintragen, neue Kopfzelle und die
@@ -427,9 +493,41 @@ crash_start:
                 xor a
                 ld (anim),a
                 call show_result
+                call score_update
                 ld a,7
                 ld e,0x23               ; Mixer: Ton C + Rauschen A und B an, Rest aus
                 jp ay_wr
+
+; Punkt fuer den Sieger der Runde, HUD neu, Matchsieger vormerken
+score_update:
+                ld a,(result)
+                cp 1
+                jr z,su1
+                cp 2
+                ret nz
+                ld hl,score2
+                inc (hl)
+                ld a,(hl)
+                cp WINS_NEEDED
+                jr c,su_d
+                ld a,2
+                ld (match_over),a
+                jr su_d
+su1:            ld hl,score1
+                inc (hl)
+                ld a,(hl)
+                cp WINS_NEEDED
+                jr c,su_d
+                ld a,1
+                ld (match_over),a
+su_d:           ld a,(result)
+                ld hl,pts1+1            ; Hunderterstelle
+                cp 1
+                jr z,su_b
+                ld hl,pts2+1
+su_b:           ld b,2
+                call pt_inc
+                jp draw_hud
 
 ; Ein Bild der Funken-Animation: alten Ring loeschen, neuen zeichnen, Rauschen
 ; (Funken werden per XOR gesetzt; das zweite XOR stellt den Untergrund exakt her)
@@ -452,7 +550,12 @@ cs_end:
                 ld (state),a
                 xor a
                 ld (anim),a
-                ret
+                ld a,(result)
+                cp 3
+                ld hl,jingle_win
+                jr nz,cs_jg
+                ld hl,jingle_draw
+cs_jg:          jp jingle_start
 
 ; Pause nach dem Crash, danach neue Runde
 wait_step:
@@ -461,7 +564,176 @@ wait_step:
                 ld (anim),a
                 cp WAIT_FRAMES
                 ret c
-                jp new_round
+                ld a,(match_over)
+                or a
+                jp z,new_round
+                ; Match zu Ende: Siegertext und Fanfare, Feuer startet ein neues Match
+                ld a,4
+                ld (state),a
+                xor a
+                ld (anim),a
+                ld (tick),a
+                ld hl,fanfare
+                jp jingle_start
+
+; Matchende: Siegertext und Aufforderung wechseln alle 64 Bilder
+match_step:
+                ld a,(anim)
+                cp 100
+                jr nc,ms_a
+                inc a
+                ld (anim),a
+ms_a:           ld a,(tick)
+                ld b,a
+                inc a
+                ld (tick),a
+                ld a,b
+                and 0x3F
+                ret nz
+                bit 6,b
+                jr nz,ms_press
+                ld a,(match_over)
+                cp 2
+                ld a,ATTR_P1
+                ld hl,str_m_p1
+                jr nz,ms_pr
+                ld a,ATTR_P2
+                ld hl,str_m_p2
+                jr ms_pr
+ms_press:       ld a,ATTR_TITLE
+                ld hl,str_press
+ms_pr:          ld (txt_attr),a
+                ld d,1
+                ld e,11
+                jp print_str
+
+str_m_p1:       db 15,10,1,15,21,19,17,16,11,15,15,0xFF       ; P1 SIEGT
+str_m_p2:       db 15,10,2,15,21,19,17,16,11,15,15,0xFF
+str_press:      db 15,15,15,22,17,23,17,12,15,15,15,0xFF      ; FEUER
+
+; Countdown 3 - 2 - 1, dann Start
+countdown_step:
+                ld a,(anim)
+                inc a
+                ld (anim),a
+                cp CD_STEP
+                jr z,cd2
+                cp CD_STEP*2
+                jr z,cd1
+                cp CD_STEP*3
+                ret nz
+                xor a                   ; Los!
+                ld (state),a
+                ld (anim),a
+                ld a,15
+                ld d,1
+                ld e,15
+                call show_digit
+                ld hl,beep_go
+                jp jingle_start
+cd2:            ld a,2
+                jr cd_show
+cd1:            ld a,1
+cd_show:        ld d,1
+                ld e,15
+                call show_digit
+                ld hl,beep_cd
+                jp jingle_start
+
+; A = Glyph, D = Zeile, E = Spalte, Farbe wie bei show_digit (gelb) bzw. txt_attr
+show_digit:
+                ld b,a
+                ld a,ATTR_TITLE
+                ld (txt_attr),a
+                ld a,b
+show_glyph:
+                ld (sd_buf),a
+                ld a,0xFF
+                ld (sd_buf+1),a
+                ld hl,sd_buf
+                jp print_str
+
+; Pause: Taste P (Port 0xDFFE Bit 0), nur waehrend der Fahrt
+read_pause:
+                ld a,0xDF
+                in a,(0xFE)
+                and 1
+                ld b,a
+                ld a,(p_prev)
+                ld c,a
+                ld a,b
+                ld (p_prev),a
+                or a
+                ret nz
+                ld a,c
+                or a
+                ret z
+                ld a,(state)
+                or a
+                ret nz
+                ld a,(paused)
+                xor 1
+                ld (paused),a
+                jr z,rp_off
+                call ay_silence
+                ld a,ATTR_TITLE
+                ld hl,str_pause
+                jr rp_pr
+rp_off:         ld a,ATTR_TITLE
+                ld hl,str_blank5
+rp_pr:          ld (txt_attr),a
+                ld d,1
+                ld e,13
+                jp print_str
+
+str_pause:      db 10,24,23,21,17,0xFF                     ; PAUSE
+str_blank5:     db 15,15,15,15,15,0xFF
+
+; ------------------------------------------------------------
+;  Jingles ueber Kanal A: Tabelle = (Dauer, Periode lo, Periode hi) ..., 0
+; ------------------------------------------------------------
+; HL = Tabelle
+jingle_start:
+                ld (jptr),hl
+                xor a
+                ld (jcnt),a
+                ld a,7
+                ld e,0x3E               ; nur Ton A
+                jp ay_wr
+
+jingle_step:
+                ld hl,(jptr)
+                ld a,h
+                or l
+                ret z
+                ld a,(jcnt)
+                or a
+                jr z,js_next
+                dec a
+                ld (jcnt),a
+                ret
+js_next:        ld a,(hl)
+                or a
+                jr z,js_end
+                inc hl
+                ld (jcnt),a
+                xor a
+                call ay_out_hl          ; Periode lo
+                ld a,1
+                call ay_out_hl          ; Periode hi
+                ld (jptr),hl
+                ld a,8
+                ld e,12
+                jp ay_wr
+js_end:         ld hl,0
+                ld (jptr),hl
+                jp ay_silence
+
+beep_cd:        db 8,126,0, 0                               ; A5
+beep_go:        db 20,63,0, 0                               ; A6
+jingle_win:     db 8,212,0, 8,168,0, 14,106,0, 0            ; C5 E5 C6
+jingle_draw:    db 12,27,1, 16,167,1, 0  ; G4 C4
+fanfare:        db 8,212,0, 8,168,0, 8,141,0, 8,106,0, 8,141,0, 40,106,0, 0
 
 ; A = Radius: Funken fuer jeden gecrashten Spieler (Mitte = sein Kopf)
 sparks_both:
@@ -826,13 +1098,99 @@ draw_hud:
                 ld (txt_attr),a
                 ld hl,str_p2
                 ld d,0
-                ld e,25
+                ld e,27
                 call print_str
+                ld a,ATTR_P1            ; Siege
+                ld (txt_attr),a
+                ld a,(score1)
+                ld d,0
+                ld e,4
+                call show_glyph
+                ld a,ATTR_P2
+                ld (txt_attr),a
+                ld a,(score2)
+                ld d,0
+                ld e,30
+                call show_glyph
+                ld a,ATTR_P1            ; Gesamtpunkte
+                ld (txt_attr),a
+                ld hl,pts1
+                ld de,0x0101
+                call draw_pts
+                ld a,ATTR_P2
+                ld (txt_attr),a
+                ld hl,pts2
+                ld de,0x011B
+                jp draw_pts
+
+; Gesamtpunkte: 4 Dezimalziffern, 1 Punkt je Schritt, +100 je gewonnener Runde
+clear_pts:
+                ld hl,pts1
+                ld de,pts1+1
+                ld bc,7
+                ld (hl),0
+                ldir
                 ret
 
-str_p1:         db 10,1,15,0,0,0,0xFF
+; IX = Kontext: Punkt fuer den Schritt, Anzeige der Ziffern auffrischen
+pts_step:
+                ld a,(ix+C_ID)
+                cp 1
+                ld hl,pts1+3
+                ld de,0x0101
+                ld a,ATTR_P1
+                jr z,ps_go
+                ld hl,pts2+3
+                ld de,0x011B
+                ld a,ATTR_P2
+ps_go:          ld (txt_attr),a
+                push de
+                ld b,4
+                call pt_inc
+                pop de
+                ld a,(ix+C_ID)
+                ld hl,pts1
+                cp 1
+                jr z,draw_pts
+                ld hl,pts2
+                ; weiter mit draw_pts
+
+; HL = 4 Ziffern, D = Zeile, E = Spalte, txt_attr = Farbe
+draw_pts:
+                ld b,4
+dp1:            push bc
+                push hl
+                push de
+                ld a,(hl)
+                call show_glyph
+                pop de
+                pop hl
+                pop bc
+                inc hl
+                inc e
+                djnz dp1
+                ret
+
+; HL = Ziffer (Einer-, Hunderter...), B = Anzahl Ziffern bis zur Tausenderstelle: +1 mit Uebertrag
+pt_inc:
+                inc (hl)
+                ld a,(hl)
+                cp 10
+                ret c
+                ld (hl),0
+                dec hl
+                djnz pt_inc
+                inc hl                  ; Ueberlauf: auf 9999 begrenzen
+                ld b,4
+                ld a,9
+pt_sat:         ld (hl),a
+                inc hl
+                djnz pt_sat
+                ret
+
+str_p1:         db 10,1,15,0xFF
 str_title:      db 11,12,13,14,0xFF
-str_p2:         db 10,2,15,0,0,0,0xFF
+str_p2:         db 10,2,15,0xFF
 
 ; Ergebnis in HUD-Zeile 1: "P1 GEWINNT", "P2 GEWINNT" oder "REMIS"
 show_result:
@@ -885,6 +1243,10 @@ font:           ; 0-9
                 db 0x00,0x3E,0x08,0x08,0x08,0x08,0x3E,0x00
                 db 0x00,0x42,0x66,0x5A,0x42,0x42,0x42,0x00
                 db 0x00,0x3C,0x40,0x3C,0x02,0x42,0x3C,0x00
+                ; F U A
+                db 0x00,0x7E,0x40,0x7C,0x40,0x40,0x40,0x00
+                db 0x00,0x42,0x42,0x42,0x42,0x42,0x3C,0x00
+                db 0x00,0x3C,0x42,0x42,0x7E,0x42,0x42,0x00
 
 ; ------------------------------------------------------------
 ;  Pixelroutinen (fuer die naechsten Stufen)

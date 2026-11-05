@@ -68,7 +68,7 @@ Der Spectrum kennt nur eine Ink-Farbe pro 8x8-Zelle. Zwei Spuren in derselben Ze
 - Kopfhervorhebung über BRIGHT, ULAplus-Palette für kräftige Neonfarben.
 - Prüfen, dass sich keine Zelle ungewollt umfärbt (Test mit Skript, Speicherdump der Attribute).
 
-- State: InProgress
+- State: Done
 
 ### Stufe 5 – Spielablauf
 - Runden und Match (z. B. "best of 5"), Punktestand im HUD.
@@ -76,7 +76,7 @@ Der Spectrum kennt nur eine Ink-Farbe pro 8x8-Zelle. Zwei Spuren in derselben Ze
 - Startsequenz: kurzer Countdown, Köpfe stehen sichtbar am Start.
 
 - 1. Meilenstein
-- State: Open
+- State: InProgress
 
 ### Stufe 6 – Titelbild und Menü
 - Titelbild im Neon-Look, Moduswahl per Joystick (links/hoch = 1 Spieler, rechts/runter = 2 Spieler).
