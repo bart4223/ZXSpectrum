@@ -76,7 +76,7 @@ Der Spectrum kennt nur eine Ink-Farbe pro 8x8-Zelle. Zwei Spuren in derselben Ze
 - Startsequenz: kurzer Countdown, Köpfe stehen sichtbar am Start.
 
 - 1. Meilenstein
-- State: InProgress
+- State: Done
 
 ### Stufe 6 – Titelbild und Menü
 - Titelbild im Neon-Look, Moduswahl per Joystick (links/hoch = 1 Spieler, rechts/runter = 2 Spieler).
@@ -84,7 +84,7 @@ Der Spectrum kennt nur eine Ink-Farbe pro 8x8-Zelle. Zwei Spuren in derselben Ze
 - Lautstärke per T (fünf Stufen plus Aus).
 - Rekord/Siegesserie im Titelbild.
 
-- State: Open
+- State: InProgress
 
 ### Stufe 7 – Computergegner (Einzelspieler)
 - 7a: Geradeaus fahren, 1-3 Pixel vorausschauen, bei Hindernis abbiegen (Seite mit mehr freiem Raum).

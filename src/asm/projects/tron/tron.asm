@@ -1,5 +1,5 @@
 ; ============================================================
-;  TRON fuer den ZX Spectrum 128K  -  Stufe 5: Match, Countdown, Pause, Jingles
+;  TRON fuer den ZX Spectrum 128K  -  Stufe 6: Titelbild, Menue, Tempo, Lautstaerke, Rekord
 ;  Assembler: pasmo (--tapbas)    Dateien: tron.asm / tron.tap
 ; ============================================================
 ;  Bildschirm: 32x24 Zellen
@@ -41,6 +41,17 @@ jcnt            equ VARS+0x24E  ; Restbilder der aktuellen Jingle-Note
 sd_buf          equ VARS+0x250  ; Textpuffer fuer ein einzelnes Zeichen
 pts1            equ VARS+0x254  ; Gesamtpunkte Spieler 1: 4 Dezimalziffern (Tausender zuerst)
 pts2            equ VARS+0x258  ; Gesamtpunkte Spieler 2
+mode            equ VARS+0x25C  ; 0 = 1 Spieler, 1 = 2 Spieler
+speed           equ VARS+0x25D  ; 0 langsam, 1 normal, 2 schnell
+vol             equ VARS+0x25E  ; Lautstaerke 0 (aus) .. 5
+s_prev          equ VARS+0x25F  ; letzter Zustand Taste S
+t_prev          equ VARS+0x260  ; letzter Zustand Taste T
+spd_frames      equ VARS+0x261  ; Bilder pro Schritt
+spd_steps       equ VARS+0x262  ; Schritte pro Bild (1 oder 2)
+record          equ VARS+0x264  ; Rekord: 4 Dezimalziffern (hoechste Gesamtpunkte eines Matches, nur Sitzung)
+bg_y            equ VARS+0x26A
+bg_x            equ VARS+0x26B
+bg_buf          equ VARS+0x26C
 testres         equ VARS+0x300  ; Ergebnisse des Selbsttests
 owner           equ VARS+0x400  ; Besitzer-Tabelle 32x24 (0 leer, 1 = P1, 2 = P2, 3 = beide)
 
@@ -63,6 +74,28 @@ ATTR_TITLE      equ 0x46        ; Gelb
 ATTR_P1_DIM     equ 0x05        ; Spur P1: Cyan, gedaempft (ohne BRIGHT)
 ATTR_P2_DIM     equ 0x02        ; Spur P2: Orange, gedaempft
 ATTR_CROSS_DIM  equ 0x07        ; Zelle von beiden befahren: Weiss, gedaempft
+
+G_SP            equ 15          ; Glyph-Nummern im Font
+G_P             equ 10
+G_T             equ 11
+G_R             equ 12
+G_O             equ 13
+G_N             equ 14
+G_G             equ 16
+G_E             equ 17
+G_I             equ 19
+G_M             equ 20
+G_S             equ 21
+G_F             equ 22
+G_U             equ 23
+G_A             equ 24
+G_L             equ 25
+G_C             equ 26
+G_H             equ 27
+G_K             equ 28
+G_D             equ 29
+G_B             equ 30
+G_GT            equ 31
 
 ROW_FRAME_TOP   equ 2
 ROW_FRAME_BOT   equ 23
@@ -97,8 +130,13 @@ start:
                 ld a,1
                 ld (p_prev),a           ; Taste P losgelassen
 
+                call init_settings
                 call init_ytab
+                if TESTBUILD
                 call new_round
+                else
+                call title_enter
+                endif
 
                 if TESTMODE
                 call selftest
@@ -110,12 +148,20 @@ main:
                 halt
                 call read_keys
                 call read_pause
+                call read_vol
                 ld a,(paused)
                 or a
                 jr nz,main              ; Pause: nichts bewegt sich
+                ld a,(state)
+                cp 5
+                jr z,m_title
                 call read_joy1
                 call read_joy2
                 call dispatch
+                call jingle_step
+                jr main
+m_title:        call title_input
+                call title_step
                 call jingle_step
                 jr main
 
@@ -130,7 +176,9 @@ dispatch:
                 jp z,wait_step
                 cp 3
                 jp z,countdown_step
-                jp match_step
+                cp 4
+                jp z,match_step
+                ret                     ; 5 = Titelbild: eigene Schleife
 
 ; ------------------------------------------------------------
 ;  Spielablauf (Stufe 3: zwei Motorraeder, Kollision, Crash, Neustart)
@@ -207,7 +255,7 @@ init_game:
 ctx_init1:      db START_X,START_Y,1,1,1,1,0,0,0,START_X,START_Y
 ctx_init2:      db 255-START_X,START_Y,3,3,2,TWO_PLAYERS,0,0,0,255-START_X,START_Y
 
-; Feuer: nur nach dem Matchende (neues Match); im Testbau startet es die Runde neu
+; Feuer: nur nach dem Matchende (zurueck ins Titelbild); im Testbau startet es die Runde neu
 fire_pressed:
                 if TESTBUILD
                 jp new_round
@@ -218,12 +266,7 @@ fire_pressed:
                 ld a,(anim)
                 cp 50
                 ret c                   ; kurze Sperre, damit gedrueckt gehaltenes Feuer nicht sofort durchschlaegt
-                xor a
-                ld (score1),a
-                ld (score2),a
-                ld (match_over),a
-                call clear_pts
-                jp new_round
+                jp title_enter
                 endif
 
 ; Sinclair-Joystick 1 (Tasten 6-0, Port 0xEFFE, Bit = 0 wenn gedrueckt):
@@ -260,6 +303,9 @@ read_joy2:
                 ld b,a
                 bit 4,b
                 jp z,fire_pressed
+                ld a,(mode)
+                or a
+                ret z                   ; 1 Spieler: Fahrzeug 2 faehrt geradeaus (bis der Computergegner kommt)
                 ld ix,CTX2
                 bit 3,b
                 jr nz,rj2_nu
@@ -298,10 +344,21 @@ game_step:
                 ld a,(tick)
                 inc a
                 ld (tick),a
-                cp STEP_FRAMES
+                ld hl,spd_frames
+                cp (hl)
                 ret c
                 xor a
                 ld (tick),a
+                call game_move
+                ld a,(state)
+                or a
+                ret nz                  ; Crash im ersten Schritt
+                ld a,(spd_steps)
+                cp 2
+                ret c
+                ; schnell: zweiter Schritt im selben Bild, jeder Schritt wird einzeln geprueft
+
+game_move:
                 ld ix,CTX1
                 call calc_target
                 ld ix,CTX2
@@ -573,7 +630,14 @@ wait_step:
                 xor a
                 ld (anim),a
                 ld (tick),a
-                ld hl,fanfare
+                ld hl,pts1              ; Rekord der Sitzung
+                call rec_try
+                ld a,(mode)
+                or a
+                jr z,we_nr
+                ld hl,pts2
+                call rec_try
+we_nr:          ld hl,fanfare
                 jp jingle_start
 
 ; Matchende: Siegertext und Aufforderung wechseln alle 64 Bilder
@@ -653,6 +717,515 @@ show_glyph:
                 ld hl,sd_buf
                 jp print_str
 
+
+; ------------------------------------------------------------
+;  Stufe 6: Titelbild, Menue, Einstellungen
+; ------------------------------------------------------------
+; Standardwerte der Sitzung: 2 Spieler, Tempo normal, Lautstaerke 5, Rekord 0
+init_settings:
+                ld a,1
+                ld (mode),a
+                ld (speed),a
+                ld (s_prev),a
+                ld (t_prev),a
+                ld a,5
+                ld (vol),a
+                ld hl,record
+                ld de,record+1
+                ld bc,3
+                ld (hl),0
+                ldir
+                jp apply_speed
+
+; speed -> spd_frames / spd_steps (langsam 2 Bilder je Schritt, normal STEP_FRAMES, schnell 2 Schritte je Bild)
+apply_speed:
+                ld a,(speed)
+                add a,a
+                ld e,a
+                ld d,0
+                ld hl,speed_tab
+                add hl,de
+                ld a,(hl)
+                ld (spd_frames),a
+                inc hl
+                ld a,(hl)
+                ld (spd_steps),a
+                ret
+speed_tab:      db 2,1, STEP_FRAMES,1, 1,2
+
+; B = Port-High, C = Bitmaske, HL = Byte "letzter Zustand": Carry = Taste neu gedrueckt
+key_edge:
+                push bc
+                ld c,0xFE
+                in a,(c)
+                pop bc
+                and c
+                ld d,a                  ; 0 = gedrueckt
+                ld a,(hl)
+                ld e,a
+                ld (hl),d
+                ld a,d
+                or a
+                ret nz
+                ld a,e
+                or a
+                ret z
+                scf
+                ret
+
+; Taste T: Lautstaerke 5 - 4 - 3 - 2 - 1 - aus - 5 ..., jederzeit
+read_vol:
+                ld b,0xFB
+                ld c,0x10
+                ld hl,t_prev
+                call key_edge
+                ret nc
+                ld a,(vol)
+                or a
+                jr nz,vn_dec
+                ld a,5
+                jr vn_set
+vn_dec:         dec a
+vn_set:         ld (vol),a
+                ld a,(state)
+                cp 5
+                jr z,vn_t
+                or a
+                ret nz                  ; nur waehrend der Fahrt piepsen
+                jr vn_beep
+vn_t:           call draw_vol
+vn_beep:        ld a,(vol)
+                or a
+                ret z
+                ld hl,beep_cd
+                jp jingle_start
+
+; Rekord vergleichen: HL = 4 Ziffern; ist der Wert groesser, wird er uebernommen
+rec_try:
+                ld de,record
+                push hl
+                ld b,4
+rt1:            ld a,(de)
+                cp (hl)
+                jr c,rt_copy
+                jr nz,rt_end
+                inc hl
+                inc de
+                djnz rt1
+                jr rt_end
+rt_copy:        pop hl
+                ld de,record
+                ld bc,4
+                ldir
+                ret
+rt_end:         pop hl
+                ret
+
+; Titelbild aufbauen, Zustand 5
+title_enter:
+                ld a,5
+                ld (state),a
+                xor a
+                ld (anim),a
+                ld (tick),a
+                ld (paused),a
+                ld hl,0
+                ld (jptr),hl
+                call ay_silence
+                call cls
+                call draw_frame
+                call draw_field_attrs
+                ; grosses TRON (Glyphen vierfach vergroessert, 32x32 Pixel)
+                ld a,G_T
+                ld d,4
+                ld e,8
+                call big_glyph
+                ld a,G_R
+                ld d,4
+                ld e,12
+                call big_glyph
+                ld a,G_O
+                ld d,4
+                ld e,16
+                call big_glyph
+                ld a,G_N
+                ld d,4
+                ld e,20
+                call big_glyph
+                ld b,2                  ; Farben: T R cyan, O N orange; oben hell, unten gedaempft
+                ld d,4
+tl1:            push bc
+                ld a,ATTR_P1
+                ld e,8
+                ld b,8
+                call attr_fill
+                ld a,ATTR_P2
+                ld e,16
+                ld b,8
+                call attr_fill
+                inc d
+                pop bc
+                djnz tl1
+                ld b,2
+tl2:            push bc
+                ld a,ATTR_P1_DIM
+                ld e,8
+                ld b,8
+                call attr_fill
+                ld a,0x02
+                ld e,16
+                ld b,8
+                call attr_fill
+                inc d
+                pop bc
+                djnz tl2
+                ; zwei Spuren, die aufeinander zufahren
+                ld d,75
+                ld e,24
+tl3:            push de
+                call pixel_set
+                pop de
+                inc e
+                ld a,e
+                cp 113
+                jr nz,tl3
+                ld e,144
+tl4:            push de
+                call pixel_set
+                pop de
+                inc e
+                ld a,e
+                cp 232
+                jr nz,tl4
+                ld d,9
+                ld e,3
+                ld b,11
+                ld a,ATTR_P1_DIM
+                call attr_fill
+                ld e,14
+                ld b,1
+                ld a,ATTR_P1
+                call attr_fill
+                ld e,18
+                ld b,1
+                ld a,ATTR_P2
+                call attr_fill
+                ld e,19
+                ld b,10
+                ld a,0x02
+                call attr_fill
+                call draw_mode
+                call draw_speed
+                call draw_vol
+                call draw_record
+                ld a,ATTR_P1_DIM
+                ld (txt_attr),a
+                ld hl,str_hint
+                ld d,22
+                ld e,4
+                jp print_str
+
+; D = Zeile, E = Spalte, B = Anzahl, A = Attribut; Ergebnis: HL = Adresse des ersten Attributs
+attr_fill:
+                push af
+                push de
+                push bc
+                ld l,d
+                ld h,0
+                add hl,hl
+                add hl,hl
+                add hl,hl
+                add hl,hl
+                add hl,hl
+                ld c,e
+                ld b,0
+                add hl,bc
+                ld bc,0x5800
+                add hl,bc
+                pop bc
+                pop de
+                pop af
+                push hl
+                ld c,a
+af1:            ld (hl),c
+                inc hl
+                djnz af1
+                pop hl
+                ret
+
+; A = Glyph, D = Zeile, E = Spalte (Zelle): Glyph vierfach vergroessert (32x32 Pixel)
+big_glyph:
+                ld l,a
+                ld h,0
+                add hl,hl
+                add hl,hl
+                add hl,hl
+                ld bc,font
+                add hl,bc
+                push hl
+                pop ix
+                ld a,d
+                add a,a
+                add a,a
+                add a,a
+                ld (bg_y),a
+                ld a,e
+                add a,a
+                add a,a
+                add a,a
+                ld (bg_x),a
+                ld b,8
+bg_row:         push bc
+                ld a,(ix+0)
+                ld c,a
+                ld hl,bg_buf
+                ld a,c
+                rlca
+                rlca
+                and 3
+                call bg_ex
+                ld a,c
+                rrca
+                rrca
+                rrca
+                rrca
+                and 3
+                call bg_ex
+                ld a,c
+                rrca
+                rrca
+                and 3
+                call bg_ex
+                ld a,c
+                and 3
+                call bg_ex
+                ld b,4
+bg_rep:         push bc
+                ld a,(bg_y)
+                ld d,a
+                ld a,(bg_x)
+                ld e,a
+                call pixel_addr
+                ex de,hl
+                ld hl,bg_buf
+                ld bc,4
+                ldir
+                ld hl,bg_y
+                inc (hl)
+                pop bc
+                djnz bg_rep
+                inc ix
+                pop bc
+                djnz bg_row
+                ret
+bg_ex:          ld e,a
+                ld d,0
+                push hl
+                ld hl,tab4
+                add hl,de
+                ld a,(hl)
+                pop hl
+                ld (hl),a
+                inc hl
+                ret
+tab4:           db 0x00,0x0F,0xF0,0xFF
+
+; Menuezeilen
+draw_mode:
+                ld a,(mode)
+                or a
+                ld a,ATTR_TITLE
+                jr z,dm1
+                ld a,ATTR_P1_DIM
+dm1:            ld (txt_attr),a
+                ld hl,str_1p
+                ld d,10
+                ld e,12
+                call print_str
+                ld a,(mode)
+                or a
+                ld a,G_GT
+                jr z,dm1m
+                ld a,G_SP
+dm1m:           ld d,10
+                ld e,10
+                call show_glyph
+                ld a,(mode)
+                or a
+                ld a,ATTR_P1_DIM
+                jr z,dm2
+                ld a,ATTR_TITLE
+dm2:            ld (txt_attr),a
+                ld hl,str_2p
+                ld d,12
+                ld e,12
+                call print_str
+                ld a,(mode)
+                or a
+                ld a,G_SP
+                jr z,dm2m
+                ld a,G_GT
+dm2m:           ld d,12
+                ld e,10
+                jp show_glyph
+
+draw_speed:
+                ld a,ATTR_P1_DIM
+                ld (txt_attr),a
+                ld hl,str_tempo
+                ld d,14
+                ld e,9
+                call print_str
+                ld a,ATTR_TITLE
+                ld (txt_attr),a
+                ld a,(speed)
+                add a,a
+                ld e,a
+                ld d,0
+                ld hl,str_speed_tab
+                add hl,de
+                ld e,(hl)
+                inc hl
+                ld d,(hl)
+                ex de,hl
+                ld d,14
+                ld e,15
+                jp print_str
+
+draw_vol:
+                ld a,ATTR_P1_DIM
+                ld (txt_attr),a
+                ld hl,str_ton
+                ld d,16
+                ld e,9
+                call print_str
+                ld a,ATTR_TITLE
+                ld (txt_attr),a
+                ld a,(vol)
+                or a
+                jr nz,dv1
+                ld hl,str_aus
+                ld d,16
+                ld e,15
+                jp print_str
+dv1:            ld d,16
+                ld e,15
+                call show_glyph
+                ld hl,str_blank2
+                ld d,16
+                ld e,16
+                jp print_str
+
+draw_record:
+                ld a,ATTR_P1_DIM
+                ld (txt_attr),a
+                ld hl,str_rekord
+                ld d,18
+                ld e,10
+                call print_str
+                ld a,ATTR_TITLE
+                ld (txt_attr),a
+                ld hl,record
+                ld de,0x1211
+                jp draw_pts
+
+str_1p:         db 1,G_SP,G_S,G_P,G_I,G_E,G_L,G_E,G_R,0xFF
+str_2p:         db 2,G_SP,G_S,G_P,G_I,G_E,G_L,G_E,G_R,0xFF
+str_tempo:      db G_T,G_E,G_M,G_P,G_O,0xFF
+str_sp0:        db G_L,G_A,G_N,G_G,G_S,G_A,G_M,0xFF
+str_sp1:        db G_N,G_O,G_R,G_M,G_A,G_L,G_SP,0xFF
+str_sp2:        db G_S,G_C,G_H,G_N,G_E,G_L,G_L,0xFF
+str_speed_tab:  dw str_sp0,str_sp1,str_sp2
+str_ton:        db G_T,G_O,G_N,0xFF
+str_aus:        db G_A,G_U,G_S,0xFF
+str_blank2:     db G_SP,G_SP,0xFF
+str_rekord:     db G_R,G_E,G_K,G_O,G_R,G_D,G_SP,0xFF
+str_fire:       db G_F,G_E,G_U,G_E,G_R,0xFF
+str_hint:       db G_S,G_SP,G_T,G_E,G_M,G_P,G_O,G_SP,G_SP,G_T,G_SP,G_T,G_O,G_N,G_SP,G_SP,G_C,G_SP,G_F,G_A,G_R,G_B,G_E,0xFF
+
+; Joystick im Titelbild: links/hoch = 1 Spieler, rechts/runter = 2 Spieler, Feuer = Start
+title_input:
+                ld a,0xEF
+                in a,(0xFE)
+                ld b,a                  ; Joystick 1
+                ld a,0xF7
+                in a,(0xFE)
+                ld c,a                  ; Joystick 2
+                bit 0,b
+                jr z,ti_fire
+                bit 4,c
+                jr z,ti_fire
+                bit 1,b
+                jr z,ti_1p
+                bit 4,b
+                jr z,ti_1p
+                bit 3,c
+                jr z,ti_1p
+                bit 0,c
+                jr z,ti_1p
+                bit 2,b
+                jr z,ti_2p
+                bit 3,b
+                jr z,ti_2p
+                bit 2,c
+                jr z,ti_2p
+                bit 1,c
+                jr z,ti_2p
+                ret
+ti_1p:          xor a
+                jr ti_set
+ti_2p:          ld a,1
+ti_set:         ld hl,mode
+                cp (hl)
+                ret z
+                ld (hl),a
+                jp draw_mode
+ti_fire:        ld a,(anim)
+                cp 25
+                ret c                   ; Sperre: gehaltenes Feuer vom Matchende zaehlt nicht
+                xor a
+                ld (score1),a
+                ld (score2),a
+                ld (match_over),a
+                call clear_pts
+                call apply_speed
+                jp new_round
+
+; Titelbild: Taste S schaltet das Tempo, FEUER blinkt
+title_step:
+                ld a,(anim)
+                cp 100
+                jr nc,ts1
+                inc a
+                ld (anim),a
+ts1:            ld b,0xFD
+                ld c,0x02
+                ld hl,s_prev
+                call key_edge
+                jr nc,ts2
+                ld a,(speed)
+                inc a
+                cp 3
+                jr c,ts_s
+                xor a
+ts_s:           ld (speed),a
+                call draw_speed
+ts2:            ld a,(tick)
+                inc a
+                ld (tick),a
+                ld b,a
+                and 0x1F
+                ret nz
+                ld a,ATTR_TITLE
+                ld (txt_attr),a
+                ld hl,str_fire
+                bit 5,b
+                jr z,ts3
+                ld hl,str_blank5
+ts3:            ld d,20
+                ld e,14
+                jp print_str
+
 ; Pause: Taste P (Port 0xDFFE Bit 0), nur waehrend der Fahrt
 read_pause:
                 ld a,0xDF
@@ -722,8 +1295,10 @@ js_next:        ld a,(hl)
                 ld a,1
                 call ay_out_hl          ; Periode hi
                 ld (jptr),hl
+                ld a,12
+                call vol_apply
+                ld e,a
                 ld a,8
-                ld e,12
                 jp ay_wr
 js_end:         ld hl,0
                 ld (jptr),hl
@@ -852,6 +1427,44 @@ ay_out_hl:
                 out (c),a
                 ret
 
+; A = Register, (HL) = Lautstaerke 0..15, wird mit der eingestellten Lautstaerke skaliert
+ay_out_vol:
+                ld bc,0xFFFD
+                out (c),a
+                ld a,(hl)
+                inc hl
+                push hl
+                call vol_apply
+                pop hl
+                ld bc,0xBFFD
+                out (c),a
+                ret
+
+; A = Lautstaerke 0..15 -> skaliert mit vol (0..5) ueber voltab
+vol_apply:
+                ld b,a
+                ld a,(vol)
+                add a,a
+                add a,a
+                add a,a
+                add a,a
+                add a,b
+                ld c,a
+                ld b,0
+                ld hl,voltab
+                add hl,bc
+                ld a,(hl)
+                ret
+
+; Zeile je Stufe 0..5, Spalte = Lautstaerke 0..15 (gerundet raw*stufe/5)   [erzeugt von tools/aytab.py]
+voltab:
+                db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+                db 0,0,0,1,1,1,1,1,2,2,2,2,2,3,3,3
+                db 0,0,1,1,2,2,2,3,3,4,4,4,5,5,6,6
+                db 0,1,1,2,2,3,4,4,5,5,6,7,7,8,8,9
+                db 0,1,2,2,3,4,5,6,6,7,8,9,10,10,11,12
+                db 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15
+
 ; alles stumm: Lautstaerken 0, Mixer alles aus
 ay_silence:
                 ld e,0
@@ -883,11 +1496,11 @@ crash_sound:
                 ld a,6                  ; Rauschperiode
                 call ay_out_hl
                 ld a,8                  ; Lautstaerke A
-                call ay_out_hl
+                call ay_out_vol
                 ld a,9                  ; Lautstaerke B
-                call ay_out_hl
+                call ay_out_vol
                 ld a,10                 ; Lautstaerke C
-                call ay_out_hl
+                call ay_out_vol
                 ld a,4                  ; Tonperiode C, tief
                 call ay_out_hl
                 ld a,5                  ; Tonperiode C, hoch
@@ -1247,6 +1860,14 @@ font:           ; 0-9
                 db 0x00,0x7E,0x40,0x7C,0x40,0x40,0x40,0x00
                 db 0x00,0x42,0x42,0x42,0x42,0x42,0x3C,0x00
                 db 0x00,0x3C,0x42,0x42,0x7E,0x42,0x42,0x00
+                ; L C H K D B >
+                db 0x00,0x40,0x40,0x40,0x40,0x40,0x7E,0x00
+                db 0x00,0x3C,0x42,0x40,0x40,0x42,0x3C,0x00
+                db 0x00,0x42,0x42,0x7E,0x42,0x42,0x42,0x00
+                db 0x00,0x44,0x48,0x70,0x48,0x44,0x42,0x00
+                db 0x00,0x78,0x44,0x42,0x42,0x44,0x78,0x00
+                db 0x00,0x7C,0x42,0x7C,0x42,0x42,0x7C,0x00
+                db 0x00,0x60,0x30,0x18,0x30,0x60,0x00,0x00
 
 ; ------------------------------------------------------------
 ;  Pixelroutinen (fuer die naechsten Stufen)
