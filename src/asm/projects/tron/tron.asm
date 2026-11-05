@@ -1,5 +1,5 @@
 ; ============================================================
-;  TRON fuer den ZX Spectrum 128K  -  Stufe 3: Zwei Spieler, Remis, Sieger-Anzeige
+;  TRON fuer den ZX Spectrum 128K  -  Stufe 4: Farben, Kopfhervorhebung, Neon-Palette
 ;  Assembler: pasmo (--tapbas)    Dateien: tron.asm / tron.tap
 ; ============================================================
 ;  Bildschirm: 32x24 Zellen
@@ -46,7 +46,9 @@ ATTR_BLACK      equ 0x40
 ATTR_P1         equ 0x45        ; Cyan
 ATTR_P2         equ 0x42        ; Rot/Orange
 ATTR_TITLE      equ 0x46        ; Gelb
-ATTR_CROSS      equ 0x47        ; Weiss: Zelle von beiden Spuren befahren
+ATTR_P1_DIM     equ 0x05        ; Spur P1: Cyan, gedaempft (ohne BRIGHT)
+ATTR_P2_DIM     equ 0x02        ; Spur P2: Orange, gedaempft
+ATTR_CROSS_DIM  equ 0x07        ; Zelle von beiden befahren: Weiss, gedaempft
 
 ROW_FRAME_TOP   equ 2
 ROW_FRAME_BOT   equ 23
@@ -104,6 +106,7 @@ m_wait:         call wait_step
 ; Kontext je Spieler (16 Byte, Zugriff ueber IX):
 ;   +0 X   +1 Y   +2 Wunschrichtung   +3 zuletzt gefahrene Richtung   +4 Kennung (1/2)
 ;   +5 Status (0 nicht dabei, 1 faehrt, 2 gecrasht)   +6/+7 Zielpixel X/Y   +8 Ziel belegt
+;   +9/+10 vorherige Position   +11/+12 Zellindex des Kopfes
 C_X             equ 0
 C_Y             equ 1
 C_DIR           equ 2
@@ -113,6 +116,10 @@ C_STAT          equ 5
 C_TX            equ 6
 C_TY            equ 7
 C_HIT           equ 8
+C_PX            equ 9           ; Position vor dem letzten Zug
+C_PY            equ 10
+C_CL            equ 11          ; Zellindex des Kopfes (16 Bit)
+C_CH            equ 12
 
 ; Neues Spielfeld aufbauen und beide Motorraeder an den Start setzen
 new_round:
@@ -131,11 +138,11 @@ init_game:
                 ldir
                 ld hl,ctx_init1
                 ld de,CTX1
-                ld bc,9
+                ld bc,11
                 ldir
                 ld hl,ctx_init2
                 ld de,CTX2
-                ld bc,9
+                ld bc,11
                 ldir
                 xor a
                 ld (tick),a
@@ -150,9 +157,9 @@ init_game:
                 ld ix,CTX2
                 jp plot_head
 
-; X, Y, Wunschrichtung, letzte Richtung, Kennung, Status (TWO_PLAYERS), Ziel X/Y, belegt
-ctx_init1:      db START_X,START_Y,1,1,1,1,0,0,0
-ctx_init2:      db 255-START_X,START_Y,3,3,2,TWO_PLAYERS,0,0,0
+; X, Y, Wunschrichtung, letzte Richtung, Kennung, Status (TWO_PLAYERS), Ziel X/Y, belegt, vorherige X/Y
+ctx_init1:      db START_X,START_Y,1,1,1,1,0,0,0,START_X,START_Y
+ctx_init2:      db 255-START_X,START_Y,3,3,2,TWO_PLAYERS,0,0,0,255-START_X,START_Y
 
 ; Sinclair-Joystick 1 (Tasten 6-0, Port 0xEFFE, Bit = 0 wenn gedrueckt):
 ; Bit 4 links, Bit 3 rechts, Bit 2 runter, Bit 1 hoch, Bit 0 Feuer
@@ -315,7 +322,11 @@ move_or_crash:
                 jr z,moc_move
                 ld (ix+C_STAT),2
                 ret
-moc_move:       ld a,(ix+C_DIR)
+moc_move:       ld a,(ix+C_X)
+                ld (ix+C_PX),a
+                ld a,(ix+C_Y)
+                ld (ix+C_PY),a
+                ld a,(ix+C_DIR)
                 ld (ix+C_MDIR),a
                 ld a,(ix+C_TX)
                 ld (ix+C_X),a
@@ -323,33 +334,66 @@ moc_move:       ld a,(ix+C_DIR)
                 ld (ix+C_Y),a
                 ; weiter mit plot_head
 
-; IX = Kontext: Kopfpixel setzen, Besitzer eintragen, Zelle nach Besitzer faerben
-; (1 = P1 cyan, 2 = P2 orange, 3 = beide: Kreuzungsfarbe)
+; IX = Kontext: Kopfpixel setzen, Besitzer eintragen, neue Kopfzelle und die
+; Zelle des vorherigen Kopfes neu faerben
 plot_head:
                 ld d,(ix+C_Y)
                 ld e,(ix+C_X)
                 push de
                 call pixel_set
                 pop de
-                call cell_index
+                call cell_index         ; HL = neue Kopfzelle
+                ld (ix+C_CL),l
+                ld (ix+C_CH),h
                 push hl
                 ld bc,owner
                 add hl,bc
                 ld a,(hl)
                 or (ix+C_ID)
                 ld (hl),a
-                ld e,a
+                pop hl
+                call paint_cell
+                ld d,(ix+C_PY)
+                ld e,(ix+C_PX)
+                call cell_index         ; HL = vorherige Zelle (gleich der neuen, wenn nicht gewechselt)
+                ; weiter mit paint_cell
+
+; HL = Zellindex: Attribut aus Besitzer (1 = P1 cyan, 2 = P2 orange, 3 = beide: weiss),
+; gedaempft; BRIGHT, wenn der Kopf eines Spielers in dieser Zelle steht
+paint_cell:
+                push hl
+                ld bc,owner
+                add hl,bc
+                ld e,(hl)
                 ld d,0
                 ld hl,attr_by_owner
                 add hl,de
-                ld a,(hl)
+                ld c,(hl)               ; C = Attribut ohne BRIGHT
                 pop hl
-                ld bc,0x5800
-                add hl,bc
-                ld (hl),a
+                ld a,(CTX1+C_STAT)
+                or a
+                jr z,pc_h2
+                ld de,(CTX1+C_CL)
+                or a
+                sbc hl,de
+                add hl,de               ; HL zurueck, Z bleibt erhalten
+                jr nz,pc_h2
+                set 6,c                 ; Kopf von P1 in dieser Zelle
+pc_h2:          ld a,(CTX2+C_STAT)
+                or a
+                jr z,pc_set
+                ld de,(CTX2+C_CL)
+                or a
+                sbc hl,de
+                add hl,de
+                jr nz,pc_set
+                set 6,c                 ; Kopf von P2 in dieser Zelle
+pc_set:         ld de,0x5800
+                add hl,de
+                ld (hl),c
                 ret
 
-attr_by_owner:  db ATTR_FIELD,ATTR_P1,ATTR_P2,ATTR_CROSS
+attr_by_owner:  db ATTR_FIELD,ATTR_P1_DIM,ATTR_P2_DIM,ATTR_CROSS_DIM
 
 ; D=y, E=x -> HL = Zellindex (Zeile*32 + Spalte), DE bleibt erhalten
 cell_index:
@@ -974,30 +1018,41 @@ am_off:         ld bc,0xBF3B
                 out (c),a
                 ret
 
+; 64 Eintraege: CLUT = Flash*2 + Bright. Bright (Bit 4 des Index) bekommt die
+; leuchtende Neon-Tabelle, ohne Bright die gedaempfte (Spuren), Flash wird nicht benutzt.
 set_palette:
-                ld hl,palette
                 ld d,0
-sp1:            ld bc,0xBF3B
+sp1:            ld a,d
+                and 0x10
+                ld hl,palette_dim
+                jr z,sp2
+                ld hl,palette_vivid
+sp2:            ld a,d
+                and 15
+                ld e,a
+                ld a,l
+                add a,e
+                ld l,a
+                jr nc,sp3
+                inc h
+sp3:            ld bc,0xBF3B
                 out (c),d
                 ld bc,0xFF3B
                 ld a,(hl)
                 out (c),a
-                inc hl
                 inc d
                 ld a,d
-                and 15
-                jr nz,sp2
-                ld hl,palette
-sp2:            ld a,d
                 cp 64
                 jr nz,sp1
                 ret
 
-; GRB 3-3-2:  Tinte 0-7, Paper 0-7 (Index 8-15); gleiche Tabelle in allen vier CLUTs
-palette:
+; GRB 3-3-2:  Tinte 0-7, Paper 0-7 (Index 8-15)
+palette_vivid:
                 ; Tinte: schwarz, blau, orange, violett, gruen, cyan, gelb, weiss
                 db 0x00,0x03,0x5C,0x1B,0xE0,0xE3,0xFC,0xFF
-                ; Paper: schwarz, dunkles Blau (Gitter), Rest wie Tinte
+                db 0x00,0x01,0x5C,0x1B,0xE0,0xE3,0xFC,0xFF
+palette_dim:    ; dieselben Farbtoene, etwa halb so hell (Spuren)
+                db 0x00,0x01,0x30,0x0E,0x80,0x82,0x90,0x92
                 db 0x00,0x01,0x5C,0x1B,0xE0,0xE3,0xFC,0xFF
 
 ; ------------------------------------------------------------

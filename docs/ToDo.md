@@ -61,14 +61,14 @@ Der Spectrum kennt nur eine Ink-Farbe pro 8x8-Zelle. Zwei Spuren in derselben Ze
 - Frontalzusammenstoß und gleicher Zielpixel = **Remis**.
 - Sieger/Remis-Anzeige am Rundenende.
 
-- State: InProgress
+- State: Done
 
 ### Stufe 4 – Farben und Kreuzungen
 - Besitzer-Tabelle steuert Zellfarbe: Spur 1, Spur 2, Kreuzung.
 - Kopfhervorhebung über BRIGHT, ULAplus-Palette für kräftige Neonfarben.
 - Prüfen, dass sich keine Zelle ungewollt umfärbt (Test mit Skript, Speicherdump der Attribute).
 
-- State: Open
+- State: InProgress
 
 ### Stufe 5 – Spielablauf
 - Runden und Match (z. B. "best of 5"), Punktestand im HUD.
