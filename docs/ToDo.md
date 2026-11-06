@@ -99,7 +99,7 @@ Der Spectrum kennt nur eine Ink-Farbe pro 8x8-Zelle. Zwei Spuren in derselben Ze
 - AY-Titelmusik, Crash- und Siegeseffekte, kein Dauergeräusch im Spiel (wie bei XBlast Pro).
 - Soundcode aus Pong Pro / XBlast Pro als Basis.
 
-- State: InProgress
+- State: Done
 
 ### Stufe 9 – Arenen
 - Feldvarianten: leer, Block in der Mitte, Säulen, Rahmen mit Lücken.
@@ -107,7 +107,7 @@ Der Spectrum kennt nur eine Ink-Farbe pro 8x8-Zelle. Zwei Spuren in derselben Ze
 - Zufällige Arena pro Runde oder wählbar im Menü.
 
 - 3. Meilenstein
-- State: Open
+- State: InProgress
 
 ### Stufe 10 – Feinschliff und Extras (optional, einzeln freigebbar)
 - Boost mit Feuertaste (kurz schneller, begrenzt).

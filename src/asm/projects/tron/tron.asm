@@ -16,6 +16,7 @@ AITEST          equ 0           ; 1 = beide Fahrzeuge vom Computer gesteuert (nu
 RNG_SEED        equ 0xACE1      ; Startwert des Zufallsgenerators (im Testbau variiert)
 LEVEL_P1        equ 1           ; nur AITEST: Stufe von Fahrzeug 1 / 2
 LEVEL_P2        equ 1
+ARENA_DEFAULT   equ 0           ; Arena beim Start: 0 leer, 1 Block, 2 Pfeiler, 3 Rahmen, 4 Zufall
 LEVEL_DEFAULT   equ 1           ; Computerstufe: 0 leicht, 1 mittel, 2 schwer
 TESTBUILD       equ 0           ; 1 = Testbau: kein Countdown, Feuer startet die Runde sofort neu
 
@@ -75,6 +76,9 @@ ai_s2           equ VARS+0x27F
 ai_cl           equ VARS+0x280
 ai_cr           equ VARS+0x281
 d_prev          equ VARS+0x282  ; letzter Zustand Taste D
+arena           equ VARS+0x283  ; Menuewahl: 0 leer, 1 Block, 2 Pfeiler, 3 Rahmen, 4 Zufall
+arena_cur       equ VARS+0x284  ; tatsaechliche Arena der laufenden Runde (0..3)
+a_prev          equ VARS+0x285  ; letzter Zustand Taste A
 MUSCH           equ VARS+0x290  ; 3 Musikkanaele je 16 Byte
 mus_on          equ VARS+0x2C0  ; 1 = Titelmusik laeuft
 sfx_cnt         equ VARS+0x2C1  ; Rest des Bedien-Pieps auf Kanal C
@@ -94,6 +98,7 @@ CD_STEP         equ 50          ; Countdown: Bilder pro Ziffer (3 - 2 - 1)
 ATTR_FIELD      equ 0x47        ; BRIGHT, Paper 0, Ink 7
 ATTR_FRAME      equ 0x43        ; BRIGHT, Paper 0, Ink 3 (Magenta/Violett)
 ATTR_BLACK      equ 0x40
+ATTR_OBST       equ 0x44        ; Hindernisse: BRIGHT, Gruen
 ATTR_P1         equ 0x45        ; Cyan
 ATTR_P2         equ 0x42        ; Rot/Orange
 ATTR_TITLE      equ 0x46        ; Gelb
@@ -123,6 +128,7 @@ G_K             equ 28
 G_D             equ 29
 G_B             equ 30
 G_GT            equ 31
+G_Z             equ 32
 
 ROW_FRAME_TOP   equ 2
 ROW_FRAME_BOT   equ 23
@@ -234,6 +240,7 @@ new_round:
                 call cls
                 call draw_frame
                 call draw_field_attrs
+                call draw_arena
                 call draw_hud
                 call init_game
                 if TESTBUILD
@@ -787,6 +794,11 @@ init_settings:
                 ld (s_prev),a
                 ld (t_prev),a
                 ld (d_prev),a
+                ld (a_prev),a
+                ld a,ARENA_DEFAULT
+                ld (arena),a
+                ld (arena_cur),a
+                ld a,1
                 ld hl,RNG_SEED
                 ld (rng),hl
                 ld a,LEVEL_DEFAULT
@@ -986,6 +998,7 @@ tl4:            push de
                 call draw_mode
                 call draw_level
                 call draw_speed
+                call draw_arena_menu
                 call draw_vol
                 call draw_record
                 ld a,ATTR_P1_DIM
@@ -996,7 +1009,7 @@ tl4:            push de
                 call print_str
                 ld hl,str_hint2
                 ld d,22
-                ld e,9
+                ld e,4
                 call print_str
                 jp mus_start
 
@@ -1199,7 +1212,7 @@ draw_vol:
                 ld a,ATTR_P1_DIM
                 ld (txt_attr),a
                 ld hl,str_ton
-                ld d,16
+                ld d,17
                 ld e,11
                 call print_str
                 ld a,ATTR_TITLE
@@ -1208,28 +1221,51 @@ draw_vol:
                 or a
                 jr nz,dv1
                 ld hl,str_aus
-                ld d,16
+                ld d,17
                 ld e,15
                 jp print_str
-dv1:            ld d,16
+dv1:            ld d,17
                 ld e,15
                 call show_glyph
                 ld hl,str_blank2
-                ld d,16
+                ld d,17
                 ld e,16
                 jp print_str
 
-draw_record:
+; Arena-Auswahl im Menue
+draw_arena_menu:
                 ld a,ATTR_P1_DIM
                 ld (txt_attr),a
+                ld hl,str_arena
+                ld d,16
+                ld e,9
+                call print_str
+                ld a,ATTR_TITLE
+                ld (txt_attr),a
+                ld a,(arena)
+                add a,a
+                ld e,a
+                ld d,0
+                ld hl,str_ar_tab
+                add hl,de
+                ld e,(hl)
+                inc hl
+                ld d,(hl)
+                ex de,hl
+                ld d,16
+                ld e,15
+                jp print_str
+
+draw_record:                ld a,ATTR_P1_DIM
+                ld (txt_attr),a
                 ld hl,str_rekord
-                ld d,18
+                ld d,19
                 ld e,10
                 call print_str
                 ld a,ATTR_TITLE
                 ld (txt_attr),a
                 ld hl,record
-                ld de,0x1211
+                ld de,0x1311
                 jp draw_pts
 
 str_1p:         db 1,G_SP,G_S,G_P,G_I,G_E,G_L,G_E,G_R,0xFF
@@ -1245,7 +1281,14 @@ str_blank2:     db G_SP,G_SP,0xFF
 str_rekord:     db G_R,G_E,G_K,G_O,G_R,G_D,G_SP,0xFF
 str_fire:       db G_F,G_E,G_U,G_E,G_R,0xFF
 str_hint1:      db G_S,G_SP,G_T,G_E,G_M,G_P,G_O,G_SP,G_SP,G_D,G_SP,G_S,G_T,G_U,G_F,G_E,0xFF
-str_hint2:      db G_T,G_SP,G_T,G_O,G_N,G_SP,G_SP,G_C,G_SP,G_F,G_A,G_R,G_B,G_E,0xFF
+str_hint2:      db G_A,G_SP,G_A,G_R,G_E,G_N,G_A,G_SP,G_SP,G_T,G_SP,G_T,G_O,G_N,G_SP,G_SP,G_C,G_SP,G_F,G_A,G_R,G_B,G_E,0xFF
+str_arena:      db G_A,G_R,G_E,G_N,G_A,0xFF
+str_ar0:        db G_L,G_E,G_E,G_R,G_SP,G_SP,G_SP,0xFF
+str_ar1:        db G_B,G_L,G_O,G_C,G_K,G_SP,G_SP,0xFF
+str_ar2:        db G_P,G_F,G_E,G_I,G_L,G_E,G_R,0xFF
+str_ar3:        db G_R,G_A,G_H,G_M,G_E,G_N,G_SP,0xFF
+str_ar4:        db G_Z,G_U,G_F,G_A,G_L,G_L,G_SP,0xFF
+str_ar_tab:     dw str_ar0,str_ar1,str_ar2,str_ar3,str_ar4
 str_stufe:      db G_S,G_T,G_U,G_F,G_E,0xFF
 str_lv0:        db G_L,G_E,G_I,G_C,G_H,G_T,0xFF
 str_lv1:        db G_M,G_I,G_T,G_T,G_E,G_L,0xFF
@@ -1336,7 +1379,20 @@ ts2:            ld b,0xFD
 ts_l:           ld (level),a
                 call ui_blip
                 call draw_level
-ts4:            ld a,r                  ; Zufallsgenerator mit der Wartezeit des Spielers mischen
+ts4:            ld b,0xFD
+                ld c,0x01
+                ld hl,a_prev
+                call key_edge
+                jr nc,ts5
+                ld a,(arena)
+                inc a
+                cp 5
+                jr c,ts_a
+                xor a
+ts_a:           ld (arena),a
+                call ui_blip
+                call draw_arena_menu
+ts5:            ld a,r                  ; Zufallsgenerator mit der Wartezeit des Spielers mischen
                 ld hl,rng
                 xor (hl)
                 or 1
@@ -2224,6 +2280,98 @@ sc1:            ld (hl),0xFF
                 pop de
                 ret
 
+; ------------------------------------------------------------
+;  Stufe 9: Arenen
+; ------------------------------------------------------------
+; Hindernis-Zelle: voll gesetzt, eigene Wandfarbe (DE bleibt erhalten)
+obst_cell:
+                call solid_cell
+                push de
+                call attr_addr
+                ld (hl),ATTR_OBST
+                pop de
+                ret
+
+; Rechteck aus Hindernissen: D/E = Zeile/Spalte links oben, B = Hoehe, C = Breite
+obst_rect:
+                push de
+                push bc
+orr_r:          push de
+                push bc
+orr_c:          push bc
+                call obst_cell
+                pop bc
+                inc e
+                dec c
+                jr nz,orr_c
+                pop bc
+                pop de
+                inc d
+                djnz orr_r
+                pop bc
+                pop de
+                ret
+
+; zeichnet die Arena der Runde (arena_cur wird aus arena bestimmt)
+draw_arena:
+                ld a,(arena)
+                cp 4
+                jr nz,da_set
+                call rand8
+                and 3
+da_set:         ld (arena_cur),a
+                or a
+                ret z
+                dec a
+                jr z,da_block
+                dec a
+                jr z,da_pillars
+                ; Rahmen mit Luecken: Ring Spalten 9-22, Zeilen 8-17
+                ld d,8
+                ld e,9
+                ld b,1
+                ld c,6                  ; oben links (Spalten 9-14)
+                call obst_rect
+                ld e,17
+                call obst_rect          ; oben rechts (17-22)
+                ld d,17
+                ld e,9
+                call obst_rect          ; unten links
+                ld e,17
+                call obst_rect          ; unten rechts
+                ld d,9
+                ld e,9
+                ld b,3
+                ld c,1                  ; links oben (Zeilen 9-11)
+                call obst_rect
+                ld e,22
+                call obst_rect
+                ld d,14
+                ld e,9
+                call obst_rect          ; links unten (14-16)
+                ld e,22
+                jp obst_rect
+da_block:       ld d,11
+                ld e,14
+                ld b,4
+                ld c,4
+                jp obst_rect
+da_pillars:     ld hl,pillar_tab
+dp_l:           ld d,(hl)
+                inc hl
+                ld a,d
+                cp 0xFF
+                ret z
+                ld e,(hl)
+                inc hl
+                push hl
+                call obst_cell
+                pop hl
+                jr dp_l
+pillar_tab:     db 7,6, 7,12, 7,19, 7,25
+                db 18,6, 18,12, 18,19, 18,25
+                db 0xFF
+
 draw_frame:
                 ld e,0
 df1:            ld d,ROW_FRAME_TOP
@@ -2495,6 +2643,8 @@ font:           ; 0-9
                 db 0x00,0x78,0x44,0x42,0x42,0x44,0x78,0x00
                 db 0x00,0x7C,0x42,0x7C,0x42,0x42,0x7C,0x00
                 db 0x00,0x60,0x30,0x18,0x30,0x60,0x00,0x00
+                ; Z
+                db 0x00,0x7E,0x04,0x08,0x10,0x20,0x7E,0x00
 
 ; ------------------------------------------------------------
 ;  Pixelroutinen (fuer die naechsten Stufen)
