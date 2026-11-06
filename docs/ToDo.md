@@ -107,7 +107,7 @@ Der Spectrum kennt nur eine Ink-Farbe pro 8x8-Zelle. Zwei Spuren in derselben Ze
 - Zufällige Arena pro Runde oder wählbar im Menü.
 
 - 3. Meilenstein
-- State: InProgress
+- State: Done
 
 ### Stufe 10 – Feinschliff und Extras (optional, einzeln freigebbar)
 - Boost mit Feuertaste (kurz schneller, begrenzt).
@@ -116,7 +116,7 @@ Der Spectrum kennt nur eine Ink-Farbe pro 8x8-Zelle. Zwei Spuren in derselben Ze
 - Weitere Ideen nach Geschmack.
 
 - 4. Meilenstein
-- State: Open
+- State: InProgress
 
 ## Technische Hinweise
 

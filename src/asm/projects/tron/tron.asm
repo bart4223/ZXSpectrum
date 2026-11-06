@@ -18,6 +18,7 @@ LEVEL_P1        equ 1           ; nur AITEST: Stufe von Fahrzeug 1 / 2
 LEVEL_P2        equ 1
 ARENA_DEFAULT   equ 0           ; Arena beim Start: 0 leer, 1 Block, 2 Pfeiler, 3 Rahmen, 4 Zufall
 LEVEL_DEFAULT   equ 1           ; Computerstufe: 0 leicht, 1 mittel, 2 schwer
+FIRE_NEW        equ 1           ; Testbau: Feuer startet die Runde neu (0 = Feuer ist Boost)
 TESTBUILD       equ 0           ; 1 = Testbau: kein Countdown, Feuer startet die Runde sofort neu
 
                 org 0x8000
@@ -234,6 +235,11 @@ C_PX            equ 9           ; Position vor dem letzten Zug
 C_PY            equ 10
 C_CL            equ 11          ; Zellindex des Kopfes (16 Bit)
 C_CH            equ 12
+C_EN            equ 13          ; Boost-Energie (0..BOOST_MAX)
+C_BST           equ 14          ; 1 = Feuer gedrueckt (Boost gewuenscht)
+C_CHG           equ 15          ; Zaehler fuer das Aufladen
+BOOST_MAX       equ 32          ; Energie = Zusatzschritte, Balken 4 Zellen
+BOOST_RECH      equ 7           ; Maske: alle 8 Schritte +1 Energie
 
 ; Neues Spielfeld aufbauen und beide Motorraeder an den Start setzen
 new_round:
@@ -278,6 +284,27 @@ init_game:
                 ld (state),a
                 ld (anim),a
                 ld (result),a
+                ld a,BOOST_MAX
+                ld (CTX1+C_EN),a
+                ld (CTX2+C_EN),a
+                xor a
+                ld (CTX1+C_BST),a
+                ld (CTX2+C_BST),a
+                ld (CTX1+C_CHG),a
+                ld (CTX2+C_CHG),a
+                ld d,1
+                ld e,6
+                ld b,4
+                ld a,ATTR_P1
+                call attr_fill
+                ld e,22
+                ld b,4
+                ld a,ATTR_P2
+                call attr_fill
+                ld ix,CTX1
+                call draw_bar
+                ld ix,CTX2
+                call draw_bar
                 ld ix,CTX1
                 call plot_head          ; Startpixel
                 ld a,(CTX2+C_STAT)
@@ -293,7 +320,11 @@ ctx_init2:      db 255-START_X,START_Y,3,3,2,TWO_PLAYERS,0,0,0,255-START_X,START
 ; Feuer: nur nach dem Matchende (zurueck ins Titelbild); im Testbau startet es die Runde neu
 fire_pressed:
                 if TESTBUILD
+                if FIRE_NEW
                 jp new_round
+                else
+                ret
+                endif
                 else
                 ld a,(state)
                 cp 4
@@ -310,9 +341,17 @@ read_joy1:
                 ld a,0xEF
                 in a,(0xFE)
                 ld b,a
+                ld a,1
                 bit 0,b
-                jp z,fire_pressed
-                ld ix,CTX1
+                jr nz,rj1_nf
+                ld (CTX1+C_BST),a       ; Feuer: Boost wuenschen
+                push bc
+                call fire_pressed
+                pop bc
+                jr rj1_f
+rj1_nf:         xor a
+                ld (CTX1+C_BST),a
+rj1_f:          ld ix,CTX1
                 bit 1,b
                 jr nz,rj1_nu
                 xor a                   ; hoch
@@ -336,9 +375,16 @@ read_joy2:
                 ld a,0xF7
                 in a,(0xFE)
                 ld b,a
+                xor a
+                ld (CTX2+C_BST),a
                 bit 4,b
-                jp z,fire_pressed
+                jr nz,rj2_nf
+                push bc
+                call fire_pressed
+                pop bc
                 ld a,(mode)
+                ld (CTX2+C_BST),a       ; nur im 2-Spieler-Modus Boost (mode = 1)
+rj2_nf:         ld a,(mode)
                 or a
                 ret z                   ; 1 Spieler: Fahrzeug 2 steuert der Computer
                 ld ix,CTX2
@@ -390,8 +436,86 @@ game_step:
                 ret nz                  ; Crash im ersten Schritt
                 ld a,(spd_steps)
                 cp 2
-                ret c
-                ; schnell: zweiter Schritt im selben Bild, jeder Schritt wird einzeln geprueft
+                jr c,gs_boost
+                call game_move          ; schnell: zweiter Schritt im selben Bild, jeder Schritt wird einzeln geprueft
+                ld a,(state)
+                or a
+                ret nz
+gs_boost:       ld ix,CTX1              ; Boost: ein Zusatzschritt je Schritt, solange Feuer und Energie da sind
+                call boost_one
+                ld a,(state)
+                or a
+                ret nz
+                ld ix,CTX2
+                jp boost_one
+
+; IX = Kontext: Boost-Zusatzschritt (nur ein Fahrzeug) oder Aufladen
+boost_one:
+                ld a,(ix+C_STAT)
+                cp 1
+                ret nz
+                ld a,(ix+C_BST)
+                or a
+                jr z,bo_rech
+                ld a,(ix+C_EN)
+                or a
+                ret z                   ; leer: kein Boost, kein Aufladen bei gehaltenem Feuer
+                dec (ix+C_EN)
+                call draw_bar
+                call calc_target
+                call move_or_crash
+                jp eval_crash
+bo_rech:        inc (ix+C_CHG)
+                ld a,(ix+C_CHG)
+                and BOOST_RECH
+                ret nz
+                ld a,(ix+C_EN)
+                cp BOOST_MAX
+                ret nc
+                inc a
+                ld (ix+C_EN),a
+                jp draw_bar
+
+; IX = Kontext: Energiebalken in Zeile 1 (Spieler 1 ab Spalte 6, Spieler 2 ab Spalte 22), 4 Zellen
+draw_bar:
+                ld e,6
+                ld a,(ix+C_ID)
+                cp 1
+                jr z,dbr
+                ld e,22
+dbr:            ld d,1
+                ld c,(ix+C_EN)
+                ld b,4
+dbl:            ld a,8
+                cp c
+                jr c,dbf                ; Energie > 8: volle Zelle
+                ld a,c
+dbf:            ld l,a                  ; n = Pixel in dieser Zelle
+                ld a,c
+                sub l
+                ld c,a
+                ld a,l
+                ld hl,bar_mask
+                add a,l
+                ld l,a
+                jr nc,dbm
+                inc h
+dbm:            ld a,(hl)
+                push af
+                call cell_addr
+                pop af
+                inc h
+                inc h
+                inc h
+                ld (hl),a
+                inc h
+                ld (hl),a
+                inc h
+                ld (hl),a
+                inc e
+                djnz dbl
+                ret
+bar_mask:       db 0x00,0x80,0xC0,0xE0,0xF0,0xF8,0xFC,0xFE,0xFF
 
 game_move:
                 if AITEST
@@ -438,6 +562,7 @@ gs_noshare:
                 call move_or_crash
                 ld ix,CTX2
                 call move_or_crash
+eval_crash:
                 ld b,0
                 ld a,(CTX1+C_STAT)
                 cp 2
