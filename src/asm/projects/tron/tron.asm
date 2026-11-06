@@ -728,7 +728,11 @@ init_settings:
                 ld (speed),a
                 ld (s_prev),a
                 ld (t_prev),a
-                ld a,5
+                if TESTBUILD
+                ld a,5                  ; Testbau: volle Lautstaerke
+                else
+                ld a,3                  ; Standard-Lautstaerke 3
+                endif
                 ld (vol),a
                 ld hl,record
                 ld de,record+1
@@ -1097,7 +1101,7 @@ draw_vol:
                 ld (txt_attr),a
                 ld hl,str_ton
                 ld d,16
-                ld e,9
+                ld e,11
                 call print_str
                 ld a,ATTR_TITLE
                 ld (txt_attr),a
