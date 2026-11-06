@@ -80,7 +80,9 @@ d_prev          equ VARS+0x282  ; letzter Zustand Taste D
 arena           equ VARS+0x283  ; Menuewahl: 0 leer, 1 Block, 2 Pfeiler, 3 Rahmen, 4 Zufall
 arena_cur       equ VARS+0x284  ; tatsaechliche Arena der laufenden Runde (0..3)
 a_prev          equ VARS+0x285  ; letzter Zustand Taste A
+newrec          equ VARS+0x286  ; 1 = im letzten Match wurde der Rekord verbessert
 MUSCH           equ VARS+0x290  ; 3 Musikkanaele je 16 Byte
+outro_buf       equ VARS+0x2D0  ; Textpuffer Abspann (8 Byte)
 mus_on          equ VARS+0x2C0  ; 1 = Titelmusik laeuft
 sfx_cnt         equ VARS+0x2C1  ; Rest des Bedien-Pieps auf Kanal C
 testres         equ VARS+0x300  ; Ergebnisse des Selbsttests
@@ -813,6 +815,8 @@ wait_step:
                 xor a
                 ld (anim),a
                 ld (tick),a
+                xor a
+                ld (newrec),a
                 ld hl,pts1              ; Rekord der Sitzung
                 call rec_try
                 ld a,(mode)
@@ -820,7 +824,8 @@ wait_step:
                 jr z,we_nr
                 ld hl,pts2
                 call rec_try
-we_nr:          ld hl,fanfare
+we_nr:          call outro_enter
+                ld hl,fanfare
                 ld a,(match_over)
                 cp 2
                 jr nz,we_go
@@ -830,7 +835,7 @@ we_nr:          ld hl,fanfare
                 ld hl,fanfare_lose      ; Computer gewinnt das Match
 we_go:          jp jingle_start
 
-; Matchende: Siegertext und Aufforderung wechseln alle 64 Bilder
+; Matchende: FEUER blinkt auf dem Abspannbild
 match_step:
                 ld a,(anim)
                 cp 100
@@ -842,28 +847,183 @@ ms_a:           ld a,(tick)
                 inc a
                 ld (tick),a
                 ld a,b
-                and 0x3F
+                and 0x1F
                 ret nz
-                bit 6,b
-                jr nz,ms_press
+                ld a,ATTR_TITLE
+                ld (txt_attr),a
+                ld hl,str_fire
+                bit 5,b
+                jr z,ms_pr
+                ld hl,str_blank5
+ms_pr:          ld d,20
+                ld e,14
+                jp print_str
+
+; Siegerfarbe: A = Cyan (Sieger 1) oder Orange (Sieger 2)
+winner_attr:
                 ld a,(match_over)
                 cp 2
                 ld a,ATTR_P1
-                ld hl,str_m_p1
-                jr nz,ms_pr
+                ret nz
                 ld a,ATTR_P2
-                ld hl,str_m_p2
-                jr ms_pr
-ms_press:       ld a,ATTR_TITLE
-                ld hl,str_press
-ms_pr:          ld (txt_attr),a
-                ld d,1
-                ld e,11
-                jp print_str
+                ret
 
-str_m_p1:       db 15,10,1,15,21,19,17,16,11,15,15,0xFF       ; P1 SIEGT
-str_m_p2:       db 15,10,2,15,21,19,17,16,11,15,15,0xFF
-str_press:      db 15,15,15,22,17,23,17,12,15,15,15,0xFF      ; FEUER
+; Abspann: Siegerbild mit grossem P1/P2, Stand, Gesamtpunkten und Rekord
+outro_enter:
+                call cls
+                call draw_frame
+                call draw_field_attrs
+                ld a,G_P
+                ld d,4
+                ld e,11
+                call big_glyph
+                ld a,(match_over)
+                ld d,4
+                ld e,17
+                call big_glyph
+                ld b,2                  ; Farben: oben hell, unten gedaempft
+                ld d,4
+oe1:            push bc
+                call winner_attr
+                ld e,11
+                ld b,4
+                call attr_fill
+                call winner_attr
+                ld e,17
+                ld b,4
+                call attr_fill
+                inc d
+                pop bc
+                djnz oe1
+                ld b,2
+oe2:            push bc
+                call winner_attr
+                and 7
+                ld e,11
+                ld b,4
+                call attr_fill
+                call winner_attr
+                and 7
+                ld e,17
+                ld b,4
+                call attr_fill
+                inc d
+                pop bc
+                djnz oe2
+                ; Spuren in der Siegerfarbe ueber und unter dem Text
+                ld d,3
+                call oe_line
+                ld d,18
+                call oe_line
+                ; Siegertext
+                call winner_attr
+                ld (txt_attr),a
+                ld hl,str_sieger
+                ld e,13
+                ld a,(match_over)
+                cp 2
+                jr nz,oe3
+                ld a,(mode)
+                or a
+                jr nz,oe3
+                ld hl,str_cpu
+                ld e,12
+oe3:            ld d,9
+                call print_str
+                ; Stand "3 ZU 1"
+                ld a,(score1)
+                ld (outro_buf),a
+                ld a,G_SP
+                ld (outro_buf+1),a
+                ld a,G_Z
+                ld (outro_buf+2),a
+                ld a,G_U
+                ld (outro_buf+3),a
+                ld a,G_SP
+                ld (outro_buf+4),a
+                ld a,(score2)
+                ld (outro_buf+5),a
+                ld a,0xFF
+                ld (outro_buf+6),a
+                ld a,ATTR_TITLE
+                ld (txt_attr),a
+                ld hl,outro_buf
+                ld d,11
+                ld e,13
+                call print_str
+                ; Gesamtpunkte
+                ld a,ATTR_P1
+                ld (txt_attr),a
+                ld hl,str_p1
+                ld d,13
+                ld e,7
+                call print_str
+                ld hl,pts1
+                ld de,0x0D0A
+                call draw_pts
+                ld a,ATTR_P2
+                ld (txt_attr),a
+                ld hl,str_p2
+                ld d,13
+                ld e,19
+                call print_str
+                ld hl,pts2
+                ld de,0x0D16
+                call draw_pts
+                ; Rekord
+                ld a,(newrec)
+                or a
+                jr z,oe_rec
+                ld a,ATTR_TITLE
+                ld (txt_attr),a
+                ld hl,str_newrec
+                ld d,15
+                ld e,10
+                call print_str
+                ld hl,record
+                ld de,0x100E
+                jp draw_pts
+oe_rec:         ld a,ATTR_P1_DIM
+                ld (txt_attr),a
+                ld hl,str_rekord
+                ld d,15
+                ld e,10
+                call print_str
+                ld hl,record
+                ld de,0x0F11
+                jp draw_pts
+
+; D = Zeile: Linie (3 Pixel hoch) von Spalte 6 bis 25 in der Siegerfarbe
+oe_line:
+                ld e,6
+                ld b,20
+oel1:           push bc
+                push de
+                call cell_addr
+                inc h
+                inc h
+                inc h
+                ld (hl),0xFF
+                inc h
+                ld (hl),0xFF
+                inc h
+                ld (hl),0xFF
+                pop de
+                push de
+                call attr_addr
+                push hl
+                call winner_attr
+                pop hl
+                ld (hl),a
+                pop de
+                pop bc
+                inc e
+                djnz oel1
+                ret
+
+str_sieger:     db G_S,G_I,G_E,G_G,G_E,G_R,0xFF
+str_cpu:        db G_C,G_O,G_M,G_P,G_U,G_T,G_E,G_R,0xFF
+str_newrec:     db G_N,G_E,G_U,G_E,G_R,G_SP,G_R,G_E,G_K,G_O,G_R,G_D,0xFF
 
 ; Countdown 3 - 2 - 1, dann Start
 countdown_step:
@@ -1019,7 +1179,9 @@ rt1:            ld a,(de)
                 inc de
                 djnz rt1
                 jr rt_end
-rt_copy:        pop hl
+rt_copy:        ld a,1
+                ld (newrec),a
+                pop hl
                 ld de,record
                 ld bc,4
                 ldir
