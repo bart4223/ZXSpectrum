@@ -111,12 +111,10 @@ Der Spectrum kennt nur eine Ink-Farbe pro 8x8-Zelle. Zwei Spuren in derselben Ze
 
 ### Stufe 10 – Feinschliff und Extras (optional, einzeln freigebbar)
 - Boost mit Feuertaste (kurz schneller, begrenzt).
-- Lücken-Sprung (ein Pixel Lücke in der eigenen Spur).
 - Abspann/Siegerbild, Rekord-Anzeige verfeinern.
-- Weitere Ideen nach Geschmack.
 
 - 4. Meilenstein
-- State: InProgress
+- State: Done
 
 ## Technische Hinweise
 
