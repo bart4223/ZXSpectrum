@@ -93,13 +93,13 @@ Der Spectrum kennt nur eine Ink-Farbe pro 8x8-Zelle. Zwei Spuren in derselben Ze
 - Test: Headless-Läufe computer gegen computer, um Endlosschleifen und Selbstmordmuster zu finden.
 
 - 2. Meilenstein
-- State: InProgress
+- State: Done
 
 ### Stufe 8 – Sound (128K)
 - AY-Titelmusik, Crash- und Siegeseffekte, kein Dauergeräusch im Spiel (wie bei XBlast Pro).
 - Soundcode aus Pong Pro / XBlast Pro als Basis.
 
-- State: Open
+- State: InProgress
 
 ### Stufe 9 – Arenen
 - Feldvarianten: leer, Block in der Mitte, Säulen, Rahmen mit Lücken.
@@ -124,7 +124,6 @@ Der Spectrum kennt nur eine Ink-Farbe pro 8x8-Zelle. Zwei Spuren in derselben Ze
 - **Speicher:** Code gegen den Variablenbereich prüfen (Pacman-Erfahrung), VARS ausreichend weit oben legen; 128K: ab 0xC000 liegt Bank 7.
 - **Doppelpuffer:** Nicht nötig, solange nur Köpfe und Spur gesetzt werden. Eventuell nur für Explosionseffekte.
 - **Tests ohne Hardware:** Headless-Emulator mit Tastenskript, Frame-Dump nach PNG, Speicherdump per Env-Variable. Feste Testfälle: Wandcrash, Eigenspur, Frontalzusammenstoß, gleichzeitiger Zielpixel, Kreuzung zweier Spuren in einer Zelle.
-- **Abgabe pro Stufe:** `tron.tap`, `tron.asm`, Screenshot oder GIF.
 
 ---
 

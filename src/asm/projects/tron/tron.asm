@@ -1,5 +1,5 @@
 ; ============================================================
-;  TRON fuer den ZX Spectrum 128K  -  Stufe 7: Computergegner (3 Stufen)
+;  TRON fuer den ZX Spectrum 128K  -  Stufe 8: Sound (Titelmusik, Jingles, Effekte)
 ;  Assembler: pasmo (--tapbas)    Dateien: tron.asm / tron.tap
 ; ============================================================
 ;  Bildschirm: 32x24 Zellen
@@ -75,6 +75,9 @@ ai_s2           equ VARS+0x27F
 ai_cl           equ VARS+0x280
 ai_cr           equ VARS+0x281
 d_prev          equ VARS+0x282  ; letzter Zustand Taste D
+MUSCH           equ VARS+0x290  ; 3 Musikkanaele je 16 Byte
+mus_on          equ VARS+0x2C0  ; 1 = Titelmusik laeuft
+sfx_cnt         equ VARS+0x2C1  ; Rest des Bedien-Pieps auf Kanal C
 testres         equ VARS+0x300  ; Ergebnisse des Selbsttests
 owner           equ VARS+0x400  ; Besitzer-Tabelle 32x24 (0 leer, 1 = P1, 2 = P2, 3 = beide)
 
@@ -186,6 +189,7 @@ main:
                 jr main
 m_title:        call title_input
                 call title_step
+                call music_step
                 call jingle_step
                 jr main
 
@@ -650,9 +654,15 @@ cs_end:
                 ld (anim),a
                 ld a,(result)
                 cp 3
+                ld hl,jingle_draw
+                jr z,cs_jg
+                cp 2
                 ld hl,jingle_win
                 jr nz,cs_jg
-                ld hl,jingle_draw
+                ld a,(mode)             ; 1 Spieler: gewinnt der Computer, klingt es traurig
+                or a
+                jr nz,cs_jg
+                ld hl,jingle_lose
 cs_jg:          jp jingle_start
 
 ; Pause nach dem Crash, danach neue Runde
@@ -679,7 +689,14 @@ wait_step:
                 ld hl,pts2
                 call rec_try
 we_nr:          ld hl,fanfare
-                jp jingle_start
+                ld a,(match_over)
+                cp 2
+                jr nz,we_go
+                ld a,(mode)
+                or a
+                jr nz,we_go
+                ld hl,fanfare_lose      ; Computer gewinnt das Match
+we_go:          jp jingle_start
 
 ; Matchende: Siegertext und Aufforderung wechseln alle 64 Bilder
 match_step:
@@ -845,6 +862,7 @@ vn_set:         ld (vol),a
                 ret nz                  ; nur waehrend der Fahrt piepsen
                 jr vn_beep
 vn_t:           call draw_vol
+                jp ui_blip              ; im Titelbild: Blip auf Kanal C in der neuen Lautstaerke
 vn_beep:        ld a,(vol)
                 or a
                 ret z
@@ -979,7 +997,8 @@ tl4:            push de
                 ld hl,str_hint2
                 ld d,22
                 ld e,9
-                jp print_str
+                call print_str
+                jp mus_start
 
 ; D = Zeile, E = Spalte, B = Anzahl, A = Attribut; Ergebnis: HL = Adresse des ersten Attributs
 attr_fill:
@@ -1269,6 +1288,7 @@ ti_set:         ld hl,mode
                 cp (hl)
                 ret z
                 ld (hl),a
+                call ui_blip
                 call draw_mode
                 jp draw_level
 ti_fire:        ld a,(anim)
@@ -1280,6 +1300,7 @@ ti_fire:        ld a,(anim)
                 ld (match_over),a
                 call clear_pts
                 call apply_speed
+                call mus_stop
                 jp new_round
 
 ; Titelbild: Taste S schaltet das Tempo, FEUER blinkt
@@ -1300,6 +1321,7 @@ ts1:            ld b,0xFD
                 jr c,ts_s
                 xor a
 ts_s:           ld (speed),a
+                call ui_blip
                 call draw_speed
 ts2:            ld b,0xFD
                 ld c,0x04
@@ -1312,6 +1334,7 @@ ts2:            ld b,0xFD
                 jr c,ts_l
                 xor a
 ts_l:           ld (level),a
+                call ui_blip
                 call draw_level
 ts4:            ld a,r                  ; Zufallsgenerator mit der Wartezeit des Spielers mischen
                 ld hl,rng
@@ -1621,6 +1644,213 @@ at_ok:          ld a,(ai_cr)
                 ld (ix+C_DIR),a
                 ret
 
+
+; ------------------------------------------------------------
+;  Stufe 8: Titelmusik (3 Kanaele, 50 Hz-Takt), Bedien-Blip
+; ------------------------------------------------------------
+; Kanal-Block (16 Byte): +0/1 Zeiger, +2 Restdauer, +3 Bilder seit Notenbeginn, +4 Tonregister,
+; +5 Lautstaerkeregister, +6 Startlautstaerke, +7 Mindestlautstaerke, +8/9 Anfang (Schleife),
+; +10 aktuelle Note (0 = Pause), +11/12 aktuelle Periode
+mus_tpl:
+                dw mus_a
+                db 0,0,0,8,12,7
+                dw mus_a
+                db 0
+                dw 0
+                db 0,0,0
+                dw mus_b
+                db 0,0,2,9,12,9
+                dw mus_b
+                db 0
+                dw 0
+                db 0,0,0
+                dw mus_c
+                db 0,0,4,10,9,4
+                dw mus_c
+                db 0
+                dw 0
+                db 0,0,0
+
+mus_start:
+                ld hl,mus_tpl
+                ld de,MUSCH
+                ld bc,48
+                ldir
+                ld a,1
+                ld (mus_on),a
+                xor a
+                ld (sfx_cnt),a
+                ld a,7
+                ld e,0x38               ; drei Toene, kein Rauschen
+                jp ay_wr
+
+mus_stop:
+                xor a
+                ld (mus_on),a
+                ld (sfx_cnt),a
+                jp ay_silence
+
+; jedes Bild im Titelbild
+music_step:
+                ld a,(mus_on)
+                or a
+                ret z
+                ld ix,MUSCH
+                call chan_step
+                ld ix,MUSCH+16
+                call chan_step
+                ld ix,MUSCH+32
+                call chan_step
+                ld a,(sfx_cnt)
+                or a
+                ret z
+                dec a
+                ld (sfx_cnt),a
+                jr z,sf_end
+                ld hl,blip_tab
+                ld e,a
+                ld d,0
+                add hl,de
+                ld e,(hl)
+                ld a,4
+                call ay_wr
+                ld a,5
+                ld e,0
+                call ay_wr
+                ld a,12
+                call vol_apply
+                ld e,a
+                ld a,10
+                jp ay_wr
+sf_end:         ld a,4                  ; Kanal C wieder auf die laufende Note
+                ld e,(ix+11)
+                call ay_wr
+                ld a,5
+                ld e,(ix+12)
+                jp ay_wr
+blip_tab:       db 0,90,120
+
+; Bedien-Blip (Menue): kurzer Ton auf Kanal C ueber der Musik
+ui_blip:
+                ld a,(mus_on)
+                or a
+                ret z
+                ld a,3
+                ld (sfx_cnt),a
+                ret
+
+; IX = Kanal-Block
+chan_step:
+                ld a,(ix+2)
+                or a
+                call z,chan_load
+                call chan_vol
+                dec (ix+2)
+                ret
+
+chan_load:
+                ld l,(ix+0)
+                ld h,(ix+1)
+                ld a,(hl)
+                cp 0xFF
+                jr nz,cl1
+                ld l,(ix+8)             ; Ende der Folge: von vorn
+                ld h,(ix+9)
+                ld a,(hl)
+cl1:            ld (ix+10),a
+                inc hl
+                ld b,(hl)
+                inc hl
+                ld (ix+0),l
+                ld (ix+1),h
+                ld (ix+2),b
+                ld (ix+3),0
+                or a
+                ret z                   ; Pause
+                dec a
+                ld l,a
+                ld h,0
+                add hl,hl
+                ld de,ptab
+                add hl,de
+                ld e,(hl)
+                inc hl
+                ld d,(hl)
+                ld (ix+11),e
+                ld (ix+12),d
+                ld a,(ix+4)
+                call ay_wr
+                ld a,(ix+4)
+                inc a
+                ld e,d
+                jp ay_wr
+
+; Lautstaerke: fallend von Startwert bis Minimum (alle 4 Bilder um 1), mit eingestellter Lautstaerke skaliert
+chan_vol:
+                ld a,(ix+10)
+                ld e,0
+                or a
+                jr z,cv_w
+                ld a,(ix+3)
+                srl a
+                srl a
+                ld b,a
+                ld a,(ix+6)
+                sub b
+                jr c,cv_min
+                cp (ix+7)
+                jr nc,cv2
+cv_min:         ld a,(ix+7)
+cv2:            call vol_apply
+                ld e,a
+cv_w:           ld a,(ix+5)
+                call ay_wr
+                inc (ix+3)
+                ret
+
+ptab:
+                dw 1695,1599,1510,1425,1345,1270,1198,1131
+                dw 1068,1008,951,898,847,800,755,712
+                dw 673,635,599,566,534,504,476,449
+                dw 424,400,377,356,336,317,300,283
+                dw 267,252,238,224,212,200,189,178
+                dw 168,159,150,141,133,126,119,112
+                dw 106,100,94,89,84,79,75,71
+                dw 67,63,59,56
+mus_a:
+                db 46,30,49,10,48,20,46,20,41,40,0,40,42,30,46,10
+                db 44,20,42,20,37,40,0,40,41,30,44,10,41,20,39,20
+                db 37,40,0,40,39,30,44,10,42,20,41,20,39,40,0,40
+                db 255,0
+mus_b:
+                db 10,10,10,10,22,10,10,10,10,10,10,10,22,10,10,10
+                db 10,10,10,10,22,10,10,10,10,10,10,10,22,10,10,10
+                db 18,10,18,10,30,10,18,10,18,10,18,10,30,10,18,10
+                db 18,10,18,10,30,10,18,10,18,10,18,10,30,10,18,10
+                db 13,10,13,10,25,10,13,10,13,10,13,10,25,10,13,10
+                db 13,10,13,10,25,10,13,10,13,10,13,10,25,10,13,10
+                db 8,10,8,10,20,10,8,10,8,10,8,10,20,10,8,10
+                db 8,10,8,10,20,10,8,10,8,10,8,10,20,10,8,10
+                db 255,0
+mus_c:
+                db 22,5,25,5,29,5,34,5,29,5,25,5,29,5,34,5
+                db 22,5,25,5,29,5,34,5,29,5,25,5,29,5,25,5
+                db 22,5,25,5,29,5,34,5,29,5,25,5,29,5,34,5
+                db 22,5,25,5,29,5,34,5,29,5,25,5,29,5,25,5
+                db 18,5,22,5,25,5,30,5,25,5,22,5,25,5,30,5
+                db 18,5,22,5,25,5,30,5,25,5,22,5,25,5,22,5
+                db 18,5,22,5,25,5,30,5,25,5,22,5,25,5,30,5
+                db 18,5,22,5,25,5,30,5,25,5,22,5,25,5,22,5
+                db 13,5,17,5,20,5,25,5,20,5,17,5,20,5,25,5
+                db 13,5,17,5,20,5,25,5,20,5,17,5,20,5,17,5
+                db 13,5,17,5,20,5,25,5,20,5,17,5,20,5,25,5
+                db 13,5,17,5,20,5,25,5,20,5,17,5,20,5,17,5
+                db 20,5,24,5,27,5,32,5,27,5,24,5,27,5,32,5
+                db 20,5,24,5,27,5,32,5,27,5,24,5,27,5,24,5
+                db 20,5,24,5,27,5,32,5,27,5,24,5,27,5,32,5
+                db 20,5,24,5,27,5,32,5,27,5,24,5,27,5,24,5
+                db 255,0
+
 ; Pause: Taste P (Port 0xDFFE Bit 0), nur waehrend der Fahrt
 read_pause:
                 ld a,0xDF
@@ -1703,6 +1933,8 @@ beep_cd:        db 8,126,0, 0                               ; A5
 beep_go:        db 20,63,0, 0                               ; A6
 jingle_win:     db 8,212,0, 8,168,0, 14,106,0, 0            ; C5 E5 C6
 jingle_draw:    db 12,27,1, 16,167,1, 0  ; G4 C4
+jingle_lose:    db 10,27,1, 10,80,1, 24,167,1, 0           ; G4 E4 C4
+fanfare_lose:   db 14,212,0, 14,27,1, 14,80,1, 50,167,1, 0 ; C5 G4 E4 C4
 fanfare:        db 8,212,0, 8,168,0, 8,141,0, 8,106,0, 8,141,0, 40,106,0, 0
 
 ; A = Radius: Funken fuer jeden gecrashten Spieler (Mitte = sein Kopf)
