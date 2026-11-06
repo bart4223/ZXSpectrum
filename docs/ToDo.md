@@ -84,7 +84,7 @@ Der Spectrum kennt nur eine Ink-Farbe pro 8x8-Zelle. Zwei Spuren in derselben Ze
 - Lautstärke per T (fünf Stufen plus Aus).
 - Rekord/Siegesserie im Titelbild.
 
-- State: InProgress
+- State: Done
 
 ### Stufe 7 – Computergegner (Einzelspieler)
 - 7a: Geradeaus fahren, 1-3 Pixel vorausschauen, bei Hindernis abbiegen (Seite mit mehr freiem Raum).
@@ -93,11 +93,13 @@ Der Spectrum kennt nur eine Ink-Farbe pro 8x8-Zelle. Zwei Spuren in derselben Ze
 - Test: Headless-Läufe computer gegen computer, um Endlosschleifen und Selbstmordmuster zu finden.
 
 - 2. Meilenstein
-- State: Open
+- State: InProgress
 
 ### Stufe 8 – Sound (128K)
 - AY-Titelmusik, Crash- und Siegeseffekte, kein Dauergeräusch im Spiel (wie bei XBlast Pro).
 - Soundcode aus Pong Pro / XBlast Pro als Basis.
+
+- State: Open
 
 ### Stufe 9 – Arenen
 - Feldvarianten: leer, Block in der Mitte, Säulen, Rahmen mit Lücken.

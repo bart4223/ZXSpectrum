@@ -1,5 +1,5 @@
 ; ============================================================
-;  TRON fuer den ZX Spectrum 128K  -  Stufe 6: Titelbild, Menue, Tempo, Lautstaerke, Rekord
+;  TRON fuer den ZX Spectrum 128K  -  Stufe 7: Computergegner (3 Stufen)
 ;  Assembler: pasmo (--tapbas)    Dateien: tron.asm / tron.tap
 ; ============================================================
 ;  Bildschirm: 32x24 Zellen
@@ -12,6 +12,11 @@
 ; ============================================================
 
 TESTMODE        equ 0           ; 1 = Selbsttest der Pixelroutinen (nur Build-Skript)
+AITEST          equ 0           ; 1 = beide Fahrzeuge vom Computer gesteuert (nur Testbau)
+RNG_SEED        equ 0xACE1      ; Startwert des Zufallsgenerators (im Testbau variiert)
+LEVEL_P1        equ 1           ; nur AITEST: Stufe von Fahrzeug 1 / 2
+LEVEL_P2        equ 1
+LEVEL_DEFAULT   equ 1           ; Computerstufe: 0 leicht, 1 mittel, 2 schwer
 TESTBUILD       equ 0           ; 1 = Testbau: kein Countdown, Feuer startet die Runde sofort neu
 
                 org 0x8000
@@ -52,6 +57,24 @@ record          equ VARS+0x264  ; Rekord: 4 Dezimalziffern (hoechste Gesamtpunkt
 bg_y            equ VARS+0x26A
 bg_x            equ VARS+0x26B
 bg_buf          equ VARS+0x26C
+rng             equ VARS+0x270  ; Zufallsgenerator (16 Bit)
+level           equ VARS+0x272  ; Computerstufe 0 leicht, 1 mittel, 2 schwer
+ai_x            equ VARS+0x273
+ai_y            equ VARS+0x274
+ai_m            equ VARS+0x275  ; aktuelle Fahrtrichtung des Computers
+ai_L            equ VARS+0x276  ; Vorausschau: so viele freie Pixel geradeaus genuegen
+ai_R            equ VARS+0x277  ; Reichweite der Raumbewertung
+ai_rm           equ VARS+0x278  ; Maske fuer Zufallskurven (0 = nie)
+ai_mm           equ VARS+0x279  ; Maske fuer Fehlentscheidungen (0 = nie)
+ray_dir         equ VARS+0x27A
+sc_dir          equ VARS+0x27B
+sc_sum          equ VARS+0x27C
+ai_s0           equ VARS+0x27D  ; Bewertung geradeaus / links / rechts
+ai_s1           equ VARS+0x27E
+ai_s2           equ VARS+0x27F
+ai_cl           equ VARS+0x280
+ai_cr           equ VARS+0x281
+d_prev          equ VARS+0x282  ; letzter Zustand Taste D
 testres         equ VARS+0x300  ; Ergebnisse des Selbsttests
 owner           equ VARS+0x400  ; Besitzer-Tabelle 32x24 (0 leer, 1 = P1, 2 = P2, 3 = beide)
 
@@ -83,6 +106,7 @@ G_O             equ 13
 G_N             equ 14
 G_G             equ 16
 G_E             equ 17
+G_W             equ 18
 G_I             equ 19
 G_M             equ 20
 G_S             equ 21
@@ -305,7 +329,7 @@ read_joy2:
                 jp z,fire_pressed
                 ld a,(mode)
                 or a
-                ret z                   ; 1 Spieler: Fahrzeug 2 faehrt geradeaus (bis der Computergegner kommt)
+                ret z                   ; 1 Spieler: Fahrzeug 2 steuert der Computer
                 ld ix,CTX2
                 bit 3,b
                 jr nz,rj2_nu
@@ -359,6 +383,23 @@ game_step:
                 ; schnell: zweiter Schritt im selben Bild, jeder Schritt wird einzeln geprueft
 
 game_move:
+                if AITEST
+                ld a,LEVEL_P1
+                ld (level),a
+                ld ix,CTX1
+                call ai_think
+                ld a,LEVEL_P2
+                ld (level),a
+                ld ix,CTX2
+                call ai_think
+                else
+                ld a,(mode)
+                or a
+                jr nz,gm_h
+                ld ix,CTX2              ; 1 Spieler: Computer steuert Fahrzeug 2
+                call ai_think
+gm_h:
+                endif
                 ld ix,CTX1
                 call calc_target
                 ld ix,CTX2
@@ -728,6 +769,12 @@ init_settings:
                 ld (speed),a
                 ld (s_prev),a
                 ld (t_prev),a
+                ld (d_prev),a
+                ld hl,RNG_SEED
+                ld (rng),hl
+                ld a,LEVEL_DEFAULT
+                ld (level),a
+                ld a,1
                 if TESTBUILD
                 ld a,5                  ; Testbau: volle Lautstaerke
                 else
@@ -919,14 +966,19 @@ tl4:            push de
                 ld a,0x02
                 call attr_fill
                 call draw_mode
+                call draw_level
                 call draw_speed
                 call draw_vol
                 call draw_record
                 ld a,ATTR_P1_DIM
                 ld (txt_attr),a
-                ld hl,str_hint
+                ld hl,str_hint1
+                ld d,21
+                ld e,8
+                call print_str
+                ld hl,str_hint2
                 ld d,22
-                ld e,4
+                ld e,9
                 jp print_str
 
 ; D = Zeile, E = Spalte, B = Anzahl, A = Attribut; Ergebnis: HL = Adresse des ersten Attributs
@@ -1073,11 +1125,39 @@ dm2m:           ld d,12
                 ld e,10
                 jp show_glyph
 
+; Computerstufe (nur im 1-Spieler-Modus hervorgehoben)
+draw_level:
+                ld a,ATTR_P1_DIM
+                ld (txt_attr),a
+                ld hl,str_stufe
+                ld d,14
+                ld e,9
+                call print_str
+                ld a,(mode)
+                or a
+                ld a,ATTR_TITLE
+                jr z,dl1
+                ld a,ATTR_P1_DIM
+dl1:            ld (txt_attr),a
+                ld a,(level)
+                add a,a
+                ld e,a
+                ld d,0
+                ld hl,str_lv_tab
+                add hl,de
+                ld e,(hl)
+                inc hl
+                ld d,(hl)
+                ex de,hl
+                ld d,14
+                ld e,15
+                jp print_str
+
 draw_speed:
                 ld a,ATTR_P1_DIM
                 ld (txt_attr),a
                 ld hl,str_tempo
-                ld d,14
+                ld d,15
                 ld e,9
                 call print_str
                 ld a,ATTR_TITLE
@@ -1092,7 +1172,7 @@ draw_speed:
                 inc hl
                 ld d,(hl)
                 ex de,hl
-                ld d,14
+                ld d,15
                 ld e,15
                 jp print_str
 
@@ -1145,7 +1225,13 @@ str_aus:        db G_A,G_U,G_S,0xFF
 str_blank2:     db G_SP,G_SP,0xFF
 str_rekord:     db G_R,G_E,G_K,G_O,G_R,G_D,G_SP,0xFF
 str_fire:       db G_F,G_E,G_U,G_E,G_R,0xFF
-str_hint:       db G_S,G_SP,G_T,G_E,G_M,G_P,G_O,G_SP,G_SP,G_T,G_SP,G_T,G_O,G_N,G_SP,G_SP,G_C,G_SP,G_F,G_A,G_R,G_B,G_E,0xFF
+str_hint1:      db G_S,G_SP,G_T,G_E,G_M,G_P,G_O,G_SP,G_SP,G_D,G_SP,G_S,G_T,G_U,G_F,G_E,0xFF
+str_hint2:      db G_T,G_SP,G_T,G_O,G_N,G_SP,G_SP,G_C,G_SP,G_F,G_A,G_R,G_B,G_E,0xFF
+str_stufe:      db G_S,G_T,G_U,G_F,G_E,0xFF
+str_lv0:        db G_L,G_E,G_I,G_C,G_H,G_T,0xFF
+str_lv1:        db G_M,G_I,G_T,G_T,G_E,G_L,0xFF
+str_lv2:        db G_S,G_C,G_H,G_W,G_E,G_R,0xFF
+str_lv_tab:     dw str_lv0,str_lv1,str_lv2
 
 ; Joystick im Titelbild: links/hoch = 1 Spieler, rechts/runter = 2 Spieler, Feuer = Start
 title_input:
@@ -1183,7 +1269,8 @@ ti_set:         ld hl,mode
                 cp (hl)
                 ret z
                 ld (hl),a
-                jp draw_mode
+                call draw_mode
+                jp draw_level
 ti_fire:        ld a,(anim)
                 cp 25
                 ret c                   ; Sperre: gehaltenes Feuer vom Matchende zaehlt nicht
@@ -1214,7 +1301,24 @@ ts1:            ld b,0xFD
                 xor a
 ts_s:           ld (speed),a
                 call draw_speed
-ts2:            ld a,(tick)
+ts2:            ld b,0xFD
+                ld c,0x04
+                ld hl,d_prev
+                call key_edge
+                jr nc,ts4
+                ld a,(level)
+                inc a
+                cp 3
+                jr c,ts_l
+                xor a
+ts_l:           ld (level),a
+                call draw_level
+ts4:            ld a,r                  ; Zufallsgenerator mit der Wartezeit des Spielers mischen
+                ld hl,rng
+                xor (hl)
+                or 1
+                ld (hl),a
+                ld a,(tick)
                 inc a
                 ld (tick),a
                 ld b,a
@@ -1229,6 +1333,293 @@ ts2:            ld a,(tick)
 ts3:            ld d,20
                 ld e,14
                 jp print_str
+
+
+; ------------------------------------------------------------
+;  Stufe 7: Computergegner
+; ------------------------------------------------------------
+; Zufallszahl (xorshift 16 Bit): A = H = zufaellig
+rand8:
+                ld hl,(rng)
+                ld a,h
+                rra
+                ld a,l
+                rra
+                xor h
+                ld h,a
+                ld a,l
+                rra
+                ld a,h
+                rra
+                xor l
+                ld l,a
+                xor h
+                ld h,a
+                ld (rng),hl
+                ret
+
+; A = Richtung (0 hoch, 1 rechts, 2 runter, 3 links): D/E um einen Schritt weiter
+step_de:
+                or a
+                jr z,sd_up
+                cp 1
+                jr z,sd_r
+                cp 2
+                jr z,sd_dn
+                dec e
+                ret
+sd_up:          dec d
+                ret
+sd_r:           inc e
+                ret
+sd_dn:          inc d
+                ret
+
+; A = Richtung, D = y, E = x, B = Maximum: C = Anzahl freier Pixel hintereinander
+; (ab dem Nachbarpixel; D/E sind danach unbestimmt). Waagerecht wird Byte und Maske mitgefuehrt.
+ray:
+                cp 1
+                jr z,ray_hr
+                cp 3
+                jr z,ray_hl
+                ld c,0
+                or a
+                jr nz,rvd
+rvu:            dec d
+                push bc
+                call pixel_test
+                pop bc
+                ret nz
+                inc c
+                ld a,c
+                cp b
+                jr nz,rvu
+                ret
+rvd:            inc d
+                push bc
+                call pixel_test
+                pop bc
+                ret nz
+                inc c
+                ld a,c
+                cp b
+                jr nz,rvd
+                ret
+ray_hr:         push bc
+                call pixel_addr         ; HL = Byte, A = Maske
+                pop bc
+                ld e,a
+                ld c,0
+rhr:            ld a,e
+                rrca
+                ld e,a
+                jr nc,rhr1
+                inc hl
+rhr1:           ld a,(hl)
+                and e
+                ret nz
+                inc c
+                ld a,c
+                cp b
+                jr nz,rhr
+                ret
+ray_hl:         push bc
+                call pixel_addr
+                pop bc
+                ld e,a
+                ld c,0
+rhl:            ld a,e
+                rlca
+                ld e,a
+                jr nc,rhl1
+                dec hl
+rhl1:           ld a,(hl)
+                and e
+                ret nz
+                inc c
+                ld a,c
+                cp b
+                jr nz,rhl
+                ret
+
+; A = Richtung: Bewertung dieses Zuges von (ai_x,ai_y) aus. 0 = sofort blockiert,
+; sonst 1 + freie Strecke voraus + links + rechts ab dem naechsten Pixel (je max. ai_R)
+score_dir:
+                ld (sc_dir),a
+                ld a,(ai_y)
+                ld d,a
+                ld a,(ai_x)
+                ld e,a
+                ld a,(sc_dir)
+                call step_de
+                call pixel_test
+                jr z,sc_free
+                xor a
+                ret
+sc_free:        push de
+                ld a,(ai_R)
+                ld b,a
+                ld a,(sc_dir)
+                call ray
+                ld a,c
+                ld (sc_sum),a
+                pop de
+                push de
+                ld a,(ai_R)
+                ld b,a
+                ld a,(sc_dir)
+                add a,3
+                and 3
+                call ray
+                ld a,(sc_sum)
+                add a,c
+                ld (sc_sum),a
+                pop de
+                ld a,(ai_R)
+                ld b,a
+                ld a,(sc_dir)
+                inc a
+                and 3
+                call ray
+                ld a,(sc_sum)
+                add a,c
+                inc a
+                ret
+
+; Parameter je Stufe: L (geradeaus frei genug), R (Reichweite), Zufallskurven-Maske, Fehler-Maske
+ai_par:
+                db 1,6,0x3F,0x03        ; leicht:  reagiert erst direkt vor dem Hindernis, sieht kurz, macht Fehler
+                db 4,14,0x7F,0x0F       ; mittel:  weicht rechtzeitig aus, gelegentliche Fehlwahl
+                db 8,20,0,0             ; schwer:  weit voraus, bewertet den Raum, keine Zufaelle
+
+; IX = Kontext des Computers: Richtung fuer den naechsten Schritt waehlen
+ai_think:
+                ld a,(ix+C_STAT)
+                cp 1
+                ret nz
+                ld a,(ix+C_X)
+                ld (ai_x),a
+                ld a,(ix+C_Y)
+                ld (ai_y),a
+                ld a,(ix+C_MDIR)
+                ld (ai_m),a
+                ld a,(level)
+                add a,a
+                add a,a
+                ld e,a
+                ld d,0
+                ld hl,ai_par
+                add hl,de
+                ld a,(hl)
+                ld (ai_L),a
+                inc hl
+                ld a,(hl)
+                ld (ai_R),a
+                inc hl
+                ld a,(hl)
+                ld (ai_rm),a
+                inc hl
+                ld a,(hl)
+                ld (ai_mm),a
+                ld a,(ai_y)
+                ld d,a
+                ld a,(ai_x)
+                ld e,a
+                ld a,(ai_L)
+                ld b,a
+                ld a,(ai_m)
+                call ray                ; C = freie Pixel voraus (max. L)
+                ld a,(ai_L)
+                cp c
+                jr z,at_str             ; weit genug frei: geradeaus
+                ld a,(ai_m)
+                call score_dir
+                ld (ai_s0),a
+                ld a,(ai_m)
+                add a,3
+                and 3
+                ld (ai_cl),a
+                call score_dir
+                ld (ai_s1),a
+                ld a,(ai_m)
+                inc a
+                and 3
+                ld (ai_cr),a
+                call score_dir
+                ld (ai_s2),a
+                ld a,(ai_mm)            ; Fehlentscheidung: zufaellig einen freien Kandidaten waehlen
+                or a
+                jr z,at_best
+                ld b,a
+                call rand8
+                and b
+                jr nz,at_best
+                call rand8
+                and 3
+                cp 3
+                jr c,at_m1
+                ld a,2
+at_m1:          ld e,a
+                ld d,0
+                ld hl,ai_s0
+                add hl,de
+                ld a,(hl)
+                or a
+                jr z,at_best            ; gewaehlter Zug ist blockiert: lieber den besten
+                ld a,e
+                jr at_pick
+at_best:        ld a,(ai_s0)            ; bester Zug, bei Gleichstand geradeaus
+                ld b,a
+                ld c,0
+                ld a,(ai_s1)
+                cp b
+                jr z,at_b1
+                jr c,at_b1
+                ld b,a
+                ld c,1
+at_b1:          ld a,(ai_s2)
+                cp b
+                jr z,at_b2
+                jr c,at_b2
+                ld b,a
+                ld c,2
+at_b2:          ld a,c
+at_pick:        or a
+                jr z,at_str
+                dec a
+                ld a,(ai_cl)
+                jr z,at_set
+                ld a,(ai_cr)
+at_set:         ld (ix+C_DIR),a
+                ret
+at_str:         ld a,(ix+C_MDIR)
+                ld (ix+C_DIR),a
+                ld a,(ai_rm)            ; gelegentlich eine freiwillige Kurve (nur in offenes Gelaende)
+                or a
+                ret z
+                ld b,a
+                call rand8
+                and b
+                ret nz
+                call rand8
+                and 1
+                ld a,(ai_m)
+                jr z,at_rl
+                inc a
+                jr at_rc
+at_rl:          add a,3
+at_rc:          and 3
+                ld (ai_cr),a
+                call score_dir
+                ld c,a
+                ld a,(ai_R)
+                add a,a
+                cp c
+                jr z,at_ok
+                ret nc                  ; Bewertung kleiner als 2*R: nicht offen genug
+at_ok:          ld a,(ai_cr)
+                ld (ix+C_DIR),a
+                ret
 
 ; Pause: Taste P (Port 0xDFFE Bit 0), nur waehrend der Fahrt
 read_pause:
