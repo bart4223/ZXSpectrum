@@ -1,5 +1,125 @@
 # Common
-- Asteroids
+
+# Asteroids
+
+## 1. Grundentscheidungen
+
+| Thema | Vorschlag | Begründung |
+|---|---|---|
+| Spielkonzept | Side-Scroller wie im Port | Sterne nach links passen genau dazu; echtes Asteroids (Rotation, Trägheit) wäre ein anderes Spiel |
+| Bildaufbau | HUD oben 2 Zeilen (16 px), Spielfeld 32x22 Zellen = 256x176 px | volle Breite für Scrolling |
+| Sprites | maskiert, 8 vorverschobene Kopien (1-Pixel-Schritte) | bewährt aus Pacman/Tron |
+| Positionen | 8.8-Festkomma in x und y | langsame, gebrochene Geschwindigkeiten (z. B. 0,75 px/Frame) |
+| Takt | 50 Hz, Spiel-Logik pro Frame; Fallback auf 25 Hz, wenn das Budget reißt | wird in Stufe 0 gemessen |
+| Sound | nur AY, kein Beeper, Standard-Lautstärke 3, Taste T; keine Dauermusik im Spiel, keine Sirene | deine bisherigen Vorgaben |
+| Steuerung | Sinclair IF2: Joystick 1 (Tasten 6-0), Joystick 2 (Tasten 1-5); Menü per Joystick; P = Pause, C = Farbraum | wie Pacman/Tron |
+| Rekord | nur pro Sitzung | Speichern nicht möglich |
+| Kollision | Hitbox-Rechtecke (leicht verkleinert), keine Pixeltests | schnell und fair; Pixeltest bleibt Option |
+
+## 2. Technik
+
+### 2.1 Doppelpuffer (128K)
+- Port 0x7FFD = 0x17 (48K-ROM, Bank 7 bei 0xC000); Anzeige Bank 5/7 per Bit 3.
+- Schattenbildschirm-Adresse = normale Adresse | 0x8000.
+- Ablauf pro Frame: im Zeichenpuffer löschen, zeichnen, auf `HALT` warten, Anzeigebit umschalten, Puffer tauschen.
+- Pro Puffer eigene „alter Bereich“-Slots für jedes Objekt und jeden Stern; geänderte Dinge 2 Frames lang zeichnen (`dirty=2`).
+- Statische Grafik (HUD-Rahmen, Attribute) in beide Puffer schreiben, Objekte nur in den Zeichenpuffer.
+
+### 2.2 Zeichenreihenfolge pro Frame (kein Flackern, Sterne bleiben heil)
+1. alte Objekt-Rechtecke dieses Puffers löschen (Pixel + Zellattribute zurück auf Hintergrund)
+2. alte Sternpixel dieses Puffers löschen
+3. Sterne an neuer Position setzen
+4. Objekte maskiert zeichnen (Sterne hinter transparenten Maskenteilen bleiben sichtbar)
+5. HUD nur bei Änderung
+
+### 2.3 Parallax-Sterne
+- ca. 48 Sterne, 1 Pixel groß, **3 Ebenen**: fern 0,5 / mittel 1,0 / nah 2,0 px pro Frame (8.8-Festkomma), nach links; am linken Rand neu rechts mit zufälligem y.
+- Die Farbe hängt am Attribut der Zelle, nicht am Pixel: **die Ebene wird deshalb pro Zellzeile festgelegt** (Zeilenmuster z. B. 0,2,1,0,1,2,…). Fern = dunkelblau, mittel = cyan, nah = weiß (ULAplus-Palette, Classic: blau/cyan/weiß ohne BRIGHT).
+- Sternpixel unter einem Sprite nehmen kurz die Spritefarbe an (bekannte Attributkollision, wie in Pacman).
+
+### 2.4 Sprites und Grafik
+Größen (Vorschlag): Schiff 24x16, Flamme 8x8 (3 Animationsbilder), Laser 8x2 (Code gezeichnet), Asteroid klein 8x8 / mittel 16x16 / groß 24x24 (je mit Rotationsbildern), Komet 16x8 mit Schweif, Explosion 16x16 (4–5 Bilder).
+- Farbe nur pro 8x8-Zelle: Schattierung deshalb über Dither-Muster und Umriss; mehrere Zellen = mehrere Farben (Cockpit blau, Rumpf grau, Düse orange).
+- ULAplus: Spritefarben nutzen freie Attribute, Hintergrund/HUD belegen eigene Slots; Palettenindex = (Flash*2+Bright)*16 + (ink | paper+8).
+- Generator (Python) erzeugt Sprites, Masken, 8 Verschiebungen und Tabellen aus Textvorlagen; das Template `src/asteroids.asm.in` bleibt lesbar.
+
+### 2.5 Speicher und Zeit (in Stufe 0 messen, nicht schätzen)
+- Grobschätzung vorverschobener Sprites: Schiff ~1 KB, Flamme ~0,8 KB, Asteroid mittel (4 Bilder) ~3 KB, klein ~0,5 KB, groß (3 Bilder) ~4,5 KB, Komet ~0,8 KB, Explosion ~3 KB → **ca. 13–14 KB**. Dazu Code ~8–10 KB. Das passt nur knapp zwischen 0x6000 und `VARS` (0xB400).
+- Maßnahmen: Build-Skript bricht ab, wenn Code in `VARS` hineinwächst (Lehre aus Pacman); große Asteroiden und Explosionsbilder sind die ersten Streichkandidaten.
+- Zeitbudget ≈ 70.900 T-States pro Frame. Grenzen: max. ca. 8 Asteroiden, 3 Kometen, 4 Laserstrahlen, 1 Explosion gleichzeitig; Messung im Headless-Emulator (T-States pro Frame).
+- Heiße Schleifen möglichst oberhalb von 0x8000 (unkontendiert) legen.
+
+### 2.6 Spiellogik (Original → Pixel)
+- Spawn: aus `random(0,10) % base` wird ein Frame-Zähler mit Zufall (LFSR); Spawn-Zeile im ganzen Spielfeld, Geschwindigkeit leicht zufällig, optional leichte vertikale Drift.
+- Schwierigkeit: wie im Original alle 10 Treffer schneller (`gmNormal` ×0,75, `gmBig` ×0,5 als Tempo-Auswahl im Menü).
+- Wertung: Arcade-Punkte (groß 20, mittel 50, klein 100), 3 Leben, kein Abzug für entkommene Asteroiden.
+- **Original-Macken, die wir bewusst nicht übernehmen:** Asteroid frisst Laser ohne Punkt, Schiff stirbt am eigenen Strahl, Flügel ohne Kollision, unterste Zeile ohne Asteroiden, Laser-Tempo hängt an der Schleife.
+- Tunneling vermeiden: Laser 4 px/Frame, Asteroiden höchstens 3 px/Frame, Hitbox mindestens 8 px breit.
+
+## 3. Stufenplan
+
+**Stufe 0 – Gerüst und Messung**
+128K-Start, `end start`, Doppelpuffer-Umschaltung (Testbild), ULAplus-Erkennung und Palette, Taste C, Spielfeld/HUD-Layout, Frame-Zähler, Speicherplan, T-State-Messung pro Frame. Test: beide Puffer wechseln sauber, Loader enthält `RANDOMIZE USR`.
+
+- State: Open
+
+**Stufe 1 – Parallax-Sternenhimmel**
+Drei Ebenen im Doppelpuffer mit eigenen alten Slots, Attribute je Zellzeile. Test: Sternpositionen rücken genau um die Geschwindigkeit vor, beide Puffer konsistent, kein Stern außerhalb. GIF.
+
+- State: Open
+
+**Stufe 2 – Schiff mit Pixelbewegung**
+Maskiertes Schiff mit 8 Verschiebungen, Joystick 1 in 4 Richtungen (z. B. 2 px/Frame), Ränder, Flammenanimation. Test: Position und Pixel im Speicherabzug, Sterne bleiben hinter der Maske heil.
+
+- State: Open
+
+**Stufe 3 – Laser**
+Feuerknopf mit Feuerrate (Wiederholverzögerung wie `LASERBEAMSPAWNDELAY`), 4 px/Frame, max. 4 Strahlen, Mündungsblitz, AY-„Pew“ (kurzer Platzhalter).
+
+- State: Open
+
+**Stufe 4 – Asteroiden**
+Spawn, Fließkomma-Geschwindigkeit, Rotationsanimation, Treffer Laser/Asteroid (symmetrisch), Explosion, Punkte (zunächst eine Größe, der Zerfall folgt in Stufe 8).
+
+- State: Open
+
+**Stufe 5 – Kometen und Schiffstod**
+Kometen (schnell, mit Schweif), Kollision Schiff, Explosion des Schiffs, 3 Leben mit blinkender Schutzzeit, Game Over. Kometen sind nicht abschießbar.
+
+- State: Open
+
+**Stufe 6 – Spielablauf**
+Titelbild (Intro wie im Original: Asteroiden, Schiff, Laserschuss), Menü per Joystick (Tempo/Modus), Level und Tempo-Anstieg, Pause P, Game-Over-Bild, Rekord pro Sitzung, Abspann (expandierender Kreis).
+
+- State: Open
+
+**Stufe 7 – Sound über AY**
+Laser, Explosion (Rauschen, satter „Peng“), Kometen-Zischen, Schiffstod, Titelmusik, Game-Over-Jingle, Taste T Lautstärke (Standard 3), keine Dauermusik.
+
+- State: Open
+
+**Stufe 8 – Asteroiden-Zerfall**
+Groß → 2 mittlere → 2 kleine; Arcade-Punkte; Spawn-Gewichtung. Hier entscheidet sich, ob große Sprites in den Speicher passen.
+
+- State: Open
+
+**Stufe 9 – Grafik-Feinschliff**
+ULAplus-Paletten je Objekttyp, Dither-Schattierung, Funken-Partikel bei Explosionen, Triebwerksglühen, evtl. ferner Planet/Nebel als Extra-Ebene, Classic-Fallback abgleichen.
+
+- State: Open
+
+**Stufe 10 – Koop-Modus und Tuning**
+Moduswahl 1/2 Spieler im Titelbild per Joystick, zweites Schiff (eigene Farbe) mit Joystick 2 per Kontext-Tausch (`swap_ctx`), je Spieler 3 Leben und eigene Punkte, Performance-Feinschliff (mehr Objekte bei zwei Schiffen), mehrere Schwierigkeitsprofile.
+
+- State: Open
+
+## 4. Testbau und Abläufe
+- Headless-Emulator (libz80ex) mit Tasten-Skript, Frame-Dump als .scr → PNG, Speicherabzug per Umgebungsvariable.
+- Testbau-Schalter per Textersetzung (`TESTBUILD`, `RNG_SEED`, `LEVEL_*`, `FIRE_NEW`), keine Sonderpfade im Spiel.
+- Zufall nur ziehen, wenn nötig (Testläufe bleiben reproduzierbar).
+- Texte mit fester Spaltenbreite gleich lang polstern.
+- Vor jeder Abgabe alle früheren Tests erneut laufen lassen.
+- Sprünge: `jr` nur ±127, sonst `jp`; Labelnamen global eindeutig.
 
 # Tron
 
