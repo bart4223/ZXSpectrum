@@ -61,12 +61,12 @@ Größen (Vorschlag): Schiff 24x16, Flamme 8x8 (3 Animationsbilder), Laser 8x2 (
 **Stufe 0 – Gerüst und Messung**
 128K-Start, `end start`, Doppelpuffer-Umschaltung (Testbild), ULAplus-Erkennung und Palette, Taste C, Spielfeld/HUD-Layout, Frame-Zähler, Speicherplan, T-State-Messung pro Frame. Test: beide Puffer wechseln sauber, Loader enthält `RANDOMIZE USR`.
 
-- State: Open
+- State: Done
 
 **Stufe 1 – Parallax-Sternenhimmel**
 Drei Ebenen im Doppelpuffer mit eigenen alten Slots, Attribute je Zellzeile. Test: Sternpositionen rücken genau um die Geschwindigkeit vor, beide Puffer konsistent, kein Stern außerhalb. GIF.
 
-- State: Open
+- State: InProgress
 
 **Stufe 2 – Schiff mit Pixelbewegung**
 Maskiertes Schiff mit 8 Verschiebungen, Joystick 1 in 4 Richtungen (z. B. 2 px/Frame), Ränder, Flammenanimation. Test: Position und Pixel im Speicherabzug, Sterne bleiben hinter der Maske heil.

@@ -1,53 +1,65 @@
 ; =====================================================================
-; ASTEROIDS fuer ZX Spectrum 128K  -  Stufe 0: Geruest und Messung
+; ASTEROIDS fuer ZX Spectrum 128K  -  Stufe 1: Parallax-Sternenhimmel
 ; Z80, pasmo (--tapbas), nur 128K.
 ;
-; Inhalt Stufe 0:
-;   - 128K-Start (48K-ROM, Bank 7 bei 0xC000 als Schattenbildschirm)
-;   - Doppelpuffer: pro Bild in den verdeckten Puffer zeichnen, nach
-;     HALT per Port 0x7FFD umschalten
-;   - ULAplus: automatische Erkennung + Palette, Taste C schaltet um
-;   - Layout: HUD (2 Zeilen) + Spielfeld 32x22 Zellen = 256x176 Pixel
-;   - Testbild: Box mit 1-Pixel-Bewegung, je Puffer eigener "alter Bereich"
-;   - Messung: Bilder pro Schleifendurchlauf (BILDER/LOOP), BENCH_N-Boxen
+; Stufe 0 (Geruest): 128K-Start, Doppelpuffer, ULAplus (blind), Layout, HUD
+; Stufe 1 (neu):     Sternenhimmel mit 3 Ebenen, die nach links scrollen
+;   - fern 0,5 / mittel 1 / nah 2 Pixel pro Bild (8.8-Festkomma)
+;   - Farbe haengt an der Zellzeile: je Zeile eine feste Ebene (Tabelle row_attr)
+;   - je Puffer eigene "alte Pixel"-Slots (Adresse + Maske), erst alle alten
+;     Sterne loeschen, dann bewegen und neu setzen -> auch bei gleichem Byte korrekt
+;   - Wiederauftauchen rechts mit zufaelliger Zeile aus der Zeilenliste der Ebene
+;   - Zufall: 16-Bit-LFSR (feste Startzahl, Testlaeufe bleiben reproduzierbar)
 ;
 ; Speicher:  0x6000-0x7FFF reserviert (spaeter Sprites)
-;            0x8000-...    Code und Daten
-;            0xB400-0xB7FF Variablen (VARS)
+;            0x8000-...    Code und Daten, Tabellen auf Seitengrenzen
+;            0xB400-0xB4FF Variablen (VARS)
+;            0xB500-0xB5FF Sterne (3 Byte: Bruchteil, x, y)
+;            0xB600/0xB700 alte Pixel je Puffer (3 Byte: Adresse, ~Maske)
 ;            0xBC00-0xBFFF Stack (waechst nach unten ab 0xC000)
 ;            0xC000-0xDAFF Bank 7 = Schattenbildschirm
 ; =====================================================================
 
-BENCH_N     equ 0               ; Testbau: Anzahl Zusatz-Blits pro Bild
-ULAPLUS_AUTO equ 1              ; 1 = ULAplus erkennen, 0 = nie anfassen (nur Classic)
-ULA_DETECT  equ 0               ; 1 = per Rücklesen erkennen (geht auf "The Spectrum" nicht), 0 = blind schreiben
-ULA_START_ON equ 1             ; 1 = nach Erkennung sofort ULAplus an, 0 = Classic, C schaltet ein
+ULAPLUS_AUTO equ 1              ; 1 = ULAplus nutzen, 0 = nie anfassen (nur Classic)
+ULA_DETECT  equ 0               ; 1 = per Ruecklesen erkennen (geht auf "The Spectrum" nicht), 0 = blind schreiben
+ULA_START_ON equ 1              ; 1 = ULAplus sofort an, 0 = Classic, Taste C schaltet ein
+STARS_FAR   equ 24              ; Sterne je Ebene (mindestens 1 je Ebene, zusammen <= 85)
+STARS_MID   equ 16
+STARS_NEAR  equ 8
+NSTARS      equ STARS_FAR+STARS_MID+STARS_NEAR
+
 VARS        equ 0xB400
+STAR_BASE   equ 0xB500
+SLOT0       equ 0xB600
+SLOT1       equ 0xB700
 STACK_TOP   equ 0xC000
 FRAMES      equ 0x5C78          ; Bildzaehler der ROM-Unterbrechung
 PORT_BANK   equ 0x7FFD
 DISP_A      equ 0x17            ; 48K-ROM, Bank 7 bei 0xC000, Bank 5 sichtbar
-BOX_Y       equ 120             ; Zeile 15, Testbox (16x16)
-BOX_MAX     equ 239             ; groesstes x (Box 16 breit -> Byte 31 maximal)
-BOX_STEP    equ 3               ; Schritt in Pixeln: durchlaeuft alle 8 Pixelphasen
+END_FAR     equ (STAR_BASE+3*STARS_FAR) and 255
+END_MID     equ (STAR_BASE+3*(STARS_FAR+STARS_MID)) and 255
+END_NEAR    equ (STAR_BASE+3*NSTARS) and 255
+RNG_SEED    equ 0xACE1
 
 ; ---- Variablen -------------------------------------------------------
 v_disp      equ VARS+0          ; aktueller Wert von Port 0x7FFD (sichtbar)
 v_draw      equ VARS+1          ; Hi-Byte des Zeichenpuffers (0x40 oder 0xC0)
 v_buf       equ VARS+2          ; Index des Zeichenpuffers (0 = Bank 5, 1 = Bank 7)
-v_plus_av   equ VARS+3          ; ULAplus vorhanden
+v_plus_av   equ VARS+3          ; ULAplus angenommen
 v_plus_on   equ VARS+4          ; ULAplus eingeschaltet
 v_ckey      equ VARS+5          ; Taste C war gedrueckt
-v_boxx      equ VARS+6          ; Box x
-v_boxdir    equ VARS+7          ; Box Richtung (+2 / -2)
-v_oldx      equ VARS+8          ; alter Bereich je Puffer (2 Byte)
-v_lastf     equ VARS+10         ; letzter FRAMES-Wert (Low-Byte)
-v_dur       equ VARS+11         ; Bilder des letzten Durchlaufs
-v_max       equ VARS+12         ; Maximum seit Start (ohne ersten Durchlauf)
-v_started   equ VARS+13
-v_bn        equ VARS+14         ; Bench-Zaehler
-v_bx        equ VARS+15         ; Bench-x
-VARS_LEN    equ 16
+v_lastf     equ VARS+6          ; letzter FRAMES-Wert (Low-Byte)
+v_dur       equ VARS+7          ; Bilder des letzten Durchlaufs
+v_max       equ VARS+8          ; Maximum seit Start (ohne ersten Durchlauf)
+v_started   equ VARS+9
+v_hipg      equ VARS+10         ; Seite der Hi-Tabelle des Zeichenpuffers
+v_dyn       equ VARS+11         ; Dynamische Texte noch n Bilder zeichnen
+v_dshown    equ VARS+12         ; zuletzt angezeigte Bilderzahl
+v_rng       equ VARS+13         ; 16 Bit
+VARS_LEN    equ 15
+
+PG_LO       equ line_lo/256
+PG_HI0      equ line_hi0/256
 
         org 0x8000
 
@@ -69,10 +81,14 @@ start:
         ldir
         ld a,DISP_A
         ld (v_disp),a
-        ld a,BOX_STEP
-        ld (v_boxdir),a
+        ld hl,RNG_SEED
+        ld (v_rng),hl
+        ld a,2
+        ld (v_dyn),a
+        ld a,0xFF
+        ld (v_dshown),a
 
-        call ula_init           ; ULAplus erkennen, Palette setzen
+        call ula_init           ; ULAplus-Palette setzen
 
         ld a,0x40
         call draw_static        ; statische Grafik in beide Puffer
@@ -80,12 +96,15 @@ start:
         call draw_static        ; (laesst v_draw = 0xC0)
         ld a,1
         ld (v_buf),a            ; sichtbar ist Bank 5, gezeichnet wird in Bank 7
+        ld a,PG_HI0+1
+        ld (v_hipg),a
+        call stars_init
         ei
 
 main:
         call keys
-        call update_box
-        call bench_ops
+        call erase_stars
+        call move_draw_stars
         call print_dyn
         halt                    ; auf Bildanfang warten
         call flip               ; fertig gezeichneten Puffer anzeigen
@@ -109,6 +128,8 @@ flip:
 fl_1:   ld (v_draw),a
         ld a,b
         ld (v_buf),a
+        add a,PG_HI0
+        ld (v_hipg),a
         ret
 
 ; ---------------------------------------------------------------------
@@ -122,6 +143,13 @@ frame_stats:
         ld (v_lastf),a
         sub c
         ld (v_dur),a
+        ld hl,v_dshown
+        cp (hl)
+        jr z,fs_same
+        ld (hl),a
+        ld a,2
+        ld (v_dyn),a            ; Anzeige in beiden Puffern neu zeichnen
+fs_same:
         ld a,(v_started)
         or a
         jr nz,fs_go
@@ -136,7 +164,7 @@ fs_go:  ld a,(v_dur)
         ret
 
 ; ---------------------------------------------------------------------
-; keys: Taste C schaltet ULAplus um (nur wenn vorhanden)
+; keys: Taste C schaltet ULAplus um
 keys:
         ld a,0xFE
         in a,(0xFE)             ; Port 0xFEFE: Shift Z X C V
@@ -157,6 +185,9 @@ ky_down:
         ld a,(v_plus_on)
         xor 1
         ld (v_plus_on),a
+        ld a,2
+        ld (v_dyn),a
+        ld a,(v_plus_on)
         jp ula_set_mode
 
 ; ---------------------------------------------------------------------
@@ -168,8 +199,8 @@ ula_init:
         ld a,ULA_DETECT
         or a
         jr nz,ui_detect
-        ld a,1                  ; blind: Palette und Modus schreiben, ohne Rücklesen
-        ld (v_plus_av),a        ; (auf "The Spectrum" liefert das Rücklesen nichts Brauchbares)
+        ld a,1                  ; blind: Palette und Modus schreiben, ohne Ruecklesen
+        ld (v_plus_av),a        ; (auf "The Spectrum" liefert das Ruecklesen nichts Brauchbares)
         call ula_palette
         ld a,ULA_START_ON
         ld (v_plus_on),a
@@ -191,7 +222,6 @@ ui_detect:
         jr nz,ui_no
         ld a,1
         ld (v_plus_av),a
-        ld (v_plus_on),a
         call ula_palette
         ld a,ULA_START_ON
         ld (v_plus_on),a
@@ -239,8 +269,10 @@ ulp_l:  ld a,e
         ret
 
 ; Farben als GGGRRRBB: schwarz blau rot magenta gruen cyan gelb weiss
+; normal: blau = ferne Sterne (dunkles Blaugrau), cyan = mittlere Sterne (Stahlblau)
+; hell:   weiss = nahe Sterne und HUD
 pal_tab:
-        db 0x00,0x02,0x14,0x16,0xA0,0xA2,0xB4,0xB6      ; normal
+        db 0x00,0x26,0x14,0x16,0xA0,0x8F,0xB4,0xB6      ; normal
         db 0x00,0x03,0x1C,0x1F,0xE0,0xE3,0xFC,0xFF      ; hell
 
 ; ---------------------------------------------------------------------
@@ -273,21 +305,6 @@ scr_addr:
         and 0x1F
         or l
         ld l,a
-        ret
-
-; down_hl: HL eine Pixelzeile nach unten
-down_hl:
-        inc h
-        ld a,h
-        and 7
-        ret nz
-        ld a,l
-        add a,32
-        ld l,a
-        ret c
-        ld a,h
-        sub 8
-        ld h,a
         ret
 
 ; attr_addr: D = Zeile (0-23)  ->  HL = Attributadresse Spalte 0
@@ -384,44 +401,22 @@ draw_static:
         ld (hl),0x07
         ldir                    ; Attribute: weiss auf schwarz
 
-        ld d,0                  ; HUD Zeile 0: hell weiss
+        ld c,0                  ; Attribut je Zellzeile (HUD und Sternebenen)
+ds_rows:
+        ld d,c
         call attr_addr
+        push hl
+        ld hl,row_attr
+        ld b,0
+        add hl,bc
+        ld a,(hl)
+        pop hl
         ld b,32
-        ld a,0x47
         call fill_cells
-        ld d,1                  ; HUD Zeile 1: hell cyan
-        call attr_addr
-        ld b,32
-        ld a,0x45
-        call fill_cells
-        ld d,15                 ; Band der Testbox: hell cyan
-        call attr_addr
-        ld b,64
-        ld a,0x45
-        call fill_cells
-
-        ld d,21                 ; Palette-Muster in der letzten Zeile
-        call attr_addr
-        ld b,32
-        ld c,0
-sw_l:   ld a,c
-        srl a
-        ld e,a
-        and 8
-        rlca
-        rlca
-        rlca
-        ld d,a
-        ld a,e
-        and 7
-        rlca
-        rlca
-        rlca
-        or d
-        ld (hl),a
-        inc hl
         inc c
-        djnz sw_l
+        ld a,c
+        cp 24
+        jr nz,ds_rows
 
         ld b,15                 ; Trennlinie unter dem HUD
         ld c,0
@@ -436,23 +431,22 @@ sp_l:   ld (hl),0xFF
         call print_str
         ld hl,txt_p1
         ld de,0x0100
-        call print_str
-        ld hl,txt_t0
-        ld de,0x050B
-        call print_str
-        ld hl,txt_t1
-        ld de,0x0708
-        call print_str
-        ld hl,txt_t2
-        ld de,0x090C
-        call print_str
-        ld hl,txt_t3
-        ld de,0x0D07
-        call print_str
-        ret
+        jp print_str
 
-; print_dyn: Dynamisches (jedes Bild in den Zeichenpuffer, so landet es in beiden)
+txt_p0:  db "PUNKTE 000000  REKORD 000000",0
+txt_p1:  db "LEVEL 01     LEBEN 3",0
+txt_plus: db "PLUS",0
+txt_std: db "STD ",0
+txt_f:   db "F"
+txt_fd:  db "1",0
+
+; print_dyn: Dynamisches, jeweils 2 Bilder lang (so landet es in beiden Puffern)
 print_dyn:
+        ld a,(v_dyn)
+        or a
+        ret z
+        dec a
+        ld (v_dyn),a
         ld hl,txt_std
         ld a,(v_plus_on)
         or a
@@ -465,125 +459,250 @@ pd_1:   ld de,0x011C            ; Zeile 1, Spalte 28
         jr c,pd_2
         ld a,9
 pd_2:   add a,'0'
-        ld (txt_dd),a
-        ld hl,txt_dur
-        ld de,0x0B07            ; Zeile 11, Spalte 7
+        ld (txt_fd),a
+        ld hl,txt_f
+        ld de,0x001E            ; Zeile 0, Spalte 30: "F1" = Bilder pro Durchlauf
         jp print_str
 
-txt_p0:  db "PUNKTE 000000  REKORD 000000",0
-txt_p1:  db "LEVEL 01     LEBEN 3",0
-txt_t0:  db "ASTEROIDS",0
-txt_t1:  db "ZX SPECTRUM 128K",0
-txt_t2:  db "STUFE 0",0
-txt_t3:  db "TASTE C: FARBMODUS",0
-txt_plus: db "PLUS",0
-txt_std: db "STD ",0
-txt_dur: db "BILDER PRO LOOP "
-txt_dd:  db "0",0
+; ---------------------------------------------------------------------
+; Zufall: 16-Bit-LFSR (Galois, Rueckkopplung 0xB400), A = Zufallsbyte, zerstoert HL
+rnd:
+        ld hl,(v_rng)
+        srl h
+        rr l
+        jr nc,rn_1
+        ld a,h
+        xor 0xB4
+        ld h,a
+rn_1:   ld (v_rng),hl
+        ld a,l
+        xor h
+        ret
+
+; rnd_y: DE = Zeilenliste (16 Zellzeilen) -> A = Pixelzeile y; zerstoert HL
+rnd_y:
+        call rnd
+        and 15
+        ld l,a
+        ld h,0
+        add hl,de
+        ld a,(hl)
+        add a,a
+        add a,a
+        add a,a                 ; Zellzeile * 8
+        ld l,a
+        push hl
+        call rnd
+        pop hl
+        and 7
+        or l
+        ret
 
 ; ---------------------------------------------------------------------
-; Testbox 16x16 mit 1-Pixel-Bewegung, je Puffer eigener alter Bereich
-update_box:
-        ld hl,v_oldx
-        ld a,(v_buf)
-        add a,l
-        ld l,a                  ; HL -> alter Bereich dieses Puffers
-        ld c,(hl)
-        push hl
-        ld b,BOX_Y
-        xor a
-        call box_op             ; alte Box loeschen
-        ld a,(v_boxx)
-        ld hl,v_boxdir
-        add a,(hl)
-        cp BOX_MAX+1
-        jr c,ub_in              ; im erlaubten Bereich
-        bit 7,(hl)              ; ueber den Rand: links (unter 0 gelaufen) oder rechts?
-        jr z,ub_right
-        xor a                   ; links: x = 0, nach rechts
-        ld (hl),BOX_STEP
-        jr ub_in
-ub_right:
-        ld a,BOX_MAX            ; rechts: x = Maximum, nach links
-        ld (hl),256-BOX_STEP
-ub_in:  ld (v_boxx),a
-        ld c,a
-        ld b,BOX_Y
-        ld a,1
-        call box_op             ; neue Box zeichnen
-        pop hl
-        ld a,(v_boxx)
-        ld (hl),a
+; Sterne
+; stars_init: Anfangsverteilung, alte-Pixel-Slots mit "nichts loeschen" fuellen
+stars_init:
+        ld hl,STAR_BASE
+        ld de,rows_far
+        ld b,STARS_FAR
+        call si_layer
+        ld de,rows_mid
+        ld b,STARS_MID
+        call si_layer
+        ld de,rows_near
+        ld b,STARS_NEAR
+        call si_layer
+        ld hl,SLOT0
+        ld de,0x4000
+        call si_slots
+        ld hl,SLOT1
+        ld de,0xC000
+si_slots:
+        ld b,NSTARS
+ss_l:   ld (hl),e
+        inc hl
+        ld (hl),d
+        inc hl
+        ld (hl),0xFF
+        inc hl
+        djnz ss_l
         ret
 
-; box_op: B = y, C = x, A = 1 zeichnen / 0 loeschen (16x16, 3 Byte breit)
-box_op:
+; si_layer: HL = Sternzeiger, DE = Zeilenliste, B = Anzahl
+si_layer:
+sl_l:   push bc
+        push de
+        push hl
+        call rnd
+        ld c,a                  ; C = x
+        pop hl
+        pop de
+        push de
+        push hl
+        call rnd_y              ; A = y
+        pop hl
+        pop de
+        ld (hl),0               ; Bruchteil
+        inc hl
+        ld (hl),c
+        inc hl
+        ld (hl),a
+        inc hl
+        pop bc
+        djnz sl_l
+        ret
+
+; erase_stars: die Pixel loeschen, die in diesem Puffer zuletzt gesetzt wurden
+erase_stars:
+        ld a,(v_buf)
+        or a
+        ld ix,SLOT0
+        jr z,es_go
+        ld ix,SLOT1
+es_go:  ld b,NSTARS
+        ld de,3
+es_l:   ld l,(ix+0)
+        ld h,(ix+1)
+        ld a,(hl)
+        and (ix+2)
+        ld (hl),a
+        add ix,de
+        djnz es_l
+        ret
+
+; starpass: eine Ebene bewegen und zeichnen
+;   slo/shi = Geschwindigkeit (8.8) nach links, endv = Low-Byte hinter dem letzten
+;   Stern der Ebene, rows = Zeilenliste fuer das Wiederauftauchen
+;   HL = Sternzeiger, IX = Slotzeiger (laufen weiter)
+starpass macro slo,shi,endv,rows
+        local lp,ok,dr
+lp:     ld a,(hl)
+        sub slo
+        ld (hl),a
+        inc hl
+        ld a,(hl)
+        sbc a,shi
+        jr nc,ok
+        push hl                 ; links hinausgelaufen: rechts neu, neue Zeile
+        ld de,rows
+        call rnd_y
+        ld b,a
+        pop hl
+        ld a,255
+        ld (hl),a
+        ld c,a
+        inc hl
+        ld (hl),b
+        jr dr
+ok:     ld (hl),a
+        ld c,a                  ; C = x
+        inc hl
+        ld b,(hl)               ; B = y
+dr:     ld e,b
+        ld d,PG_LO
+        ld a,(de)               ; Adresse Lo der Pixelzeile
+        ld b,a
+        ld a,(v_hipg)
         ld d,a
-        call scr_addr           ; HL
+        ld a,(de)               ; Adresse Hi (Puffer)
+        ld d,a
+        ld a,c
+        rrca
+        rrca
+        rrca
+        and 0x1F
+        or b
+        ld e,a                  ; DE = Pixeladresse
         ld a,c
         and 7
+        or 0xC0
         ld c,a
-        ld b,0
-        push hl
-        ld hl,rmask
-        add hl,bc
-        ld e,(hl)               ; E = linke Maske
-        ld hl,lmask
-        add hl,bc
-        ld c,(hl)               ; C = rechte Maske
-        pop hl
-        ld b,16
-bo_l:   ld a,d
+        ld b,PG_LO
+        ld a,(bc)               ; Maske
+        ld c,a
+        ld a,(de)
+        or c
+        ld (de),a               ; Pixel setzen
+        ld a,c
+        cpl
+        ld (ix+2),a             ; Slot: Adresse und ~Maske merken
+        ld (ix+0),e
+        ld (ix+1),d
+        ld bc,3
+        add ix,bc
+        inc hl                  ; naechster Stern
+        ld a,l
+        cp endv
+        jp nz,lp
+        endm
+
+move_draw_stars:
+        ld a,(v_buf)
         or a
-        jr z,bo_e
-        ld (hl),e
-        inc l
-        ld (hl),0xFF
-        inc l
-        ld (hl),c
-        jr bo_n
-bo_e:   xor a
-        ld (hl),a
-        inc l
-        ld (hl),a
-        inc l
-        ld (hl),a
-bo_n:   dec l
-        dec l
-        call down_hl
-        djnz bo_l
+        ld ix,SLOT0
+        jr z,md_go
+        ld ix,SLOT1
+md_go:  ld hl,STAR_BASE
+        starpass 0x80,0,END_FAR,rows_far        ; fern: 0,5 Pixel/Bild
+        starpass 0x00,1,END_MID,rows_mid        ; mittel: 1 Pixel/Bild
+        starpass 0x00,2,END_NEAR,rows_near      ; nah: 2 Pixel/Bild
         ret
 
-rmask:  db 0xFF,0x7F,0x3F,0x1F,0x0F,0x07,0x03,0x01
-lmask:  db 0x00,0x80,0xC0,0xE0,0xF0,0xF8,0xFC,0xFE
-
-; bench_ops: BENCH_N mal Box zeichnen und wieder loeschen (nur Messung)
-bench_ops:
-        ld a,BENCH_N
-        or a
-        ret z
-        ld (v_bn),a
-bn_l:   ld a,(v_bn)
-        ld e,a
-        add a,a
-        add a,e
-        add a,a
-        add a,a
-        add a,a                 ; *24
-        ld (v_bx),a
-        ld c,a
-        ld b,24
-        ld a,1
-        call box_op
-        ld a,(v_bx)
-        ld c,a
-        ld b,24
-        xor a
-        call box_op
-        ld hl,v_bn
-        dec (hl)
-        jr nz,bn_l
-        ret
+; --- Tabellen, erzeugt von tools/build.py ---
+row_attr:                                   ; Attribut je Zellzeile
+        db 0x47,0x45,0x01,0x05,0x01,0x47,0x01,0x05,0x01,0x47,0x01,0x05
+        db 0x01,0x01,0x47,0x05,0x01,0x47,0x01,0x05,0x01,0x47,0x01,0x05
+rows_far:                                  ; 16 Zellzeilen der Schicht
+        db 0x02,0x04,0x06,0x08,0x0A,0x0C,0x0D,0x10,0x12,0x14,0x16,0x02,0x04,0x06,0x08,0x0A
+rows_mid:                                  ; 16 Zellzeilen der Schicht
+        db 0x03,0x07,0x0B,0x0F,0x13,0x17,0x03,0x07,0x0B,0x0F,0x13,0x17,0x03,0x07,0x0B,0x0F
+rows_near:                                  ; 16 Zellzeilen der Schicht
+        db 0x05,0x09,0x0E,0x11,0x15,0x05,0x09,0x0E,0x11,0x15,0x05,0x09,0x0E,0x11,0x15,0x05
+        ds ((256-($ and 255)) and 255)          ; auf Seitengrenze
+line_lo:                                    ; Pixelzeile -> Adresse (Lo)
+        db 0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x20,0x20,0x20,0x20,0x20,0x20,0x20,0x20
+        db 0x40,0x40,0x40,0x40,0x40,0x40,0x40,0x40,0x60,0x60,0x60,0x60,0x60,0x60,0x60,0x60
+        db 0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80,0xA0,0xA0,0xA0,0xA0,0xA0,0xA0,0xA0,0xA0
+        db 0xC0,0xC0,0xC0,0xC0,0xC0,0xC0,0xC0,0xC0,0xE0,0xE0,0xE0,0xE0,0xE0,0xE0,0xE0,0xE0
+        db 0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x20,0x20,0x20,0x20,0x20,0x20,0x20,0x20
+        db 0x40,0x40,0x40,0x40,0x40,0x40,0x40,0x40,0x60,0x60,0x60,0x60,0x60,0x60,0x60,0x60
+        db 0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80,0xA0,0xA0,0xA0,0xA0,0xA0,0xA0,0xA0,0xA0
+        db 0xC0,0xC0,0xC0,0xC0,0xC0,0xC0,0xC0,0xC0,0xE0,0xE0,0xE0,0xE0,0xE0,0xE0,0xE0,0xE0
+        db 0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x20,0x20,0x20,0x20,0x20,0x20,0x20,0x20
+        db 0x40,0x40,0x40,0x40,0x40,0x40,0x40,0x40,0x60,0x60,0x60,0x60,0x60,0x60,0x60,0x60
+        db 0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80,0xA0,0xA0,0xA0,0xA0,0xA0,0xA0,0xA0,0xA0
+        db 0xC0,0xC0,0xC0,0xC0,0xC0,0xC0,0xC0,0xC0,0xE0,0xE0,0xE0,0xE0,0xE0,0xE0,0xE0,0xE0
+mask_tab:                                   ; Pixelmasken (liegt bei line_lo+192)
+        db 0x80,0x40,0x20,0x10,0x08,0x04,0x02,0x01
+        ds 56
+line_hi0:                                   ; Hi fuer Puffer Bank 5
+        db 0x40,0x41,0x42,0x43,0x44,0x45,0x46,0x47,0x40,0x41,0x42,0x43,0x44,0x45,0x46,0x47
+        db 0x40,0x41,0x42,0x43,0x44,0x45,0x46,0x47,0x40,0x41,0x42,0x43,0x44,0x45,0x46,0x47
+        db 0x40,0x41,0x42,0x43,0x44,0x45,0x46,0x47,0x40,0x41,0x42,0x43,0x44,0x45,0x46,0x47
+        db 0x40,0x41,0x42,0x43,0x44,0x45,0x46,0x47,0x40,0x41,0x42,0x43,0x44,0x45,0x46,0x47
+        db 0x48,0x49,0x4A,0x4B,0x4C,0x4D,0x4E,0x4F,0x48,0x49,0x4A,0x4B,0x4C,0x4D,0x4E,0x4F
+        db 0x48,0x49,0x4A,0x4B,0x4C,0x4D,0x4E,0x4F,0x48,0x49,0x4A,0x4B,0x4C,0x4D,0x4E,0x4F
+        db 0x48,0x49,0x4A,0x4B,0x4C,0x4D,0x4E,0x4F,0x48,0x49,0x4A,0x4B,0x4C,0x4D,0x4E,0x4F
+        db 0x48,0x49,0x4A,0x4B,0x4C,0x4D,0x4E,0x4F,0x48,0x49,0x4A,0x4B,0x4C,0x4D,0x4E,0x4F
+        db 0x50,0x51,0x52,0x53,0x54,0x55,0x56,0x57,0x50,0x51,0x52,0x53,0x54,0x55,0x56,0x57
+        db 0x50,0x51,0x52,0x53,0x54,0x55,0x56,0x57,0x50,0x51,0x52,0x53,0x54,0x55,0x56,0x57
+        db 0x50,0x51,0x52,0x53,0x54,0x55,0x56,0x57,0x50,0x51,0x52,0x53,0x54,0x55,0x56,0x57
+        db 0x50,0x51,0x52,0x53,0x54,0x55,0x56,0x57,0x50,0x51,0x52,0x53,0x54,0x55,0x56,0x57
+        ds 64
+line_hi1:                                   ; Hi fuer Puffer Bank 7
+        db 0xC0,0xC1,0xC2,0xC3,0xC4,0xC5,0xC6,0xC7,0xC0,0xC1,0xC2,0xC3,0xC4,0xC5,0xC6,0xC7
+        db 0xC0,0xC1,0xC2,0xC3,0xC4,0xC5,0xC6,0xC7,0xC0,0xC1,0xC2,0xC3,0xC4,0xC5,0xC6,0xC7
+        db 0xC0,0xC1,0xC2,0xC3,0xC4,0xC5,0xC6,0xC7,0xC0,0xC1,0xC2,0xC3,0xC4,0xC5,0xC6,0xC7
+        db 0xC0,0xC1,0xC2,0xC3,0xC4,0xC5,0xC6,0xC7,0xC0,0xC1,0xC2,0xC3,0xC4,0xC5,0xC6,0xC7
+        db 0xC8,0xC9,0xCA,0xCB,0xCC,0xCD,0xCE,0xCF,0xC8,0xC9,0xCA,0xCB,0xCC,0xCD,0xCE,0xCF
+        db 0xC8,0xC9,0xCA,0xCB,0xCC,0xCD,0xCE,0xCF,0xC8,0xC9,0xCA,0xCB,0xCC,0xCD,0xCE,0xCF
+        db 0xC8,0xC9,0xCA,0xCB,0xCC,0xCD,0xCE,0xCF,0xC8,0xC9,0xCA,0xCB,0xCC,0xCD,0xCE,0xCF
+        db 0xC8,0xC9,0xCA,0xCB,0xCC,0xCD,0xCE,0xCF,0xC8,0xC9,0xCA,0xCB,0xCC,0xCD,0xCE,0xCF
+        db 0xD0,0xD1,0xD2,0xD3,0xD4,0xD5,0xD6,0xD7,0xD0,0xD1,0xD2,0xD3,0xD4,0xD5,0xD6,0xD7
+        db 0xD0,0xD1,0xD2,0xD3,0xD4,0xD5,0xD6,0xD7,0xD0,0xD1,0xD2,0xD3,0xD4,0xD5,0xD6,0xD7
+        db 0xD0,0xD1,0xD2,0xD3,0xD4,0xD5,0xD6,0xD7,0xD0,0xD1,0xD2,0xD3,0xD4,0xD5,0xD6,0xD7
+        db 0xD0,0xD1,0xD2,0xD3,0xD4,0xD5,0xD6,0xD7,0xD0,0xD1,0xD2,0xD3,0xD4,0xD5,0xD6,0xD7
+        ds 64
 
 ; --- Font 5x7 (ASCII 32..95, Grossbuchstaben), erzeugt von tools/build.py ---
 font:
