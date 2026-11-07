@@ -19,6 +19,9 @@
 ; =====================================================================
 
 BENCH_N     equ 0               ; Testbau: Anzahl Zusatz-Blits pro Bild
+ULAPLUS_AUTO equ 1              ; 1 = ULAplus erkennen, 0 = nie anfassen (nur Classic)
+ULA_DETECT  equ 0               ; 1 = per Rücklesen erkennen (geht auf "The Spectrum" nicht), 0 = blind schreiben
+ULA_START_ON equ 1             ; 1 = nach Erkennung sofort ULAplus an, 0 = Classic, C schaltet ein
 VARS        equ 0xB400
 STACK_TOP   equ 0xC000
 FRAMES      equ 0x5C78          ; Bildzaehler der ROM-Unterbrechung
@@ -159,6 +162,19 @@ ky_down:
 ; ---------------------------------------------------------------------
 ; ULAplus
 ula_init:
+        ld a,ULAPLUS_AUTO
+        or a
+        ret z                   ; Classic-only: ULAplus-Ports gar nicht anfassen
+        ld a,ULA_DETECT
+        or a
+        jr nz,ui_detect
+        ld a,1                  ; blind: Palette und Modus schreiben, ohne Rücklesen
+        ld (v_plus_av),a        ; (auf "The Spectrum" liefert das Rücklesen nichts Brauchbares)
+        call ula_palette
+        ld a,ULA_START_ON
+        ld (v_plus_on),a
+        jp ula_set_mode
+ui_detect:
         ld bc,0xBF3B
         ld a,0x40               ; Register 64 = Modus
         out (c),a
@@ -177,7 +193,8 @@ ula_init:
         ld (v_plus_av),a
         ld (v_plus_on),a
         call ula_palette
-        ld a,1
+        ld a,ULA_START_ON
+        ld (v_plus_on),a
         jp ula_set_mode
 ui_no:  ld a,0
         ld (v_plus_av),a
