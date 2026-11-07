@@ -643,9 +643,9 @@ move_draw_stars:
         jr z,md_go
         ld ix,SLOT1
 md_go:  ld hl,STAR_BASE
-        starpass 0x40,0,END_FAR,rows_far        ; fern: 0,25 Pixel/Bild
-        starpass 0x80,0,END_MID,rows_mid        ; mittel: 0,5 Pixel/Bild
-        starpass 0x00,1,END_NEAR,rows_near      ; nah: 1 Pixel/Bild
+        starpass 0x20,0,END_FAR,rows_far        ; fern: 0,125 Pixel/Bild
+        starpass 0x40,0,END_MID,rows_mid        ; mittel: 0,25 Pixel/Bild
+        starpass 0x80,0,END_NEAR,rows_near      ; nah: 0,5 Pixel/Bild
         ret
 
 ; --- Tabellen, erzeugt von tools/build.py ---
