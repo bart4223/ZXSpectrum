@@ -66,12 +66,12 @@ Größen (Vorschlag): Schiff 24x16, Flamme 8x8 (3 Animationsbilder), Laser 8x2 (
 **Stufe 1 – Parallax-Sternenhimmel**
 Drei Ebenen im Doppelpuffer mit eigenen alten Slots, Attribute je Zellzeile. Test: Sternpositionen rücken genau um die Geschwindigkeit vor, beide Puffer konsistent, kein Stern außerhalb. GIF.
 
-- State: InProgress
+- State: Done
 
 **Stufe 2 – Schiff mit Pixelbewegung**
 Maskiertes Schiff mit 8 Verschiebungen, Joystick 1 in 4 Richtungen (z. B. 2 px/Frame), Ränder, Flammenanimation. Test: Position und Pixel im Speicherabzug, Sterne bleiben hinter der Maske heil.
 
-- State: Open
+- State: InProgress
 
 **Stufe 3 – Laser**
 Feuerknopf mit Feuerrate (Wiederholverzögerung wie `LASERBEAMSPAWNDELAY`), 4 px/Frame, max. 4 Strahlen, Mündungsblitz, AY-„Pew“ (kurzer Platzhalter).
@@ -91,6 +91,7 @@ Kometen (schnell, mit Schweif), Kollision Schiff, Explosion des Schiffs, 3 Leben
 **Stufe 6 – Spielablauf**
 Titelbild (Intro wie im Original: Asteroiden, Schiff, Laserschuss), Menü per Joystick (Tempo/Modus), Level und Tempo-Anstieg, Pause P, Game-Over-Bild, Rekord pro Sitzung, Abspann (expandierender Kreis).
 
+- 1. Meilenstein
 - State: Open
 
 **Stufe 7 – Sound über AY**
@@ -101,6 +102,7 @@ Laser, Explosion (Rauschen, satter „Peng“), Kometen-Zischen, Schiffstod, Tit
 **Stufe 8 – Asteroiden-Zerfall**
 Groß → 2 mittlere → 2 kleine; Arcade-Punkte; Spawn-Gewichtung. Hier entscheidet sich, ob große Sprites in den Speicher passen.
 
+- 2. Meilenstein
 - State: Open
 
 **Stufe 9 – Grafik-Feinschliff**
@@ -111,6 +113,7 @@ ULAplus-Paletten je Objekttyp, Dither-Schattierung, Funken-Partikel bei Explosio
 **Stufe 10 – Koop-Modus und Tuning**
 Moduswahl 1/2 Spieler im Titelbild per Joystick, zweites Schiff (eigene Farbe) mit Joystick 2 per Kontext-Tausch (`swap_ctx`), je Spieler 3 Leben und eigene Punkte, Performance-Feinschliff (mehr Objekte bei zwei Schiffen), mehrere Schwierigkeitsprofile.
 
+- 3. Meilenstein
 - State: Open
 
 ## 4. Testbau und Abläufe
