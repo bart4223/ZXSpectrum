@@ -81,12 +81,12 @@ Feuerknopf mit Feuerrate (Wiederholverzögerung wie `LASERBEAMSPAWNDELAY`), 4 px
 **Stufe 4 – Asteroiden**
 Spawn, Fließkomma-Geschwindigkeit, Rotationsanimation, Treffer Laser/Asteroid (symmetrisch), Explosion, Punkte (zunächst eine Größe, der Zerfall folgt in Stufe 8).
 
-- State: InProgress
+- State: Done
 
 **Stufe 5 – Kometen und Schiffstod**
 Kometen (schnell, mit Schweif), Kollision Schiff, Explosion des Schiffs, 3 Leben mit blinkender Schutzzeit, Game Over. Kometen sind nicht abschießbar.
 
-- State: Open
+- State: InProgress
 
 **Stufe 6 – Spielablauf**
 Titelbild (Intro wie im Original: Asteroiden, Schiff, Laserschuss), Menü per Joystick (Tempo/Modus), Level und Tempo-Anstieg, Pause P, Game-Over-Bild, Rekord pro Sitzung, Abspann (expandierender Kreis).
