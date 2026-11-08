@@ -64,7 +64,19 @@ v_old       equ VARS+19         ; alte Schiffsposition je Puffer: xcell,y (2x2 B
 v_ty        equ VARS+23
 v_xc        equ VARS+24
 v_cnt       equ VARS+25
-VARS_LEN    equ 26
+v_fdelay    equ VARS+26         ; Feuerpause (Bilder)
+v_sfx       equ VARS+27         ; Pew: verbleibende Bilder
+LASERS      equ VARS+0x20       ; 4 Strahlen x (aktiv, x, y, Alter)
+v_lold      equ VARS+0x30       ; je Puffer 4 Strahlen x (gueltig, x, y-oben, Hoehe)
+VARS_LEN    equ 0x50
+
+LASER_MAX   equ 4
+LASER_SPEED equ 4               ; Pixel/Bild
+LASER_DELAY equ 7               ; Feuerpause: Schuss alle LASER_DELAY+1 Bilder
+ATTR_LASER  equ 0x42            ; hell rot
+ATTR_FLASH  equ 0x46            ; hell gelb (Muendungsblitz, erste 2 Bilder)
+SFX_LEN     equ 8
+SFX_V0      equ 8               ; Anfangslautstaerke (AY 0..15), Platzhalter bis Stufe 7
 
 SHIP_VX     equ 3               ; Pixel/Bild waagerecht (ungerade = alle 8 Phasen)
 SHIP_VY     equ 2               ; Pixel/Bild senkrecht
@@ -109,6 +121,12 @@ start:
         ld (v_dshown),a
 
         call ula_init           ; ULAplus-Palette setzen
+        ld a,7
+        ld e,0x3F               ; AY: alle Kanaele aus
+        call ay_w
+        ld a,8
+        ld e,0
+        call ay_w
 
         ld a,0x40
         call draw_static        ; statische Grafik in beide Puffer
@@ -141,10 +159,14 @@ main:
         call keys
         call joy
         call ship_anim
+        call sfx_update
+        call lasers_update
         call erase_stars
         call erase_ship
+        call erase_lasers
         call move_draw_stars
         call draw_ship
+        call draw_lasers        ; zuletzt: Strahlfarbe gewinnt ueber die Schiffszelle (gelber Muendungsblitz)
         call print_dyn
         halt                    ; auf Bildanfang warten
         call flip               ; fertig gezeichneten Puffer anzeigen
@@ -935,6 +957,342 @@ dsh_l:  ld a,(v_ty)
         dec (hl)
         jr nz,dsh_l
         ret
+
+; ---------------------------------------------------------------------
+; Laser
+; lasers_update: Strahlen 4 px nach rechts, hinten raus = frei; dann Feuerknopf (Taste 0)
+lasers_update:
+        ld ix,LASERS
+        ld b,LASER_MAX
+        ld de,4
+lu_l:   ld a,(ix+0)
+        or a
+        jr z,lu_n
+        ld a,(ix+1)
+        add a,LASER_SPEED
+        cp 249                  ; Strahl (8 breit) passt nur bis x = 248
+        jr c,lu_ok
+        ld (ix+0),0
+        jr lu_n
+lu_ok:  ld (ix+1),a
+        inc (ix+3)
+lu_n:   add ix,de
+        djnz lu_l
+        ld a,(v_fdelay)
+        or a
+        jr z,lf_try
+        dec a
+        ld (v_fdelay),a
+        ret
+lf_try: ld a,0xEF
+        in a,(0xFE)
+        bit 0,a                 ; Feuer (0 = gedrueckt)
+        ret nz
+        ld ix,LASERS
+        ld b,LASER_MAX
+        ld de,4
+lf_l:   ld a,(ix+0)
+        or a
+        jr z,lf_go
+        add ix,de
+        djnz lf_l
+        ret                     ; alle 4 Strahlen unterwegs
+lf_go:  ld (ix+0),1
+        ld a,(v_sx)
+        add a,24                ; vor der Schiffsnase
+        ld (ix+1),a
+        ld a,(v_sy)
+        add a,7
+        ld (ix+2),a
+        ld (ix+3),0
+        ld a,LASER_DELAY
+        ld (v_fdelay),a
+        jp sfx_laser
+
+; row_addr2: wie row_addr, zerstoert nur A
+row_addr2:
+        ld h,PG_LO
+        ld l,a
+        ld a,(hl)
+        or c
+        push af
+        ld a,(v_hipg)
+        ld h,a
+        ld a,(hl)
+        ld h,a
+        pop af
+        ld l,a
+        ret
+
+; beam_draw: IX = Slot (gueltig,x,y-oben,Hoehe); Strahl 8 Pixel breit mit OR setzen
+beam_draw:
+        ld a,(ix+1)
+        and 7
+        ld e,a
+        ld d,0
+        ld hl,beam_hi
+        add hl,de
+        ld b,(hl)
+        ld hl,beam_lo
+        add hl,de
+        ld d,(hl)
+        ld a,(ix+1)
+        rrca
+        rrca
+        rrca
+        and 0x1F
+        ld c,a
+        ld e,(ix+3)
+        ld a,(ix+2)
+        ld (v_ty),a
+bdw_l:  ld a,(v_ty)
+        call row_addr2
+        ld a,(hl)
+        or b
+        ld (hl),a
+        inc l
+        ld a,(hl)
+        or d
+        ld (hl),a
+        ld hl,v_ty
+        inc (hl)
+        dec e
+        jr nz,bdw_l
+        ret
+
+; beam_erase: wie beam_draw, Pixel loeschen
+beam_erase:
+        ld a,(ix+1)
+        and 7
+        ld e,a
+        ld d,0
+        ld hl,beam_hi
+        add hl,de
+        ld a,(hl)
+        cpl
+        ld b,a
+        ld hl,beam_lo
+        add hl,de
+        ld a,(hl)
+        cpl
+        ld d,a
+        ld a,(ix+1)
+        rrca
+        rrca
+        rrca
+        and 0x1F
+        ld c,a
+        ld e,(ix+3)
+        ld a,(ix+2)
+        ld (v_ty),a
+ber_l:  ld a,(v_ty)
+        call row_addr2
+        ld a,(hl)
+        and b
+        ld (hl),a
+        inc l
+        ld a,(hl)
+        and d
+        ld (hl),a
+        ld hl,v_ty
+        inc (hl)
+        dec e
+        jr nz,ber_l
+        ret
+
+; beam_attr: IX = Slot, C = Farbe oder 0 = Ebenenfarbe wiederherstellen
+beam_attr:
+        ld a,(ix+2)
+        rrca
+        rrca
+        rrca
+        and 0x1F
+        ld b,a                  ; erste Zellzeile
+        ld a,(ix+2)
+        add a,(ix+3)
+        dec a
+        rrca
+        rrca
+        rrca
+        and 0x1F
+        sub b
+        inc a
+        ld d,a                  ; 1 oder 2 Zellzeilen
+        ld a,(ix+1)
+        rrca
+        rrca
+        rrca
+        and 0x1F
+        ld (v_xc),a
+        ld a,(ix+1)
+        and 7
+        ld e,a                  ; Verschiebung (0 = nur eine Zelle)
+ba_row: ld a,b
+        call attr_row_addr
+        ld a,c
+        or a
+        jr nz,ba_v
+        push hl
+        ld l,b
+        ld h,ROWATTR_PG
+        ld a,(hl)
+        pop hl
+ba_v:   ld (hl),a
+        inc e
+        dec e
+        jr z,ba_n
+        inc l
+        ld (hl),a
+ba_n:   inc b
+        dec d
+        jr nz,ba_row
+        ret
+
+; slot_base: IX = Slottabelle des Zeichenpuffers
+slot_base:
+        ld a,(v_buf)
+        rlca
+        rlca
+        rlca
+        rlca
+        ld e,a
+        ld d,0
+        ld ix,v_lold
+        add ix,de
+        ret
+
+; erase_lasers: alte Strahlen im Zeichenpuffer loeschen, Attribute zuruecksetzen
+erase_lasers:
+        call slot_base
+        ld a,LASER_MAX
+        ld (v_cnt),a
+el_l:   ld a,(ix+0)
+        or a
+        jr z,el_n
+        ld c,0
+        call beam_attr
+        call beam_erase
+el_n:   ld de,4
+        add ix,de
+        ld a,(v_cnt)
+        dec a
+        ld (v_cnt),a
+        jr nz,el_l
+        ret
+
+; draw_lasers: aktive Strahlen zeichnen (Alter 0..1: 4 Zeilen hoher Blitz in gelb)
+draw_lasers:
+        call slot_base
+        ld hl,LASERS
+        ld a,LASER_MAX
+        ld (v_cnt),a
+dl_l:   ld a,(hl)
+        or a
+        jr nz,dl_a
+        ld (ix+0),0
+        ld de,4
+        add hl,de
+        jr dl_n
+dl_a:   inc hl
+        ld a,(hl)
+        ld (ix+1),a             ; x
+        inc hl
+        ld c,(hl)               ; y
+        inc hl
+        ld a,(hl)               ; Alter
+        inc hl                  ; HL = naechster Strahl
+        cp 2
+        jr nc,dl_t
+        ld a,c
+        dec a
+        ld (ix+2),a
+        ld (ix+3),4
+        ld c,ATTR_FLASH
+        jr dl_d
+dl_t:   ld (ix+2),c
+        ld (ix+3),2
+        ld c,ATTR_LASER
+dl_d:   ld (ix+0),1
+        push hl
+        push bc
+        call beam_draw
+        pop bc
+        call beam_attr
+        pop hl
+dl_n:   ld de,4
+        add ix,de
+        ld a,(v_cnt)
+        dec a
+        ld (v_cnt),a
+        jr nz,dl_l
+        ret
+
+beam_hi: db 0xFF,0x7F,0x3F,0x1F,0x0F,0x07,0x03,0x01
+beam_lo: db 0x00,0x80,0xC0,0xE0,0xF0,0xF8,0xFC,0xFE
+
+; ---------------------------------------------------------------------
+; AY (Platzhalter-Pew, richtige Klaenge in Stufe 7)
+; ay_w: A = Register, E = Wert; zerstoert BC
+ay_w:   ld bc,0xFFFD
+        out (c),a
+        ld b,0xBF
+        out (c),e
+        ret
+
+sfx_laser:
+        ld a,SFX_LEN
+        ld (v_sfx),a
+        ld a,7
+        ld e,0x3E               ; Ton A an
+        call ay_w
+        ld a,0
+        ld e,0x30
+        call ay_w
+        ld a,1
+        ld e,0
+        call ay_w
+        ld a,8
+        ld e,SFX_V0
+        jp ay_w
+
+; sfx_update: Ton wird tiefer (Periode waechst um 0x20/Bild) und leiser
+sfx_update:
+        ld a,(v_sfx)
+        or a
+        ret z
+        dec a
+        ld (v_sfx),a
+        jr z,su_off
+        ld c,a
+        ld a,SFX_LEN
+        sub c
+        ld l,a
+        ld h,0
+        add hl,hl
+        add hl,hl
+        add hl,hl
+        add hl,hl
+        add hl,hl
+        ld de,0x30
+        add hl,de
+        push bc
+        push hl
+        ld a,0
+        ld e,l
+        call ay_w
+        pop hl
+        ld a,1
+        ld e,h
+        call ay_w
+        pop bc
+        ld a,c
+        inc a
+        ld e,a
+        ld a,8
+        jp ay_w
+su_off: ld a,8
+        ld e,0
+        jp ay_w
 
 ; --- Tabellen, erzeugt von tools/build.py ---
         ds ((256-($ and 255)) and 255)

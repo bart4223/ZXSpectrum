@@ -71,12 +71,12 @@ Drei Ebenen im Doppelpuffer mit eigenen alten Slots, Attribute je Zellzeile. Tes
 **Stufe 2 – Schiff mit Pixelbewegung**
 Maskiertes Schiff mit 8 Verschiebungen, Joystick 1 in 4 Richtungen (z. B. 2 px/Frame), Ränder, Flammenanimation. Test: Position und Pixel im Speicherabzug, Sterne bleiben hinter der Maske heil.
 
-- State: InProgress
+- State: Done
 
 **Stufe 3 – Laser**
 Feuerknopf mit Feuerrate (Wiederholverzögerung wie `LASERBEAMSPAWNDELAY`), 4 px/Frame, max. 4 Strahlen, Mündungsblitz, AY-„Pew“ (kurzer Platzhalter).
 
-- State: Open
+- State: InProgress
 
 **Stufe 4 – Asteroiden**
 Spawn, Fließkomma-Geschwindigkeit, Rotationsanimation, Treffer Laser/Asteroid (symmetrisch), Explosion, Punkte (zunächst eine Größe, der Zerfall folgt in Stufe 8).
