@@ -2415,7 +2415,9 @@ erase_ship:
         inc hl
         ld a,(hl)
         ld (v_ty),a
-        call attr_restore
+        ld a,(v_mode)
+        cp 2
+        call nz,attr_restore    ; im Abspann nicht: sonst ueberschreibt es das Schwarz des Kreises
         ld a,(v_xc)
         ld c,a
         ld a,(v_ty)
