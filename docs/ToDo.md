@@ -86,13 +86,13 @@ Spawn, Fließkomma-Geschwindigkeit, Rotationsanimation, Treffer Laser/Asteroid (
 **Stufe 5 – Kometen und Schiffstod**
 Kometen (schnell, mit Schweif), Kollision Schiff, Explosion des Schiffs, 3 Leben mit blinkender Schutzzeit, Game Over. Kometen sind nicht abschießbar.
 
-- State: InProgress
+- State: Done
 
 **Stufe 6 – Spielablauf**
 Titelbild (Intro wie im Original: Asteroiden, Schiff, Laserschuss), Menü per Joystick (Tempo/Modus), Level und Tempo-Anstieg, Pause P, Game-Over-Bild, Rekord pro Sitzung, Abspann (expandierender Kreis).
 
 - 1. Meilenstein
-- State: Open
+- State: InProgress
 
 **Stufe 7 – Sound über AY**
 Laser, Explosion (Rauschen, satter „Peng“), Kometen-Zischen, Schiffstod, Titelmusik, Game-Over-Jingle, Taste T Lautstärke (Standard 3), keine Dauermusik.

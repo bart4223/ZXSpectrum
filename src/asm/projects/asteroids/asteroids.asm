@@ -97,7 +97,27 @@ v_ldirty    equ VARS+0x7A
 v_goclr     equ VARS+0x7B       ; "GAME OVER" noch 2 Bilder loeschen
 v_lbuf      equ VARS+0x7C       ; Text fuer die Lebensanzeige (Zeichen, 0)
 v_ncomet    equ VARS+0x7E       ; aktive Kometen
-VARS_LEN    equ 0x80
+v_mode      equ VARS+0x7F       ; 0 Titel (Demo + Menue), 1 Spiel, 2 Abspann
+v_raw       equ VARS+0x80       ; Joystick-Port (aktiv = 0), obere Bits gesetzt
+v_praw      equ VARS+0x81       ; Wert des vorigen Bildes (fuer Flanken)
+v_inp       equ VARS+0x82       ; Eingabe fuers Schiff (Joystick oder Demo)
+v_pause     equ VARS+0x83
+v_pshown    equ VARS+0x84       ; PAUSE-Text steht schon im sichtbaren Puffer
+v_pkey      equ VARS+0x85       ; Taste P wird gehalten
+v_tempo     equ VARS+0x86       ; 0 normal, 1 schnell, 2 turbo
+v_fac       equ VARS+0x87       ; Tempofaktor (16 = 1,0)
+v_level     equ VARS+0x88
+v_hits      equ VARS+0x89       ; Treffer im laufenden Level
+v_lvdirty   equ VARS+0x8A
+v_hi        equ VARS+0x8B       ; 3 Byte BCD, niedrigstes zuerst (Rekord der Sitzung)
+v_hdirty    equ VARS+0x8E
+v_newrec    equ VARS+0x8F
+v_outr      equ VARS+0x90       ; Abspann: Bildzaehler
+v_gp        equ VARS+0x91       ; 2 Byte Hilfszeiger
+v_lvbuf     equ VARS+0x93       ; 2 Ziffern + 0
+v_tcnt      equ VARS+0x96       ; Titel: Bildzaehler (welcher Textteil wird erneuert)
+v_tdirty    equ VARS+0x97       ; Menuezeile sofort neu zeichnen (2 Bilder)
+VARS_LEN    equ 0xA0
 
 ASTS        equ 0xB800          ; MAX_ROCKS x 16 Byte
 EXPLS       equ 0xB880          ; EXP_MAX x 8 Byte
@@ -110,13 +130,19 @@ ROCK_SPAWN  equ 1               ; 0 = keine Asteroiden (Regressionstests der Stu
 ATTR_ROCK   equ 0x06            ; dunkel gelb (Fels)
 ROCK_SCORE  equ 0x50            ; BCD, mittlerer Asteroid
 COMETS_ON   equ 1               ; 0 = keine Kometen (Regressionstest Stufe 4)
-COMET_MASK  equ 1               ; Komet bei jedem Spawn mit Wahrscheinlichkeit 1/(MASK+1)
+COMET_MASK  equ 7               ; Komet bei jedem Spawn mit Wahrscheinlichkeit 1/(MASK+1)
 SHIP_HIT    equ 1               ; 0 = Schiff unverwundbar (Regressionstest Stufe 4)
 ATTR_COMET  equ 0x45            ; hell cyan
 LIVES0      equ 3
 DEATH_T     equ 45              ; Bilder von der Explosion bis zum neuen Schiff / Game Over
 INV_T       equ 150             ; Schutzzeit nach dem Start (Schiff blinkt)
 GO_LOCK     equ 50              ; nach Game Over so viele Bilder keine Eingabe
+START_MODE  equ 0               ; 0 = Titelbild, 1 = sofort Spiel (Regressionstests)
+FLOW_ON     equ 1               ; 1 = Game Over -> Abspann -> Titel; 0 = Game Over -> sofort neues Spiel
+LEVELS_ON   equ 1               ; 1 = Level und Tempo steigen alle 10 Treffer
+OUT_END     equ 58              ; Abspann: Bilder bis zum Titel
+TEMPO0      equ 0               ; Starttempo (0 normal, 1 schnell, 2 turbo)
+LEVEL_HITS  equ 10              ; Treffer je Level
 
 LASER_MAX   equ 4
 LASER_SPEED equ 4               ; Pixel/Bild
@@ -137,6 +163,7 @@ ATTR_SHIP   equ 0x47            ; hell weiss
 ATTR_FLAME  equ 0x46            ; hell gelb
 ROWATTR_PG  equ row_attr/256
 SHIP_PG     equ ship_tab/256
+DBL_PG      equ dbl_tab/256
 
 PG_LO       equ line_lo/256
 PG_HI0      equ line_hi0/256
@@ -1578,11 +1605,31 @@ start:
         inc hl
         ld a,SHIP_Y0
         ld (hl),a
-        ei
+        ld a,START_MODE
+        ld (v_mode),a
+        ld a,1
+        ld (v_level),a
+        ld a,TEMPO0
+        ld (v_tempo),a
+        call calc_fac
+        ld a,2
+        ld (v_ldirty),a
+        ld a,START_MODE
+        or a
+        jr nz,in_pl
+        ld a,24                 ; Titel: Demo-Schiff links
+        ld (v_sx),a
+in_pl:  ei
 
 main:
         call keys
-        call game_update
+        ld a,(v_pause)
+        or a
+        jr z,mn_run
+        call pause_tick
+        jr main
+mn_run: call read_input
+        call flow_update
         call joy
         call ship_anim
         call sfx_update
@@ -1595,13 +1642,15 @@ main:
         call erase_ship
         call erase_lasers
         call erase_objs
-        call go_clear
+        call ovl_clear
         call move_draw_stars
         call draw_objs
         call draw_ship
-        call go_draw
+        call ovl_draw
         call draw_lasers        ; zuletzt: Strahlfarbe gewinnt ueber die Schiffszelle (gelber Muendungsblitz)
         call print_score
+        call print_hi
+        call print_level
         call print_lives
         call print_dyn
         halt                    ; auf Bildanfang warten
@@ -1666,6 +1715,40 @@ fs_go:  ld a,(v_dur)
 ; ---------------------------------------------------------------------
 ; keys: Taste C schaltet ULAplus um
 keys:
+        call key_c
+; key_p: P = Pause (nur im Spiel, nicht bei Game Over)
+key_p:
+        ld a,0xDF
+        in a,(0xFE)             ; Port 0xDFFE: P O I U Y
+        bit 0,a
+        jr z,kp_dn
+        xor a
+        ld (v_pkey),a
+        ret
+kp_dn:  ld a,(v_pkey)
+        or a
+        ret nz
+        ld a,1
+        ld (v_pkey),a
+        ld a,(v_mode)
+        cp 1
+        ret nz
+        ld a,(v_state)
+        cp 2
+        ret z
+        ld a,(v_pause)
+        xor 1
+        ld (v_pause),a
+        ret nz                  ; jetzt pausiert
+        xor a
+        ld (v_pshown),a
+        ld a,4
+        ld (v_goclr),a          ; PAUSE-Text aus beiden Puffern nehmen
+        ld a,(FRAMES)
+        ld (v_lastf),a          ; Pause nicht als langes Bild werten
+        ret
+
+key_c:
         ld a,0xFE
         in a,(0xFE)             ; Port 0xFEFE: Shift Z X C V
         bit 3,a
@@ -2183,8 +2266,7 @@ joy:
         ld a,(v_state)
         or a
         ret nz                  ; nur lebendes Schiff steuern
-        ld a,0xEF
-        in a,(0xFE)
+        ld a,(v_inp)
         ld c,a
         ld a,(v_sx)
         bit 4,c
@@ -2464,8 +2546,7 @@ lu_n:   add ix,de
 lf_try: ld a,(v_state)
         or a
         ret nz
-        ld a,0xEF
-        in a,(0xFE)
+        ld a,(v_inp)
         bit 0,a                 ; Feuer (0 = gedrueckt)
         ret nz
         ld ix,LASERS
@@ -2787,7 +2868,22 @@ rocks_update:
 ru_sp:  call rnd
         and 31
         add a,20
-        ld (v_spawn),a
+        ld c,a
+        ld a,LEVELS_ON
+        or a
+        jr z,ru_t2
+        ld a,(v_fac)
+        sub 16
+        ld b,a
+        ld a,c
+        sub b                   ; schneller: kuerzere Pause (mindestens 6 Bilder)
+        jr c,ru_t1
+        cp 6
+        jr nc,ru_t3
+ru_t1:  ld a,6
+        jr ru_t3
+ru_t2:  ld a,c
+ru_t3:  ld (v_spawn),a
         ld ix,ASTS
         ld b,MAX_ROCKS
         ld de,ROCK_SZ
@@ -2800,6 +2896,9 @@ ru_f:   ld a,(ix+0)
 ru_new: ld a,COMETS_ON
         or a
         jr z,ru_rock
+        ld a,(v_mode)
+        cp 1
+        jr nz,ru_rock           ; im Titel keine Kometen
         call rnd
         and COMET_MASK
         jr nz,ru_rock
@@ -2880,7 +2979,14 @@ spawn_rock:
         and 0x1F
         add a,c
         ld (ix+5),a             ; y
-        xor a
+        ld a,(v_mode)
+        or a
+        jr nz,sr_y
+        ld a,(ix+5)             ; Titel-Demo: nur im unteren Streifen (unter dem Text)
+        and 15
+        add a,138
+        ld (ix+5),a
+sr_y:   xor a
         ld (ix+4),a
         ld (ix+1),a
         ld a,0x10
@@ -2896,10 +3002,14 @@ spawn_rock:
         ld de,vx_tab
         add hl,de
         ld a,(hl)
-        ld (ix+6),a
         inc hl
-        ld a,(hl)
-        ld (ix+7),a
+        ld h,(hl)
+        ld l,a                  ; HL = vx
+        ld a,LEVELS_ON
+        or a
+        call nz,scale_vx
+        ld (ix+6),l
+        ld (ix+7),h
         ld a,c
         rrca
         rrca
@@ -2915,7 +3025,12 @@ spawn_rock:
         inc hl
         ld a,(hl)
         ld (ix+9),a
-        ld a,c
+        ld a,(v_mode)
+        or a
+        jr nz,sr_v
+        ld (ix+8),a             ; Titel-Demo: waagerecht (A = 0)
+        ld (ix+9),a
+sr_v:   ld a,c
         rlca
         rlca
         rlca
@@ -2936,6 +3051,34 @@ spawn_rock:
         ld (ix+10),a            ; Startbild
         ld (ix+14),0
         ld (ix+0),1
+        ret
+
+; scale_vx: HL = HL * v_fac / 16, hoechstens 3 Pixel/Bild (kein Tunneln); zerstoert A, DE, B
+scale_vx:
+        ex de,hl
+        ld hl,0
+        ld a,(v_fac)
+        ld b,8
+sv_l:   add hl,hl
+        rlca
+        jr nc,sv_n
+        add hl,de
+sv_n:   djnz sv_l
+        srl h
+        rr l
+        srl h
+        rr l
+        srl h
+        rr l
+        srl h
+        rr l
+        ld de,0x0300
+        push hl
+        or a
+        sbc hl,de
+        pop hl
+        ret c
+        ex de,hl
         ret
 
 vx_tab: dw 0x0080,0x00A0,0x00C0,0x0100,0x0120,0x0140,0x0180,0x01C0     ; 0,5 .. 1,75 Pixel/Bild
@@ -3040,26 +3183,34 @@ gu_over: ld a,2
         ld (v_state),a
         ld a,GO_LOCK
         ld (v_stt),a
-        ret
+        jp check_record
 gu_go:  ld a,(v_stt)
         or a
         jr z,gu_w
         dec a
         ld (v_stt),a
         ret
-gu_w:   ld a,0xEF
-        in a,(0xFE)
-        bit 0,a                 ; Feuer = neues Spiel
-        ret nz
-; new_game: alles zurueck auf Anfang
-new_game:
+gu_w:   call fire_edge          ; Feuer (Flanke) = weiter
+        ret z
+        ld a,FLOW_ON
+        or a
+        jr z,new_game           ; ohne Ablauf: sofort neues Spiel
+        jp start_outro
+
+; fire_edge: Z = keine Flanke (Feuer eben erst gedrueckt = NZ)
+fire_edge:
+        ld a,(v_raw)
+        cpl
+        ld b,a
+        ld a,(v_praw)
+        and b
+        and 1
+        ret
+
+; clear_objs: Asteroiden, Explosionen und Strahlen weg
+clear_objs:
         xor a
-        ld (v_state),a
         ld (v_ncomet),a
-        ld (v_spawn),a
-        ld (v_score),a
-        ld (v_score+1),a
-        ld (v_score+2),a
         ld hl,ASTS
         ld de,ASTS+1
         ld bc,MAX_ROCKS*ROCK_SZ-1
@@ -3070,11 +3221,37 @@ new_game:
         ld bc,EXP_MAX*8-1
         ld (hl),a
         ldir
+        ld hl,LASERS
+        ld de,LASERS+1
+        ld bc,LASER_MAX*4-1
+        ld (hl),a
+        ldir
+        ret
+
+; new_game: alles zurueck auf Anfang
+new_game:
+        call clear_objs
+        xor a
+        ld (v_state),a
+        ld (v_spawn),a
+        ld (v_score),a
+        ld (v_score+1),a
+        ld (v_score+2),a
+        ld (v_hits),a
+        ld (v_newrec),a
+        ld (v_pause),a
+        ld (v_pshown),a
+        inc a
+        ld (v_mode),a
+        ld (v_level),a
+        call calc_fac
         ld a,LIVES0
         ld (v_lives),a
         ld a,2
         ld (v_ldirty),a
         ld (v_sdirty),a
+        ld (v_lvdirty),a
+        ld a,4
         ld (v_goclr),a
         ld a,SHIP_X0
         ld (v_sx),a
@@ -3090,6 +3267,9 @@ ship_collide:
         ld a,SHIP_HIT
         or a
         ret z
+        ld a,(v_mode)
+        cp 1
+        ret nz
         ld a,(v_state)
         or a
         ret nz
@@ -3208,6 +3388,579 @@ se3_go:  pop de
 se3_x: ret
 ship_exp: db 0,0, 8,3
 
+; ---------------------------------------------------------------------
+; Spielablauf: Titel (Demo + Menue), Spiel, Abspann
+
+; read_input: Joystick lesen; im Titel steuert die Demo das Schiff
+read_input:
+        ld a,(v_raw)
+        ld (v_praw),a
+        ld a,0xEF
+        in a,(0xFE)
+        or 0xE0
+        ld (v_raw),a
+        ld (v_inp),a
+        ld a,(v_mode)
+        or a
+        ret nz
+
+; demo_ai: Schiff richtet sich auf den ersten Asteroiden aus und schiesst
+demo_ai:
+        ld a,0xFF
+        ld (v_inp),a
+        ld ix,ASTS
+        ld b,MAX_ROCKS
+        ld de,ROCK_SZ
+da_l:   ld a,(ix+0)
+        or a
+        jr z,da_n
+        ld a,(ix+14)
+        or a
+        jr nz,da_n              ; Kometen ignorieren
+        ld a,(ix+3)
+        or a
+        jr nz,da_t              ; noch rechts ausserhalb: Ziel
+        ld a,(ix+2)
+        cp 70
+        jr c,da_n               ; schon am Schiff vorbei
+da_t:   ld a,(ix+5)
+        ld c,a
+        ld a,(v_sy)
+        sub c
+        add a,2
+        cp 5
+        jr c,da_f               ; |sy - y| <= 2: ausgerichtet, Feuer
+        ld a,(v_sy)
+        cp c
+        jr c,da_d
+        ld a,0xFD               ; hoch
+        ld (v_inp),a
+        ret
+da_d:   ld a,0xFB               ; runter
+        ld (v_inp),a
+        ret
+da_f:   ld a,(v_tcnt)         ; Feuer in kurzen Salven (spart Zeit im Titel)
+        and 31
+        cp 2
+        ld a,0xFE
+        jr c,da_g
+        ld a,0xFF
+da_g:   ld (v_inp),a
+        ret
+da_n:   add ix,de
+        djnz da_l
+        ret
+
+; flow_update: je nach Modus
+flow_update:
+        ld a,(v_mode)
+        or a
+        jp z,menu_update
+        cp 2
+        jp z,outro_update
+        jp game_update
+
+; calc_fac: Tempofaktor aus Level und Tempo (16 = 1,0)
+calc_fac:
+        ld a,(v_level)
+        dec a
+        cp 9
+        jr c,cf_1
+        ld a,9
+cf_1:   add a,a
+        ld c,a
+        ld a,(v_tempo)
+        add a,a
+        add a,a
+        add a,c
+        add a,16
+        ld (v_fac),a
+        ret
+
+; menu_update: Titel - links/rechts Tempo, Feuer startet
+menu_update:
+        ld a,(v_raw)
+        cpl
+        ld c,a
+        ld a,(v_praw)
+        and c
+        ld b,a                  ; B = Flanken (gerade gedrueckt)
+        bit 4,b
+        jr z,mu_1
+        ld a,(v_tempo)
+        or a
+        jr z,mu_1
+        dec a
+        ld (v_tempo),a
+        call calc_fac
+        ld a,2
+        ld (v_tdirty),a
+mu_1:   bit 3,b
+        jr z,mu_2
+        ld a,(v_tempo)
+        cp 2
+        jr nc,mu_2
+        inc a
+        ld (v_tempo),a
+        call calc_fac
+        ld a,2
+        ld (v_tdirty),a
+mu_2:   bit 0,b
+        ret z
+        jp new_game
+
+; check_record: Punktestand gegen Rekord der Sitzung
+check_record:
+        ld a,(v_score+2)
+        ld b,a
+        ld a,(v_hi+2)
+        cp b
+        jr c,cr_new
+        ret nz
+        ld a,(v_score+1)
+        ld b,a
+        ld a,(v_hi+1)
+        cp b
+        jr c,cr_new
+        ret nz
+        ld a,(v_score)
+        ld b,a
+        ld a,(v_hi)
+        cp b
+        ret nc
+cr_new: ld hl,v_score
+        ld de,v_hi
+        ld bc,3
+        ldir
+        ld a,1
+        ld (v_newrec),a
+        ld a,2
+        ld (v_hdirty),a
+        ret
+
+; start_outro: Game Over -> Abspann (expandierender Kreis)
+start_outro:
+        call clear_objs
+        ld a,2
+        ld (v_mode),a
+        xor a
+        ld (v_outr),a
+        ld a,255
+        ld (v_spawn),a          ; waehrend des Abspanns keine neuen Asteroiden
+        ret
+
+; outro_update: Kreis wachsen lassen, am Ende Titel
+outro_update:
+        ld a,(v_outr)
+        inc a
+        ld (v_outr),a
+        call outro_paint
+        ld a,(v_outr)
+        cp OUT_END
+        ret c
+; enter_title: beide Puffer neu aufbauen, Titel + Demo starten
+enter_title:
+        ld a,(v_draw)
+        push af
+        ld a,0x40
+        call draw_static
+        ld a,0xC0
+        call draw_static
+        pop af
+        ld (v_draw),a
+        call clear_objs
+        xor a
+        ld (v_mode),a
+        ld (v_state),a
+        ld (v_inv),a
+        ld (v_spawn),a
+        ld (v_pause),a
+        ld (v_goclr),a
+        ld (v_outr),a
+        ld (v_tcnt),a
+        ld (v_tdirty),a
+        ld a,1
+        ld (v_level),a
+        call calc_fac
+        ld a,2
+        ld (v_sdirty),a
+        ld (v_hdirty),a
+        ld (v_ldirty),a
+        ld (v_lvdirty),a
+        ld (v_dyn),a
+        ld a,LIVES0
+        ld (v_lives),a
+        ld a,24
+        ld (v_sx),a
+        ld a,SHIP_Y0
+        ld (v_sy),a
+        ret
+
+; outro_paint: Ring (weiss) und schwarze Scheibe ueber die Attribute des Zeichenpuffers
+; Zelle mit Abstand d (halbe Zellen): k = d - (outr-6); k = 0,1 schwarz, k = 2 weisser Ring
+outro_paint:
+        ld a,(v_outr)
+        sub 6
+        ld c,a
+        ld hl,dist_tab
+        ld a,(v_attrhi)
+        ld d,a
+        ld e,0x40               ; Zellzeile 2
+        ld a,22
+        ld (v_c2),a
+op_r:   ld b,32
+op_c:   ld a,(hl)
+        sub c
+        cp 3
+        jr nc,op_n
+        cp 2
+        ld a,0
+        jr nz,op_s
+        ld a,0x7F
+op_s:   ld (de),a
+op_n:   inc hl
+        inc de
+        djnz op_c
+        ld a,(v_c2)
+        dec a
+        ld (v_c2),a
+        jr nz,op_r
+        ret
+
+; pause_tick: Text in den sichtbaren Puffer, dann Bild abwarten (kein Umschalten)
+pause_tick:
+        ld a,(v_pshown)
+        or a
+        jr nz,pt_w
+        inc a
+        ld (v_pshown),a
+        ld a,(v_draw)
+        push af
+        xor 0x80                ; sichtbarer Puffer
+        ld (v_draw),a
+        ld d,11
+        ld e,13
+        ld b,5
+        ld a,0x47
+        call fill_attr
+        ld hl,txt_pause
+        ld de,0x0B0D
+        call print_str
+        pop af
+        ld (v_draw),a
+pt_w:   halt
+        ret
+
+; fill_attr: D = Zeile, E = Spalte, B = Anzahl, A = Attribut (Zeichenpuffer)
+fill_attr:
+        push af
+        call attr_addr
+        ld a,l
+        add a,e
+        ld l,a
+        pop af
+        jp fill_cells
+
+; ovl_clear: Textband (Zellzeilen 3..15) in beiden Puffern wegnehmen, vor den Sternen (4 Bilder: je Haelfte 2 Bilder)
+ovl_clear:
+        ld a,(v_goclr)
+        or a
+        ret z
+        dec a
+        ld (v_goclr),a
+        cp 2                    ; 4 Bilder: erst Zeilen 10..15 (Game-Over-/Menuetext), dann 3..9 (Titel)
+        ld c,10
+        ld a,16
+        jr nc,oc_1
+        ld c,3
+        ld a,10
+oc_1:   ld (v_c2),a
+; band_clear: Zellzeilen 3..15 im Zeichenpuffer: Pixel loeschen und Attribute auf die Ebenenfarbe (Stapel-Fuellung)
+band_clear:
+bc_r:   ld a,c
+        ld (v_c1),a
+        add a,a
+        add a,a
+        add a,a
+        ld b,a                  ; Pixelzeile = Zellzeile * 8
+        ld c,0
+        call scr_addr           ; HL = Zeilenanfang im Zeichenpuffer
+        ld de,32
+        add hl,de               ; Zeilenende (Stapel faellt abwaerts)
+        ld de,0
+        di
+        ld (v_sp),sp
+        ld b,8
+bc_l:   ld sp,hl
+        push de
+        push de
+        push de
+        push de
+        push de
+        push de
+        push de
+        push de
+        push de
+        push de
+        push de
+        push de
+        push de
+        push de
+        push de
+        push de
+        inc h
+        djnz bc_l
+        ld sp,(v_sp)
+        ei
+        ld a,(v_c1)
+        ld c,a
+        ld d,c
+        call attr_addr
+        ld de,32
+        add hl,de
+        push hl
+        ld hl,row_attr
+        ld b,0
+        add hl,bc
+        ld a,(hl)
+        pop hl
+        ld d,a
+        ld e,a
+        di
+        ld (v_sp),sp
+        ld sp,hl
+        push de
+        push de
+        push de
+        push de
+        push de
+        push de
+        push de
+        push de
+        push de
+        push de
+        push de
+        push de
+        push de
+        push de
+        push de
+        push de
+        ld sp,(v_sp)
+        ei
+        ld a,(v_c1)
+        ld c,a
+        inc c
+        ld a,(v_c2)
+        cp c
+        jr nz,bc_r
+        ret
+
+; ovl_draw: Text ueber dem Spiel (nach den Objekten): Titel oder Game Over
+ovl_draw:
+        ld a,(v_mode)
+        or a
+        jp z,title_draw
+        cp 1
+        ret nz
+        ld a,(v_state)
+        cp 2
+        ret nz
+        ld d,11
+        ld e,11
+        ld b,9
+        ld a,0x47
+        call fill_attr
+        ld hl,txt_go
+        ld de,0x0B0B            ; Zeile 11, Spalte 11
+        call print_str
+        ld a,(v_newrec)
+        or a
+        ret z
+        ld d,13
+        ld e,9
+        ld b,13
+        ld a,0x46
+        call fill_attr
+        ld hl,txt_rec
+        ld de,0x0D09
+        jp print_str
+
+; title_draw: je Bild ein Teil (Titel, Menue, Start, Tasten) - Text wird alle 8 Bilder je Puffer erneuert
+title_draw:
+        ld a,(v_tdirty)
+        or a
+        jr z,td_s
+        dec a
+        ld (v_tdirty),a
+        call td_menu
+td_s:   ld a,(v_tcnt)
+        ld c,a
+        inc a
+        ld (v_tcnt),a
+        ld a,c
+        rrca
+        and 7                   ; 8 Teile, je 2 Bilder (beide Puffer)
+        add a,a
+        ld l,a
+        ld h,0
+        ld de,td_jt
+        add hl,de
+        ld a,(hl)
+        inc hl
+        ld h,(hl)
+        ld l,a
+        jp (hl)
+td_jt:  dw td_b1,td_b2,td_b3,td_menu,td_start,td_keys,td_menu,td_keys
+
+td_b1:  ld hl,txt_ast1
+        ld d,3
+        ld e,7
+        ld c,6
+        jr td_bg
+td_b2:  ld hl,txt_ast2
+        ld d,3
+        ld e,13
+        ld c,6
+        jr td_bg
+td_b3:  ld hl,txt_ast3
+        ld d,3
+        ld e,19
+        ld c,6
+td_bg:  ld a,c
+        ld (v_c2),a
+        push de
+td_l:   ld a,(hl)
+        or a
+        jr z,td_t
+        push hl
+        push de
+        call put_big
+        pop de
+        pop hl
+        inc hl
+        inc e
+        inc e
+        jr td_l
+td_t:   pop de
+        ld a,(v_c2)
+        ld b,a
+        push bc
+        push de
+        ld a,0x46
+        call fill_attr
+        pop de
+        pop bc
+        inc d
+        ld a,0x42
+        jp fill_attr
+
+td_menu:
+        ld a,(v_tempo)
+        add a,a
+        ld l,a
+        ld h,0
+        ld de,tempo_tab
+        add hl,de
+        ld a,(hl)
+        inc hl
+        ld h,(hl)
+        ld l,a
+        ld de,0x0A07            ; Zeile 10, Spalte 7
+        call print_str
+        ld d,10
+        ld e,7
+        ld b,17
+        ld a,0x47
+        jp fill_attr
+
+td_start:
+        ld hl,txt_start
+        ld de,0x0C0A
+        call print_str
+        ld d,12
+        ld e,10
+        ld b,12
+        ld a,0x44
+        jp fill_attr
+
+td_keys:
+        ld hl,txt_keys
+        ld de,0x0F05
+        call print_str
+        ld d,15
+        ld e,5
+        ld b,22
+        ld a,0x45
+        jp fill_attr
+
+; put_big: Zeichen A doppelt gross (10x14 Pixel in 16x14), D = Zeile, E = Spalte (Zelle)
+put_big:
+        sub 32
+        ld l,a
+        ld h,0
+        add hl,hl
+        add hl,hl
+        add hl,hl
+        ld bc,font
+        add hl,bc
+        ld (v_gp),hl
+        ld a,d
+        add a,a
+        add a,a
+        add a,a
+        ld b,a                  ; Pixelzeile = Zeile * 8
+        ld a,e
+        add a,a
+        add a,a
+        add a,a
+        ld c,a                  ; Pixel-x = Spalte * 8
+        call scr_addr           ; HL = Zielzelle (oben links)
+        ld de,(v_gp)
+        ld a,7
+        ld (v_c1),a
+pb_l:   ld a,(de)
+        inc de
+        rrca
+        rrca                    ; Glyphbyte = 5 Bit << 2
+        and 0x1F
+        add a,a                 ; 2 Byte je Muster
+        push de
+        ld e,a
+        ld d,DBL_PG
+        ld a,(de)
+        ld b,a
+        inc e
+        ld a,(de)
+        ld c,a
+        pop de
+        ld (hl),b
+        inc l
+        ld (hl),c
+        dec l
+        down
+        ld (hl),b
+        inc l
+        ld (hl),c
+        dec l
+        down
+        ld a,(v_c1)
+        dec a
+        ld (v_c1),a
+        jr nz,pb_l
+        ret
+
+txt_ast1:  db "AST",0
+txt_ast2:  db "ERO",0
+txt_ast3:  db "IDS",0
+txt_pause: db "PAUSE",0
+txt_rec:   db "NEUER REKORD!",0
+txt_start: db "FEUER: START",0
+txt_keys:  db "JOYSTICK 6-0  P: PAUSE",0
+txt_t0:    db "TEMPO:  <NORMAL> ",0
+txt_t1:    db "TEMPO:  <SCHNELL>",0
+txt_t2:    db "TEMPO:  <TURBO>  ",0
+tempo_tab: dw txt_t0,txt_t1,txt_t2
+
 ; print_lives: Zahl der Leben in die HUD-Zeile 1 (2 Bilder lang nach jeder Aenderung)
 print_lives:
         ld a,(v_ldirty)
@@ -3222,43 +3975,7 @@ print_lives:
         ld de,0x0113            ; Zeile 1, Spalte 19
         jp print_str
 
-; go_draw: "GAME OVER" (jedes Bild, nach den Sternen), weiss
-go_draw:
-        ld a,(v_state)
-        cp 2
-        ret nz
-        ld d,11
-        call attr_addr
-        ld a,l
-        add a,11
-        ld l,a
-        ld b,9
-        ld a,0x47
-        call fill_cells
-        ld hl,txt_go
-        ld de,0x0B0B            ; Zeile 11, Spalte 11
-        jp print_str
-
-; go_clear: nach dem Neustart den Text in beiden Puffern wegnehmen (vor den Sternen)
-go_clear:
-        ld a,(v_goclr)
-        or a
-        ret z
-        dec a
-        ld (v_goclr),a
-        ld d,11
-        call attr_addr
-        ld a,l
-        add a,11
-        ld l,a
-        ld a,(row_attr+11)
-        ld b,9
-        call fill_cells
-        ld hl,txt_blank
-        ld de,0x0B0B
-        jp print_str
 txt_go:    db "GAME OVER",0
-txt_blank: db "         ",0
 
 ; expl_update: Explosionen altern (12 Bilder)
 expl_update:
@@ -3380,6 +4097,9 @@ se_go:  ld (hl),1
         ret
 
 add_score:
+        ld a,(v_mode)
+        cp 1
+        ret nz                  ; Demo im Titel: keine Punkte
         ld a,(v_score)
         add a,ROCK_SCORE
         daa
@@ -3394,9 +4114,25 @@ add_score:
         ld (v_score+2),a
         ld a,2
         ld (v_sdirty),a
-        ret
+        ld a,LEVELS_ON
+        or a
+        ret z
+        ld hl,v_hits            ; alle 10 Treffer: naechstes Level, schneller
+        inc (hl)
+        ld a,(hl)
+        cp LEVEL_HITS
+        ret c
+        ld (hl),0
+        ld a,(v_level)
+        cp 99
+        ret nc
+        inc a
+        ld (v_level),a
+        ld a,2
+        ld (v_lvdirty),a
+        jp calc_fac
 
-; print_score: Punktestand in den Zeichenpuffer (2 Bilder lang nach jeder Aenderung)
+; print_score / print_hi: BCD-Zahl (2 Bilder lang nach jeder Aenderung)
 print_score:
         ld a,(v_sdirty)
         or a
@@ -3404,6 +4140,17 @@ print_score:
         dec a
         ld (v_sdirty),a
         ld hl,v_score+2
+        ld de,0x0007            ; Zeile 0, Spalte 7
+        jr pn3
+print_hi:
+        ld a,(v_hdirty)
+        or a
+        ret z
+        dec a
+        ld (v_hdirty),a
+        ld hl,v_hi+2
+        ld de,0x0016            ; Zeile 0, Spalte 22
+pn3:    ld (v_gp),de
         ld de,v_sbuf
         ld b,3
 psc_l:  ld a,(hl)
@@ -3425,7 +4172,29 @@ psc_l:  ld a,(hl)
         xor a
         ld (de),a
         ld hl,v_sbuf
-        ld de,0x0007            ; Zeile 0, Spalte 7
+        ld de,(v_gp)
+        jp print_str
+
+; print_level: LEVEL nn (Zeile 1, Spalte 6)
+print_level:
+        ld a,(v_lvdirty)
+        or a
+        ret z
+        dec a
+        ld (v_lvdirty),a
+        ld a,(v_level)
+        ld c,'0'
+pl_l:   cp 10
+        jr c,pl_d
+        sub 10
+        inc c
+        jr pl_l
+pl_d:   add a,'0'
+        ld (v_lvbuf+1),a
+        ld a,c
+        ld (v_lvbuf),a
+        ld hl,v_lvbuf
+        ld de,0x0106
         jp print_str
 
 ; ---------------------------------------------------------------------
@@ -4348,6 +5117,65 @@ ship_tab:
         db 0xFF,0x00,0xFF,0x00,0x1F,0xE0,0xFF,0x00
         db 0xFF,0x00,0xFF,0x00,0x3F,0xC0,0xFF,0x00
         db 0xFF,0x00,0xFF,0x00,0xFF,0x00,0xFF,0x00
+; --- Titelschrift: 5 Bit -> 10 Bit doppelt breit, mittig in 16 Pixeln (Hi,Lo) ---
+        ds ((256-($ and 255)) and 255)
+dbl_tab:
+        db 0x00,0x00
+        db 0x00,0x18
+        db 0x00,0x60
+        db 0x00,0x78
+        db 0x01,0x80
+        db 0x01,0x98
+        db 0x01,0xE0
+        db 0x01,0xF8
+        db 0x06,0x00
+        db 0x06,0x18
+        db 0x06,0x60
+        db 0x06,0x78
+        db 0x07,0x80
+        db 0x07,0x98
+        db 0x07,0xE0
+        db 0x07,0xF8
+        db 0x18,0x00
+        db 0x18,0x18
+        db 0x18,0x60
+        db 0x18,0x78
+        db 0x19,0x80
+        db 0x19,0x98
+        db 0x19,0xE0
+        db 0x19,0xF8
+        db 0x1E,0x00
+        db 0x1E,0x18
+        db 0x1E,0x60
+        db 0x1E,0x78
+        db 0x1F,0x80
+        db 0x1F,0x98
+        db 0x1F,0xE0
+        db 0x1F,0xF8
+; --- Abspann: Abstand jeder Feldzelle (Zeilen 2..23) vom Mittelpunkt in halben Zellen ---
+dist_tab:
+        db 0x25,0x24,0x22,0x21,0x1F,0x1E,0x1C,0x1B,0x1A,0x19,0x18,0x17,0x16,0x16,0x15,0x15,0x15,0x15,0x16,0x16,0x17,0x18,0x19,0x1A,0x1B,0x1C,0x1E,0x1F,0x21,0x22,0x24,0x25
+        db 0x24,0x23,0x21,0x1F,0x1E,0x1C,0x1B,0x19,0x18,0x17,0x16,0x15,0x14,0x14,0x13,0x13,0x13,0x13,0x14,0x14,0x15,0x16,0x17,0x18,0x19,0x1B,0x1C,0x1E,0x1F,0x21,0x23,0x24
+        db 0x23,0x22,0x20,0x1E,0x1D,0x1B,0x19,0x18,0x17,0x15,0x14,0x13,0x12,0x12,0x11,0x11,0x11,0x11,0x12,0x12,0x13,0x14,0x15,0x17,0x18,0x19,0x1B,0x1D,0x1E,0x20,0x22,0x23
+        db 0x22,0x21,0x1F,0x1D,0x1B,0x1A,0x18,0x17,0x15,0x14,0x13,0x11,0x11,0x10,0x0F,0x0F,0x0F,0x0F,0x10,0x11,0x11,0x13,0x14,0x15,0x17,0x18,0x1A,0x1B,0x1D,0x1F,0x21,0x22
+        db 0x22,0x20,0x1E,0x1C,0x1A,0x19,0x17,0x15,0x14,0x12,0x11,0x10,0x0F,0x0E,0x0D,0x0D,0x0D,0x0D,0x0E,0x0F,0x10,0x11,0x12,0x14,0x15,0x17,0x19,0x1A,0x1C,0x1E,0x20,0x22
+        db 0x21,0x1F,0x1D,0x1B,0x19,0x18,0x16,0x14,0x13,0x11,0x10,0x0E,0x0D,0x0C,0x0B,0x0B,0x0B,0x0B,0x0C,0x0D,0x0E,0x10,0x11,0x13,0x14,0x16,0x18,0x19,0x1B,0x1D,0x1F,0x21
+        db 0x20,0x1E,0x1C,0x1B,0x19,0x17,0x15,0x13,0x11,0x10,0x0E,0x0D,0x0B,0x0A,0x09,0x09,0x09,0x09,0x0A,0x0B,0x0D,0x0E,0x10,0x11,0x13,0x15,0x17,0x19,0x1B,0x1C,0x1E,0x20
+        db 0x20,0x1E,0x1C,0x1A,0x18,0x16,0x14,0x12,0x11,0x0F,0x0D,0x0B,0x0A,0x09,0x08,0x07,0x07,0x08,0x09,0x0A,0x0B,0x0D,0x0F,0x11,0x12,0x14,0x16,0x18,0x1A,0x1C,0x1E,0x20
+        db 0x1F,0x1D,0x1B,0x19,0x18,0x16,0x14,0x12,0x10,0x0E,0x0C,0x0A,0x09,0x07,0x06,0x05,0x05,0x06,0x07,0x09,0x0A,0x0C,0x0E,0x10,0x12,0x14,0x16,0x18,0x19,0x1B,0x1D,0x1F
+        db 0x1F,0x1D,0x1B,0x19,0x17,0x15,0x13,0x11,0x0F,0x0D,0x0B,0x09,0x08,0x06,0x04,0x03,0x03,0x04,0x06,0x08,0x09,0x0B,0x0D,0x0F,0x11,0x13,0x15,0x17,0x19,0x1B,0x1D,0x1F
+        db 0x1F,0x1D,0x1B,0x19,0x17,0x15,0x13,0x11,0x0F,0x0D,0x0B,0x09,0x07,0x05,0x03,0x01,0x01,0x03,0x05,0x07,0x09,0x0B,0x0D,0x0F,0x11,0x13,0x15,0x17,0x19,0x1B,0x1D,0x1F
+        db 0x1F,0x1D,0x1B,0x19,0x17,0x15,0x13,0x11,0x0F,0x0D,0x0B,0x09,0x07,0x05,0x03,0x01,0x01,0x03,0x05,0x07,0x09,0x0B,0x0D,0x0F,0x11,0x13,0x15,0x17,0x19,0x1B,0x1D,0x1F
+        db 0x1F,0x1D,0x1B,0x19,0x17,0x15,0x13,0x11,0x0F,0x0D,0x0B,0x09,0x08,0x06,0x04,0x03,0x03,0x04,0x06,0x08,0x09,0x0B,0x0D,0x0F,0x11,0x13,0x15,0x17,0x19,0x1B,0x1D,0x1F
+        db 0x1F,0x1D,0x1B,0x19,0x18,0x16,0x14,0x12,0x10,0x0E,0x0C,0x0A,0x09,0x07,0x06,0x05,0x05,0x06,0x07,0x09,0x0A,0x0C,0x0E,0x10,0x12,0x14,0x16,0x18,0x19,0x1B,0x1D,0x1F
+        db 0x20,0x1E,0x1C,0x1A,0x18,0x16,0x14,0x12,0x11,0x0F,0x0D,0x0B,0x0A,0x09,0x08,0x07,0x07,0x08,0x09,0x0A,0x0B,0x0D,0x0F,0x11,0x12,0x14,0x16,0x18,0x1A,0x1C,0x1E,0x20
+        db 0x20,0x1E,0x1C,0x1B,0x19,0x17,0x15,0x13,0x11,0x10,0x0E,0x0D,0x0B,0x0A,0x09,0x09,0x09,0x09,0x0A,0x0B,0x0D,0x0E,0x10,0x11,0x13,0x15,0x17,0x19,0x1B,0x1C,0x1E,0x20
+        db 0x21,0x1F,0x1D,0x1B,0x19,0x18,0x16,0x14,0x13,0x11,0x10,0x0E,0x0D,0x0C,0x0B,0x0B,0x0B,0x0B,0x0C,0x0D,0x0E,0x10,0x11,0x13,0x14,0x16,0x18,0x19,0x1B,0x1D,0x1F,0x21
+        db 0x22,0x20,0x1E,0x1C,0x1A,0x19,0x17,0x15,0x14,0x12,0x11,0x10,0x0F,0x0E,0x0D,0x0D,0x0D,0x0D,0x0E,0x0F,0x10,0x11,0x12,0x14,0x15,0x17,0x19,0x1A,0x1C,0x1E,0x20,0x22
+        db 0x22,0x21,0x1F,0x1D,0x1B,0x1A,0x18,0x17,0x15,0x14,0x13,0x11,0x11,0x10,0x0F,0x0F,0x0F,0x0F,0x10,0x11,0x11,0x13,0x14,0x15,0x17,0x18,0x1A,0x1B,0x1D,0x1F,0x21,0x22
+        db 0x23,0x22,0x20,0x1E,0x1D,0x1B,0x19,0x18,0x17,0x15,0x14,0x13,0x12,0x12,0x11,0x11,0x11,0x11,0x12,0x12,0x13,0x14,0x15,0x17,0x18,0x19,0x1B,0x1D,0x1E,0x20,0x22,0x23
+        db 0x24,0x23,0x21,0x1F,0x1E,0x1C,0x1B,0x19,0x18,0x17,0x16,0x15,0x14,0x14,0x13,0x13,0x13,0x13,0x14,0x14,0x15,0x16,0x17,0x18,0x19,0x1B,0x1C,0x1E,0x1F,0x21,0x23,0x24
+        db 0x25,0x24,0x22,0x21,0x1F,0x1E,0x1C,0x1B,0x1A,0x19,0x18,0x17,0x16,0x16,0x15,0x15,0x15,0x15,0x16,0x16,0x17,0x18,0x19,0x1A,0x1B,0x1C,0x1E,0x1F,0x21,0x22,0x24,0x25
 
 ; --- Font 5x7 (ASCII 32..95, Grossbuchstaben), erzeugt von tools/build.py ---
 font:
