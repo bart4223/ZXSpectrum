@@ -13,9 +13,12 @@
 ;
 ; Speicher:  0x6000-0x7FFF reserviert (spaeter Sprites)
 ;            0x8000-...    Code und Daten, Tabellen auf Seitengrenzen
-;            0xB400-0xB4FF Variablen (VARS)
-;            0xB500-0xB5FF Sterne (3 Byte: Bruchteil, x, y)
-;            0xB600/0xB700 alte Pixel je Puffer (3 Byte: Adresse, ~Maske)
+;            0xB600-0xB6FF Variablen (VARS)
+;            0xB700-0xB7FF Sterne (3 Byte: Bruchteil, x, y)
+;            0xB800/0xB900 alte Pixel je Puffer (3 Byte: Adresse, ~Maske)
+;            0xBA00-0xBAFF Asteroiden, Explosionen, alte Objektslots
+;            0xBB00-0xBBFF Testprotokoll (nur HIT_LOG)
+;            0xDB00-0xF2FF mittlere/kleine Felsen (beim Start erzeugt, Bank 7)
 ;            0xBC00-0xBFFF Stack (waechst nach unten ab 0xC000)
 ;            0xC000-0xDAFF Bank 7 = Schattenbildschirm
 ; =====================================================================
@@ -23,15 +26,15 @@
 ULAPLUS_AUTO equ 1              ; 1 = ULAplus nutzen, 0 = nie anfassen (nur Classic)
 ULA_DETECT  equ 0               ; 1 = per Ruecklesen erkennen (geht auf "The Spectrum" nicht), 0 = blind schreiben
 ULA_START_ON equ 1              ; 1 = ULAplus sofort an, 0 = Classic, Taste C schaltet ein
-STARS_FAR   equ 10              ; Sterne je Ebene (mindestens 1 je Ebene, zusammen <= 85)
-STARS_MID   equ 8
-STARS_NEAR  equ 6
+STARS_FAR   equ 8               ; Sterne je Ebene (mindestens 1 je Ebene, zusammen <= 85)
+STARS_MID   equ 6
+STARS_NEAR  equ 4
 NSTARS      equ STARS_FAR+STARS_MID+STARS_NEAR
 
-VARS        equ 0xB400
-STAR_BASE   equ 0xB500
-SLOT0       equ 0xB600
-SLOT1       equ 0xB700
+VARS        equ 0xB600
+STAR_BASE   equ 0xB700
+SLOT0       equ 0xB800
+SLOT1       equ 0xB900
 STACK_TOP   equ 0xC000
 FRAMES      equ 0x5C78          ; Bildzaehler der ROM-Unterbrechung
 PORT_BANK   equ 0x7FFD
@@ -121,9 +124,21 @@ CH_SZ       equ 10
 v_sfc       equ VARS+0xBE       ; aktueller Kanal
 v_smix      equ VARS+0xBF       ; Mischer (AY-Register 7)
 v_vol       equ VARS+0xC0       ; Lautstaerke * 16 (0..80), Standard 3
+v_ha        equ VARS+0xC2       ; Treffer-Box des Asteroiden (4 Byte)
+v_hb        equ VARS+0xC3
+v_hc        equ VARS+0xC4
+v_hd        equ VARS+0xC5
+g_fb        equ VARS+0xC6       ; Felsen-Erzeugung: Rahmen-Zeiger (2), Zeilenziel (2), Zeilen, oberer Rand, Rahmen, Schiebespeicher (6)
+g_rp        equ VARS+0xC8
+g_n         equ VARS+0xCA
+g_top       equ VARS+0xCB
+g_f         equ VARS+0xCC
+g_s         equ VARS+0xCD
+v_hlog      equ VARS+0xD3       ; Anzahl protokollierter Treffer
+v_grows     equ VARS+0xD4       ; Zeilen des Objekt-Sprites (16, mittel 12, klein 8)
 VOL_DEF     equ 0x30
 VOL_MAX     equ 0x50
-VARS_LEN    equ 0xC1
+VARS_LEN    equ 0xD5
 
 EV_LASER    equ 0
 EV_ROCK     equ 1
@@ -149,10 +164,16 @@ sfx     macro n
         pop af
         endm
 
-ASTS        equ 0xB800          ; MAX_ROCKS x 16 Byte
-EXPLS       equ 0xB880          ; EXP_MAX x 8 Byte
-OLDOBJ      equ 0xB8A0          ; je Puffer (MAX_ROCKS+EXP_MAX) x 4 Byte
-MAX_ROCKS   equ 3
+ASTS        equ 0xBA00          ; MAX_ROCKS x 16 Byte
+EXPLS       equ 0xBA80          ; EXP_MAX x 8 Byte
+OLDOBJ      equ 0xBAA0          ; je Puffer (MAX_ROCKS+EXP_MAX) x 4 Byte
+HITLOG      equ 0xBB00          ; Testprotokoll
+RT_M        equ 0xDB00          ; mittlere Felsen: 4 Bilder x 768 Byte (erzeugt)
+RT_S        equ 0xE700          ; kleine Felsen
+MAX_ROCKS   equ 5
+SPAWN_ACT   equ 3               ; neue grosse Felsen nur, solange weniger Objekte aktiv sind
+SPLIT_ON    equ 1               ; 1 = Zerfall gross -> 2 mittel -> 2 klein, Wertung 20/50/100
+HIT_LOG     equ 0               ; 1 = Treffer protokollieren (nur Tests)
 ROCK_SZ     equ 16
 EXP_MAX     equ 4
 NOBJ        equ MAX_ROCKS+EXP_MAX
@@ -172,7 +193,7 @@ FLOW_ON     equ 1               ; 1 = Game Over -> Abspann -> Titel; 0 = Game Ov
 LEVELS_ON   equ 1               ; 1 = Level und Tempo steigen alle 10 Treffer
 OUT_END     equ 58              ; Abspann: Bilder bis zum Titel
 TEMPO0      equ 0               ; Starttempo (0 normal, 1 schnell, 2 turbo)
-LEVEL_HITS  equ 10              ; Treffer je Level
+LEVEL_HITS  equ 21              ; Treffer je Level (ein ganz zerlegter Fels = 7 Treffer)
 
 LASER_MAX   equ 4
 LASER_SPEED equ 4               ; Pixel/Bild
@@ -197,6 +218,88 @@ PG_LO       equ line_lo/256
 PG_HI0      equ line_hi0/256
 
         org 0x6000
+art_m:                ; 4 Bilder x 12 Zeilen x (Deckung hi,lo, Pixel hi,lo)
+        db 0x00,0x80,0x00,0x80
+        db 0x01,0xC0,0x01,0x40
+        db 0x03,0xE0,0x03,0xE0
+        db 0x0F,0xE0,0x0F,0x20
+        db 0x1F,0xF0,0x1B,0xB0
+        db 0x3F,0xF8,0x39,0x78
+        db 0x1F,0xFC,0x1E,0xCC
+        db 0x0F,0xF8,0x0D,0x08
+        db 0x07,0xF0,0x06,0xB0
+        db 0x07,0xC0,0x05,0x40
+        db 0x03,0x80,0x02,0x80
+        db 0x01,0x00,0x01,0x00
+        db 0x00,0x00,0x00,0x00
+        db 0x00,0x60,0x00,0x60
+        db 0x0F,0xF0,0x0F,0xF0
+        db 0x1F,0xF0,0x1D,0xD0
+        db 0x1F,0xF0,0x1F,0xB0
+        db 0x0F,0xF0,0x0D,0x50
+        db 0x0F,0xF0,0x0E,0xF0
+        db 0x0F,0xF8,0x09,0x08
+        db 0x0F,0xF8,0x0B,0x88
+        db 0x0F,0xF0,0x0D,0xF0
+        db 0x06,0x00,0x06,0x00
+        db 0x00,0x00,0x00,0x00
+        db 0x00,0x00,0x00,0x00
+        db 0x07,0x00,0x07,0x00
+        db 0x0F,0xF0,0x0E,0xF0
+        db 0x0F,0xF8,0x0C,0x58
+        db 0x0F,0xF8,0x0F,0xF8
+        db 0x0F,0xF8,0x0F,0x48
+        db 0x1F,0xF0,0x1A,0xF0
+        db 0x1F,0xF0,0x19,0x50
+        db 0x1F,0xF0,0x1B,0x30
+        db 0x0F,0xF0,0x0F,0x50
+        db 0x00,0xE0,0x00,0xE0
+        db 0x00,0x00,0x00,0x00
+        db 0x00,0x00,0x00,0x00
+        db 0x07,0xC0,0x07,0xC0
+        db 0x07,0xC0,0x07,0xC0
+        db 0x07,0xF8,0x06,0x78
+        db 0x1F,0xF8,0x1F,0xF8
+        db 0x1F,0xF8,0x11,0x58
+        db 0x1F,0xF8,0x1A,0xC8
+        db 0x1F,0xF8,0x15,0x58
+        db 0x1F,0xE0,0x1E,0x20
+        db 0x03,0xE0,0x02,0x60
+        db 0x03,0xE0,0x03,0xE0
+        db 0x00,0x00,0x00,0x00
+art_s:                ; 4 Bilder x 8 Zeilen x (Deckung hi,lo, Pixel hi,lo)
+        db 0x01,0x80,0x01,0x80
+        db 0x01,0xC0,0x01,0xC0
+        db 0x07,0xC0,0x07,0xC0
+        db 0x0F,0xF0,0x0D,0x70
+        db 0x0F,0xF0,0x0F,0xB0
+        db 0x03,0xE0,0x03,0xE0
+        db 0x03,0x80,0x02,0x80
+        db 0x01,0x80,0x01,0x80
+        db 0x00,0x40,0x00,0x40
+        db 0x03,0xC0,0x03,0xC0
+        db 0x0F,0xE0,0x0E,0xA0
+        db 0x07,0xE0,0x05,0x60
+        db 0x07,0xE0,0x07,0xE0
+        db 0x07,0xF0,0x05,0x30
+        db 0x03,0xC0,0x03,0xC0
+        db 0x02,0x00,0x02,0x00
+        db 0x00,0x00,0x00,0x00
+        db 0x07,0xE0,0x07,0xE0
+        db 0x07,0xE0,0x06,0xA0
+        db 0x07,0xE0,0x05,0x60
+        db 0x07,0xE0,0x07,0xE0
+        db 0x07,0xE0,0x05,0x60
+        db 0x07,0xE0,0x07,0xE0
+        db 0x00,0x00,0x00,0x00
+        db 0x03,0x00,0x03,0x00
+        db 0x03,0x80,0x03,0x80
+        db 0x03,0xF0,0x03,0x70
+        db 0x07,0xF0,0x05,0x50
+        db 0x0F,0xE0,0x0F,0xE0
+        db 0x0F,0xC0,0x0E,0x40
+        db 0x01,0xC0,0x01,0xC0
+        db 0x00,0xC0,0x00,0xC0
 rock_tab:                ; 4 Bilder x 8 Verschiebungen x 16 Zeilen x 3 x (Behalte-Maske,Pixel)
         ; Bild 0, Verschiebung 0
         db 0xFF,0x00,0x7F,0x80,0xFF,0x00
@@ -1610,6 +1713,9 @@ start:
         ld a,PG_HI0+1
         ld (v_hipg),a
         call stars_init
+        ld a,SPLIT_ON
+        or a
+        call nz,gen_rocks       ; mittlere/kleine Felsen erzeugen (nur mit Zerfall)
         ld hl,ASTS              ; Asteroiden, Explosionen, alte Slots loeschen
         ld de,ASTS+1
         ld bc,0xFF
@@ -3140,12 +3246,28 @@ ru_t3:  ld (v_spawn),a
         ld ix,ASTS
         ld b,MAX_ROCKS
         ld de,ROCK_SZ
+        ld c,0                  ; C = aktive Objekte, HL = erster freier Slot
+        ld hl,0
 ru_f:   ld a,(ix+0)
         or a
-        jr z,ru_new
-        add ix,de
+        jr nz,ru_a
+        ld a,h
+        or l
+        jr nz,ru_n2
+        push ix
+        pop hl
+        jr ru_n2
+ru_a:   inc c
+ru_n2:  add ix,de
         djnz ru_f
-        jr ru_mv
+        ld a,c
+        cp SPAWN_ACT
+        jr nc,ru_mv             ; schon genug Objekte
+        ld a,h
+        or l
+        jr z,ru_mv
+        push hl
+        pop ix
 ru_new: ld a,COMETS_ON
         or a
         jr z,ru_rock
@@ -3224,6 +3346,7 @@ rm_kill: ld (ix+0),0
 
 ; spawn_rock: IX = freier Slot
 spawn_rock:
+        ld (ix+15),0            ; Groesse: gross
         call rnd
         and 0x7F
         add a,16
@@ -3340,6 +3463,7 @@ cx_tab: dw 0x0280,0x02C0,0x0300,0x0340                                  ; Komet:
 
 ; spawn_comet: IX = freier Slot. Komet erscheint rechts auf Hoehe des Schiffs (+-16)
 spawn_comet:
+        ld (ix+15),0
         call rnd
         and 0x1F
         ld c,a
@@ -3556,9 +3680,22 @@ sc_l:   ld a,(ix+0)
         ld a,(ix+14)
         or a
         jr nz,sc_cm
-        ld de,13                ; Fels: Abstand 13..35
-        ld c,23
-        ld a,9                  ; dy -9..9
+        ld a,(ix+15)            ; Fels: Abstand, Breite, Bias je Groesse (sc_tab)
+        ld e,a
+        add a,a
+        add a,e
+        ld e,a
+        ld d,0
+        push hl
+        ld hl,sc_tab
+        add hl,de
+        ld e,(hl)
+        inc hl
+        ld c,(hl)
+        inc hl
+        ld a,(hl)
+        pop hl
+        ld d,0
         jr sc_t
 sc_cm:  ld de,17                ; Komet: Abstand 17..37
         ld c,21
@@ -4351,38 +4488,129 @@ hr_l:   ld a,(ix+0)
         ld a,(ix+14)
         or a
         jr nz,hr_n              ; Kometen sind nicht abschiessbar
-        ld l,(ix+2)
-        ld h,(ix+3)
-        ld a,(v_hx)
-        sub l
-        ld l,a
-        ld a,(v_hx+1)
-        sbc a,h
-        ld h,a                  ; HL = Strahl-x16 - Fels-x16
-        ld a,5
+        ld a,(ix+15)            ; Treffer-Box nach Groesse (lh_tab: Abzug y, Hoehe y, Zugabe x, Breite x)
+        add a,a
+        add a,a
+        ld hl,lh_tab
         add a,l
         ld l,a
-        jr nc,hr_1
+        jr nc,hr_0
         inc h
-hr_1:   ld a,h
-        or a
-        jr nz,hr_n
-        ld a,l
-        cp 19                   ; -5 <= dx <= 13
-        jr nc,hr_n
-        ld a,(v_hy)
+hr_0:   ld a,(v_hy)             ; erst y pruefen (meist vorbei)
         sub (ix+5)
-        dec a
-        cp 13                   ; 1 <= dy <= 13
+        sub (hl)
+        inc hl
+        cp (hl)
+        jr nc,hr_n
+        inc hl
+        ld c,(hl)               ; Zugabe x
+        inc hl
+        ld l,(hl)               ; Breite x
+        ld a,(v_hx)
+        sub (ix+2)
+        ld d,a
+        ld a,(v_hx+1)
+        sbc a,(ix+3)
+        ld e,a
+        ld a,d
+        add a,c
+        ld d,a
+        ld a,e
+        adc a,0
+        jr nz,hr_n
+        ld a,d
+        cp l                    ; Gross: -5 <= dx <= 13
         jr nc,hr_n
         ld (ix+0),0             ; Treffer
         call spawn_expl
         call add_score
+        call split_rock
         ld a,1
         ret
-hr_n:   add ix,de
+hr_n:   ld de,ROCK_SZ
+        add ix,de
         djnz hr_l
         xor a
+        ret
+
+; Treffer-Boxen: Abzug y, Hoehe y, Zugabe x, Breite x (gross, mittel, klein)
+lh_tab: db 1,13,5,19
+        db 2,11,4,17
+        db 4,7,2,13
+; Schiffs-Kollision: Abstand ab, Breite, Bias y
+sc_tab: db 13,23,9
+        db 14,21,8
+        db 16,17,6
+; Wertung (BCD, Einer/Zehner, Hunderter): gross 20, mittel 50, klein 100
+sc_pts: db 0x20,0x00
+        db 0x50,0x00
+        db 0x00,0x01
+
+; split_rock: Fels IX (gerade getroffen) zerfaellt in zwei kleinere (nur im Spiel, nicht gross -> klein ueber klein)
+split_rock:
+        ld a,SPLIT_ON
+        or a
+        ret z
+        ld a,(v_mode)
+        cp 1
+        ret nz
+        ld a,(ix+15)
+        cp 2
+        ret nc
+        inc a
+        ld (ix+15),a            ; Kind A = der Slot des Vaters
+        ld (ix+0),1
+        push ix
+        ld ix,ASTS
+        ld b,MAX_ROCKS
+        ld de,ROCK_SZ
+sp_f:   ld a,(ix+0)
+        or a
+        jr z,sp_got
+        add ix,de
+        djnz sp_f
+        pop ix                  ; kein freier Slot: nur ein Kind
+        jr sp_a
+sp_got: push ix
+        pop de                  ; DE = Platz fuer Kind B
+        pop ix                  ; IX = Kind A
+        push ix
+        pop hl
+        ld bc,ROCK_SZ
+        ldir                    ; Kind B = Kopie von A
+        push ix
+        ld hl,-ROCK_SZ
+        add hl,de
+        push hl
+        pop ix                  ; IX = Kind B
+        ld a,(ix+8)
+        sub 0x58
+        ld (ix+8),a
+        ld a,(ix+9)
+        sbc a,0
+        ld (ix+9),a
+        ld a,(ix+6)
+        sub 0x10
+        ld (ix+6),a
+        ld a,(ix+7)
+        sbc a,0
+        ld (ix+7),a
+        ld a,(ix+13)
+        xor 2                   ; B dreht gegenlaeufig
+        ld (ix+13),a
+        pop ix                  ; IX = Kind A
+sp_a:   ld a,(ix+8)
+        add a,0x58
+        ld (ix+8),a
+        ld a,(ix+9)
+        adc a,0
+        ld (ix+9),a
+        ld a,(ix+6)
+        add a,0x10
+        ld (ix+6),a
+        ld a,(ix+7)
+        adc a,0
+        ld (ix+7),a
         ret
 
 ; spawn_expl: Explosion an der Stelle des Asteroiden IX
@@ -4415,12 +4643,37 @@ add_score:
         ld a,(v_mode)
         cp 1
         ret nz                  ; Demo im Titel: keine Punkte
+        ld bc,ROCK_SCORE        ; C = Einer/Zehner, B = Hunderter
+        ld a,SPLIT_ON
+        or a
+        jr z,as_go
+        ld a,(ix+15)
+        add a,a
+        ld e,a
+        ld d,0
+        ld hl,sc_pts
+        add hl,de
+        ld c,(hl)
+        inc hl
+        ld b,(hl)
+as_go:
+        if HIT_LOG
+        ld a,(v_hlog)
+        ld e,a
+        ld d,0
+        ld hl,HITLOG
+        add hl,de
+        ld a,(ix+15)
+        ld (hl),a
+        ld hl,v_hlog
+        inc (hl)
+        endif
         ld a,(v_score)
-        add a,ROCK_SCORE
+        add a,c
         daa
         ld (v_score),a
         ld a,(v_score+1)
-        adc a,0
+        adc a,b
         daa
         ld (v_score+1),a
         ld a,(v_score+2)
@@ -4605,7 +4858,7 @@ sd_1:   ld a,(v_gc0)
         ld a,(v_gn)
         cp 3
         jr z,sd_fast
-        ld a,16                 ; allgemeiner Pfad (am Rand beschnitten): n Bytes je Zeile
+        ld a,(v_grows)          ; allgemeiner Pfad (am Rand beschnitten): n Bytes je Zeile
         ld (v_gcnt),a
 sd_row: ld b,c
 sd_by:  ld a,(de)
@@ -4638,7 +4891,8 @@ sd_fast:                        ; schneller Pfad: alle 3 Bytes sichtbar, Sprited
         ld (v_sp),sp
         ld sp,hl
         ex de,hl
-        ld d,16
+        ld a,(v_grows)
+        ld d,a
 sd_fr:  pop bc
         ld a,(hl)
         and c
@@ -4683,7 +4937,7 @@ spr16_erase:
         ld a,(v_gn)
         cp 3
         jr z,sx_fast
-        ld a,16
+        ld a,(v_grows)
         ld (v_gcnt),a
 sx_row: ld b,c
         xor a
@@ -4700,7 +4954,8 @@ sx_by:  ld (hl),a
         jr nz,sx_row
         jr sx_end
 sx_fast:
-        ld d,16
+        ld a,(v_grows)
+        ld d,a
         ld e,0
 sx_f:   ld (hl),e
         inc l
@@ -4725,8 +4980,11 @@ spr16_attr:
         rrca
         and 0x1F
         ld b,a
+        ld a,(v_grows)
+        dec a
+        ld e,a
         ld a,(v_gy)
-        add a,15
+        add a,e
         rrca
         rrca
         rrca
@@ -4808,6 +5066,8 @@ erase_objs:
         ret z
         ld (v_c1),a
 eo_l:   ld hl,(v_osp)
+        ld a,(hl)
+        ld (v_grows),a
         inc hl
         ld a,(hl)
         ld (v_gx),a
@@ -4839,7 +5099,7 @@ os_1:   ld (v_osp),hl
 ; slot_put: schreibt Slot (v_osp) und rueckt weiter, zaehlt mit
 slot_put:
         ld hl,(v_osp)
-        ld a,(v_gn)
+        ld a,(v_grows)
         ld (hl),a
         inc hl
         ld a,(v_gx)
@@ -4867,8 +5127,10 @@ draw_objs:
         ld (v_c1),a
 do_l:   ld a,(ix+0)
         or a
-        jr z,do_n
-do_a:   ld a,(ix+2)
+        jp z,do_n
+do_a:   ld a,16
+        ld (v_grows),a
+        ld a,(ix+2)
         ld (v_gx),a
         ld a,(ix+3)
         ld (v_gx+1),a
@@ -4885,9 +5147,34 @@ do_a:   ld a,(ix+2)
         ld a,(ix+2)
         and 7
         add a,c
+        push af
         ld hl,rock_tab
+        ld a,(ix+15)
+        or a
+        jr z,do_s0
+        ld hl,RT_M
+        dec a
+        jr z,do_s0
+        ld hl,RT_S
+do_s0:  pop af
         call spr_ptr
-        ld a,ATTR_ROCK
+        ld a,(ix+15)
+        or a
+        jr z,do_nr
+        ld hl,12                ; mittel: 12 Zeilen, oben 2 Rand
+        ld bc,0x0C02
+        dec a
+        jr z,do_sz
+        ld hl,24                ; klein: 8 Zeilen, oben 4 Rand
+        ld bc,0x0804
+do_sz:  add hl,de
+        ex de,hl
+        ld a,b
+        ld (v_grows),a
+        ld a,(v_gy)
+        add a,c
+        ld (v_gy),a
+do_nr:  ld a,ATTR_ROCK
         jr do_dr
 do_cm:  ld a,(ix+10)
         and 1                   ; Flackerbild
@@ -4911,14 +5198,16 @@ do_n:   ld de,ROCK_SZ
         ld a,(v_c1)
         dec a
         ld (v_c1),a
-        jr nz,do_l
+        jp nz,do_l
         ld ix,EXPLS
         ld a,EXP_MAX
         ld (v_c1),a
 dx_l:   ld a,(ix+0)
         or a
         jr z,dx_n
-dx_a:   ld a,(ix+1)
+dx_a:   ld a,16
+        ld (v_grows),a
+        ld a,(ix+1)
         ld (v_gx),a
         ld a,(ix+2)
         ld (v_gx+1),a
@@ -4965,6 +5254,122 @@ dx_n:   ld de,8
         ld a,(v_c2)
         ld (hl),a
         ret
+
+
+; ---------------------------------------------------------------------
+; gen_rocks: mittlere und kleine Felsen aus den Basisbildern (art_m, art_s) vorverschieben
+; und in Bank 7 ablegen (RT_M, RT_S): 4 Bilder x 8 Verschiebungen x 16 Zeilen x 6 Byte (Behalte, Pixel)
+gen_rocks:
+        ld hl,art_m
+        ld de,RT_M
+        ld bc,0x0C02            ; 12 Zeilen, oben 2 Zeilen Rand
+        call gen_tab
+        ld hl,art_s
+        ld de,RT_S
+        ld bc,0x0804            ; 8 Zeilen, oben 4 Zeilen Rand
+gen_tab:
+        ld a,b
+        ld (g_n),a
+        ld a,c
+        ld (g_top),a
+        ld a,4
+        ld (g_f),a
+gt_f:   ld (g_fb),de
+        ld a,0xFF               ; Rahmen zuerst leer: Behalte 0xFF, Pixel 0
+        ld (de),a
+        inc de
+        xor a
+        ld (de),a
+        push hl
+        ld hl,(g_fb)
+        ld d,h
+        ld e,l
+        inc de
+        inc de
+        ld bc,766
+        ldir
+        pop hl
+        ld a,(g_top)            ; Zeilenziel = Rahmen + Rand * 6
+        ld c,a
+        add a,a
+        add a,c
+        add a,a
+        ld c,a
+        ld b,0
+        push hl
+        ld hl,(g_fb)
+        add hl,bc
+        ld (g_rp),hl
+        pop hl
+        ld a,(g_n)
+        ld b,a
+gt_r:   push bc
+        ld ix,g_s
+        ld a,(hl)               ; Deckung hi, lo, Pixel hi, lo
+        ld (ix+0),a
+        inc hl
+        ld a,(hl)
+        ld (ix+1),a
+        inc hl
+        ld a,(hl)
+        ld (ix+3),a
+        inc hl
+        ld a,(hl)
+        ld (ix+4),a
+        inc hl
+        xor a
+        ld (ix+2),a
+        ld (ix+5),a
+        push hl
+        ld hl,(g_rp)
+        ld b,8
+gt_s:   ld a,(ix+0)
+        cpl
+        ld (hl),a
+        inc hl
+        ld a,(ix+3)
+        ld (hl),a
+        inc hl
+        ld a,(ix+1)
+        cpl
+        ld (hl),a
+        inc hl
+        ld a,(ix+4)
+        ld (hl),a
+        inc hl
+        ld a,(ix+2)
+        cpl
+        ld (hl),a
+        inc hl
+        ld a,(ix+5)
+        ld (hl),a
+        ld de,91
+        add hl,de               ; naechste Verschiebung: gleiche Zeile, +96
+        srl (ix+0)
+        rr (ix+1)
+        rr (ix+2)
+        srl (ix+3)
+        rr (ix+4)
+        rr (ix+5)
+        djnz gt_s
+        ld hl,(g_rp)
+        ld de,6
+        add hl,de
+        ld (g_rp),hl
+        pop hl
+        pop bc
+        djnz gt_r
+        push hl                 ; HL = Basisbilder des naechsten Rahmens
+        ld hl,(g_fb)
+        ld de,768
+        add hl,de
+        ex de,hl                ; DE = naechster Rahmen
+        pop hl
+        ld a,(g_f)
+        dec a
+        ld (g_f),a
+        ret z
+        jp gt_f
 
 ; --- Tabellen, erzeugt von tools/build.py ---
         ds ((256-($ and 255)) and 255)

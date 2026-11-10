@@ -97,13 +97,13 @@ Titelbild (Intro wie im Original: Asteroiden, Schiff, Laserschuss), Menü per Jo
 **Stufe 7 – Sound über AY**
 Laser, Explosion (Rauschen, satter „Peng“), Kometen-Zischen, Schiffstod, Titelmusik, Game-Over-Jingle, Taste T Lautstärke (Standard 3), keine Dauermusik.
 
-- State: InProgress
+- State: Done
 
 **Stufe 8 – Asteroiden-Zerfall**
 Groß → 2 mittlere → 2 kleine; Arcade-Punkte; Spawn-Gewichtung. Hier entscheidet sich, ob große Sprites in den Speicher passen.
 
 - 2. Meilenstein
-- State: Open
+- State: InProgress
 
 **Stufe 9 – Grafik-Feinschliff**
 ULAplus-Paletten je Objekttyp, Dither-Schattierung, Funken-Partikel bei Explosionen, Triebwerksglühen, evtl. ferner Planet/Nebel als Extra-Ebene, Classic-Fallback abgleichen.
