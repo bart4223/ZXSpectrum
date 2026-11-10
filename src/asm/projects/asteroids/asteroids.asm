@@ -170,7 +170,7 @@ OLDOBJ      equ 0xBAA0          ; je Puffer (MAX_ROCKS+EXP_MAX) x 4 Byte
 HITLOG      equ 0xBB00          ; Testprotokoll
 RT_M        equ 0xDB00          ; mittlere Felsen: 4 Bilder x 768 Byte (erzeugt)
 RT_S        equ 0xE700          ; kleine Felsen
-MAX_ROCKS   equ 5
+MAX_ROCKS   equ 4
 SPAWN_ACT   equ 3               ; neue grosse Felsen nur, solange weniger Objekte aktiv sind
 SPLIT_ON    equ 1               ; 1 = Zerfall gross -> 2 mittel -> 2 klein, Wertung 20/50/100
 HIT_LOG     equ 0               ; 1 = Treffer protokollieren (nur Tests)
@@ -4560,6 +4560,30 @@ split_rock:
         inc a
         ld (ix+15),a            ; Kind A = der Slot des Vaters
         ld (ix+0),1
+        call rnd                ; Zufall: vy-Stoss 0x30..0x6F, Richtung (auf/ab), vx-Stoss -32..31, Drehsinn
+        and 0x3F
+        add a,0x30
+        ld e,a
+        ld d,0
+        call rnd
+        rrca
+        jr nc,sk_p
+        ld hl,0
+        sbc hl,de
+        ex de,hl
+sk_p:   ld (v_ha),de
+        call rnd
+        and 0x3F
+        sub 0x20
+        ld e,a
+        add a,a
+        sbc a,a
+        ld d,a
+        ld (v_hc),de
+        call rnd
+        and 2
+        xor (ix+13)
+        ld (ix+13),a
         push ix
         ld ix,ASTS
         ld b,MAX_ROCKS
@@ -4583,34 +4607,36 @@ sp_got: push ix
         add hl,de
         push hl
         pop ix                  ; IX = Kind B
-        ld a,(ix+8)
-        sub 0x58
-        ld (ix+8),a
-        ld a,(ix+9)
-        sbc a,0
-        ld (ix+9),a
-        ld a,(ix+6)
-        sub 0x10
-        ld (ix+6),a
-        ld a,(ix+7)
-        sbc a,0
-        ld (ix+7),a
+        ld l,(ix+8)             ; B bekommt den entgegengesetzten Stoss
+        ld h,(ix+9)
+        ld de,(v_ha)
+        or a
+        sbc hl,de
+        ld (ix+8),l
+        ld (ix+9),h
+        ld l,(ix+6)
+        ld h,(ix+7)
+        ld de,(v_hc)
+        or a
+        sbc hl,de
+        ld (ix+6),l
+        ld (ix+7),h
         ld a,(ix+13)
         xor 2                   ; B dreht gegenlaeufig
         ld (ix+13),a
         pop ix                  ; IX = Kind A
-sp_a:   ld a,(ix+8)
-        add a,0x58
-        ld (ix+8),a
-        ld a,(ix+9)
-        adc a,0
-        ld (ix+9),a
-        ld a,(ix+6)
-        add a,0x10
-        ld (ix+6),a
-        ld a,(ix+7)
-        adc a,0
-        ld (ix+7),a
+sp_a:   ld l,(ix+8)
+        ld h,(ix+9)
+        ld de,(v_ha)
+        add hl,de
+        ld (ix+8),l
+        ld (ix+9),h
+        ld l,(ix+6)
+        ld h,(ix+7)
+        ld de,(v_hc)
+        add hl,de
+        ld (ix+6),l
+        ld (ix+7),h
         ret
 
 ; spawn_expl: Explosion an der Stelle des Asteroiden IX
