@@ -4584,6 +4584,24 @@ sk_p:   ld (v_ha),de
         and 2
         xor (ix+13)
         ld (ix+13),a
+        call rnd                ; Anzahl weiterer Teile: 0 (1/8: nur ein Stueck), 1 (5/8: zwei Teile), 2 (2/8: drei Teile)
+        and 7
+        ld c,0
+        cp 7
+        jr z,sp_n
+        inc c
+        cp 2
+        jr nc,sp_n
+        inc c
+sp_n:   ld a,c
+        ld (v_gcnt),a
+        xor a
+        ld (v_gskip),a          ; 0 = naechstes Teil ist B (Gegenstoss), 1 = C (nur Drift)
+sp_x:   ld a,(v_gcnt)
+        or a
+        jr z,sp_a
+        dec a
+        ld (v_gcnt),a
         push ix
         ld ix,ASTS
         ld b,MAX_ROCKS
@@ -4593,20 +4611,23 @@ sp_f:   ld a,(ix+0)
         jr z,sp_got
         add ix,de
         djnz sp_f
-        pop ix                  ; kein freier Slot: nur ein Kind
+        pop ix                  ; kein freier Slot: keine weiteren Teile
         jr sp_a
 sp_got: push ix
-        pop de                  ; DE = Platz fuer Kind B
+        pop de                  ; DE = Platz fuer das neue Teil
         pop ix                  ; IX = Kind A
         push ix
         pop hl
         ld bc,ROCK_SZ
-        ldir                    ; Kind B = Kopie von A
+        ldir                    ; Kopie von A
         push ix
         ld hl,-ROCK_SZ
         add hl,de
         push hl
-        pop ix                  ; IX = Kind B
+        pop ix                  ; IX = neues Teil
+        ld a,(v_gskip)
+        or a
+        jr nz,sp_c
         ld l,(ix+8)             ; B bekommt den entgegengesetzten Stoss
         ld h,(ix+9)
         ld de,(v_ha)
@@ -4619,12 +4640,20 @@ sp_got: push ix
         ld de,(v_hc)
         or a
         sbc hl,de
-        ld (ix+6),l
+        jr sp_e
+sp_c:   ld l,(ix+6)             ; C behaelt die Flughoehe, wird nur schneller
+        ld h,(ix+7)
+        ld de,0x0020
+        add hl,de
+sp_e:   ld (ix+6),l
         ld (ix+7),h
         ld a,(ix+13)
-        xor 2                   ; B dreht gegenlaeufig
+        xor 2                   ; dreht gegenlaeufig
         ld (ix+13),a
+        ld a,1
+        ld (v_gskip),a
         pop ix                  ; IX = Kind A
+        jp sp_x
 sp_a:   ld l,(ix+8)
         ld h,(ix+9)
         ld de,(v_ha)
