@@ -92,12 +92,12 @@ Kometen (schnell, mit Schweif), Kollision Schiff, Explosion des Schiffs, 3 Leben
 Titelbild (Intro wie im Original: Asteroiden, Schiff, Laserschuss), Menü per Joystick (Tempo/Modus), Level und Tempo-Anstieg, Pause P, Game-Over-Bild, Rekord pro Sitzung, Abspann (expandierender Kreis).
 
 - 1. Meilenstein
-- State: InProgress
+- State: Done
 
 **Stufe 7 – Sound über AY**
 Laser, Explosion (Rauschen, satter „Peng“), Kometen-Zischen, Schiffstod, Titelmusik, Game-Over-Jingle, Taste T Lautstärke (Standard 3), keine Dauermusik.
 
-- State: Open
+- State: InProgress
 
 **Stufe 8 – Asteroiden-Zerfall**
 Groß → 2 mittlere → 2 kleine; Arcade-Punkte; Spawn-Gewichtung. Hier entscheidet sich, ob große Sprites in den Speicher passen.

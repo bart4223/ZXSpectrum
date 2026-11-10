@@ -65,7 +65,6 @@ v_ty        equ VARS+23
 v_xc        equ VARS+24
 v_cnt       equ VARS+25
 v_fdelay    equ VARS+26         ; Feuerpause (Bilder)
-v_sfx       equ VARS+27         ; Pew: verbleibende Bilder
 LASERS      equ VARS+0x20       ; 4 Strahlen x (aktiv, x, y, Alter)
 v_lold      equ VARS+0x30       ; je Puffer 4 Strahlen x (gueltig, x, y-oben, Hoehe)
 v_spawn     equ VARS+0x50       ; Bilder bis zum naechsten Spawn-Versuch
@@ -117,7 +116,38 @@ v_gp        equ VARS+0x91       ; 2 Byte Hilfszeiger
 v_lvbuf     equ VARS+0x93       ; 2 Ziffern + 0
 v_tcnt      equ VARS+0x96       ; Titel: Bildzaehler (welcher Textteil wird erneuert)
 v_tdirty    equ VARS+0x97       ; Menuezeile sofort neu zeichnen (2 Bilder)
-VARS_LEN    equ 0xA0
+v_ch        equ VARS+0xA0       ; AY-Treiber: 3 Kanaele x CH_SZ (Folgenzeiger 2, Rest, Periode 2, Vol, Flags, dper, dvol)
+CH_SZ       equ 10
+v_sfc       equ VARS+0xBE       ; aktueller Kanal
+v_smix      equ VARS+0xBF       ; Mischer (AY-Register 7)
+v_vol       equ VARS+0xC0       ; Lautstaerke * 16 (0..80), Standard 3
+VOL_DEF     equ 0x30
+VOL_MAX     equ 0x50
+VARS_LEN    equ 0xC1
+
+EV_LASER    equ 0
+EV_ROCK     equ 1
+EV_DEATH    equ 2
+EV_DEATH2   equ 3
+EV_COMET    equ 4
+EV_LEVEL    equ 5
+EV_OVER_C   equ 6
+EV_OVER_B   equ 7
+EV_REC_C    equ 8
+EV_REC_B    equ 9
+EV_START    equ 10
+EV_MENU     equ 11
+EV_TITLE_B  equ 12
+EV_TITLE_C  equ 13
+EV_OUTRO    equ 14
+VT_PG       equ vol_tab/256
+
+sfx     macro n
+        push af
+        ld a,n
+        call play_ev
+        pop af
+        endm
 
 ASTS        equ 0xB800          ; MAX_ROCKS x 16 Byte
 EXPLS       equ 0xB880          ; EXP_MAX x 8 Byte
@@ -149,8 +179,6 @@ LASER_SPEED equ 4               ; Pixel/Bild
 LASER_DELAY equ 7               ; Feuerpause: Schuss alle LASER_DELAY+1 Bilder
 ATTR_LASER  equ 0x42            ; hell rot
 ATTR_FLASH  equ 0x46            ; hell gelb (Muendungsblitz, erste 2 Bilder)
-SFX_LEN     equ 8
-SFX_V0      equ 8               ; Anfangslautstaerke (AY 0..15), Platzhalter bis Stufe 7
 
 SHIP_VX     equ 3               ; Pixel/Bild waagerecht (ungerade = alle 8 Phasen)
 SHIP_VY     equ 2               ; Pixel/Bild senkrecht
@@ -1611,6 +1639,8 @@ start:
         ld (v_level),a
         ld a,TEMPO0
         ld (v_tempo),a
+        ld a,VOL_DEF
+        ld (v_vol),a
         call calc_fac
         ld a,2
         ld (v_ldirty),a
@@ -1619,6 +1649,8 @@ start:
         jr nz,in_pl
         ld a,24                 ; Titel: Demo-Schiff links
         ld (v_sx),a
+        sfx EV_TITLE_B           ; Titelmelodie (nur im Titel-Modus)
+        sfx EV_TITLE_C
 in_pl:  ei
 
 main:
@@ -2102,7 +2134,7 @@ stars_init:
         ld de,0xC000
 si_slots:
         ld b,NSTARS
-ss_l:   ld (hl),e
+sst_l:   ld (hl),e
         inc hl
         ld (hl),d
         inc hl
@@ -2110,7 +2142,7 @@ ss_l:   ld (hl),e
         inc hl
         ld (hl),0
         inc hl
-        djnz ss_l
+        djnz sst_l
         ret
 
 ; si_layer: HL = Sternzeiger, DE = Zeilenliste, B = Anzahl
@@ -2570,7 +2602,8 @@ lf_go:  ld (ix+0),1
         ld (ix+3),0
         ld a,LASER_DELAY
         ld (v_fdelay),a
-        jp sfx_laser
+        ld a,EV_LASER
+        jp play_ev
 
 ; row_addr2: wie row_addr, zerstoert nur A
 row_addr2:
@@ -2789,67 +2822,285 @@ beam_hi: db 0xFF,0x7F,0x3F,0x1F,0x0F,0x07,0x03,0x01
 beam_lo: db 0x00,0x80,0xC0,0xE0,0xF0,0xF8,0xFC,0xFE
 
 ; ---------------------------------------------------------------------
-; AY (Platzhalter-Pew, richtige Klaenge in Stufe 7)
-; ay_w: A = Register, E = Wert; zerstoert BC
+; AY-Treiber (Stufe 7): 3 Kanaele spielen Folgen aus Schritten (siehe tools/sound_data.py).
+; ay_w: A = Register, E = Wert; zerstoert nur BC
 ay_w:   ld bc,0xFFFD
         out (c),a
         ld b,0xBF
         out (c),e
         ret
 
-sfx_laser:
-        ld a,SFX_LEN
-        ld (v_sfx),a
-        ld a,7
-        ld e,0x3E               ; Ton A an
-        call ay_w
-        ld a,0
-        ld e,0x30
-        call ay_w
-        ld a,1
+; ay_mute: Lautstaerke aller Kanaele 0, Mischer aus (zerstoert A, BC, E)
+ay_mute:
         ld e,0
-        call ay_w
         ld a,8
-        ld e,SFX_V0
+        call ay_w
+        ld a,9
+        call ay_w
+        ld a,10
+        call ay_w
+        ld a,7
+        ld e,0x3F
         jp ay_w
 
-; sfx_update: Ton wird tiefer (Periode waechst um 0x20/Bild) und leiser
-sfx_update:
-        ld a,(v_sfx)
+; sfx_stop: alle Kanaele leeren und stumm schalten (erhaelt alle Register)
+sfx_stop:
+        push af
+        push bc
+        push de
+        push hl
+        ld hl,v_ch
+        ld de,v_ch+1
+        ld bc,3*CH_SZ-1
+        ld (hl),0
+        ldir
+        call ay_mute
+        pop hl
+        pop de
+        pop bc
+        pop af
+        ret
+
+; sfx_start: A = Kanal, HL = Folge; erhaelt alle Register
+sfx_start:
+        push af
+        push bc
+        push de
+        push ix
+        ld ix,v_ch
         or a
-        ret z
-        dec a
-        ld (v_sfx),a
-        jr z,su_off
-        ld c,a
-        ld a,SFX_LEN
-        sub c
+        jr z,sfxs_go
+        ld b,a
+        ld de,CH_SZ
+sfxs_l:   add ix,de
+        djnz sfxs_l
+sfxs_go:  ld (ix+0),l
+        ld (ix+1),h
+        ld (ix+2),0
+        pop ix
+        pop de
+        pop bc
+        pop af
+        ret
+
+; play_ev: A = Ereignis (EV_*), Tabelle ev_tab: Modus (255 = immer), Kanal, Folge; erhaelt alle Register
+play_ev:
+        push af
+        push hl
+        push de
         ld l,a
         ld h,0
         add hl,hl
         add hl,hl
-        add hl,hl
-        add hl,hl
-        add hl,hl
-        ld de,0x30
+        ld de,ev_tab
         add hl,de
-        push bc
-        push hl
-        ld a,0
-        ld e,l
-        call ay_w
-        pop hl
-        ld a,1
-        ld e,h
-        call ay_w
-        pop bc
-        ld a,c
+        ld a,(hl)
         inc a
+        jr z,pe_go
+        dec a
+        ld d,a
+        ld a,(v_mode)
+        cp d
+        jr nz,pe_x
+pe_go:  inc hl
+        ld a,(hl)
+        inc hl
+        ld e,(hl)
+        inc hl
+        ld h,(hl)
+        ld l,e
+        call sfx_start
+pe_x:   pop de
+        pop hl
+        pop af
+        ret
+
+ev_tab: db 1,0
+        dw sq_laser
+        db 1,1
+        dw sq_rock
+        db 1,1
+        dw sq_death_b
+        db 1,2
+        dw sq_death_c
+        db 1,2
+        dw sq_comet
+        db 1,2
+        dw sq_level
+        db 1,2
+        dw sq_over_c
+        db 1,1
+        dw sq_over_b
+        db 1,2
+        dw sq_rec_c
+        db 1,1
+        dw sq_rec_b
+        db 255,0
+        dw sq_start
+        db 0,0
+        dw sq_menu
+        db 0,1
+        dw sq_title_b
+        db 0,2
+        dw sq_title_c
+        db 2,2
+        dw sq_outro
+sfx_mask: db 1,2,4
+
+; sfx_update: einmal je Bild; Folgen weiterschalten, AY-Register schreiben
+sfx_update:
+        ld ix,v_ch
+        xor a
+        ld (v_sfc),a
+        ld a,0x3F
+        ld (v_smix),a
+su_lp:  ld a,(ix+1)
+        or a
+        jp z,su_nx              ; Kanal frei
+        ld a,(ix+2)
+        or a
+        jr nz,su_dl
+        ld l,(ix+0)             ; naechster Schritt
+        ld h,(ix+1)
+        ld a,(hl)
+        cp 0xFF
+        jr nz,su_n1
+        inc hl                  ; Schleife: Zieladresse
+        ld e,(hl)
+        inc hl
+        ld h,(hl)
+        ld l,e
+        ld a,(hl)
+su_n1:  or a
+        jp z,su_end
+        inc hl
+        ld (ix+2),a
+        ld a,(hl)
+        ld (ix+3),a
+        inc hl
+        ld a,(hl)
+        ld (ix+4),a
+        inc hl
+        ld a,(hl)
+        ld (ix+5),a
+        inc hl
+        ld a,(hl)
+        ld (ix+6),a
+        inc hl
+        ld a,(hl)
+        ld (ix+7),a
+        inc hl
+        ld a,(hl)
+        ld (ix+8),a
+        inc hl
+        ld (ix+0),l
+        ld (ix+1),h
+        jr su_ou
+su_dl:  ld a,(ix+7)             ; Periode += dper (vorzeichenbehaftet)
         ld e,a
-        ld a,8
-        jp ay_w
-su_off: ld a,8
+        ld d,0
+        or a
+        jp p,su_p1
+        dec d
+su_p1:  ld l,(ix+3)
+        ld h,(ix+4)
+        add hl,de
+        ld (ix+3),l
+        ld (ix+4),h
+        ld a,(ix+8)             ; Lautstaerke += dvol, 0..255 begrenzt
+        ld e,a
+        ld a,(ix+5)
+        bit 7,e
+        jr nz,su_vn
+        add a,e
+        jr nc,su_vs
+        ld a,255
+        jr su_vs
+su_vn:  add a,e
+        jr c,su_vs
+        xor a
+su_vs:  ld (ix+5),a
+su_ou:  dec (ix+2)
+        ld a,(v_sfc)            ; Mischer: Ton / Rauschen dieses Kanals einschalten
+        ld e,a
+        ld d,0
+        ld hl,sfx_mask
+        add hl,de
+        ld e,(hl)
+        ld a,(v_smix)
+        ld b,a
+        ld a,(ix+6)
+        ld d,a
+        bit 1,d
+        jr nz,su_m1
+        ld a,e
+        cpl
+        and b
+        ld b,a
+su_m1:  bit 0,d
+        jr z,su_m2
+        ld a,e
+        add a,a
+        add a,a
+        add a,a
+        cpl
+        and b
+        ld b,a
+su_m2:  ld a,b
+        ld (v_smix),a
+        ld a,(v_sfc)            ; Periode
+        add a,a
+        ld l,a
+        ld e,(ix+3)
+        call ay_w
+        ld a,(ix+4)
+        and 15
+        ld e,a
+        ld a,l
+        inc a
+        call ay_w
+        ld a,(v_vol)            ; Lautstaerke (mit Faktor aus vol_tab)
+        ld b,a
+        ld a,(ix+5)
+        rrca
+        rrca
+        rrca
+        rrca
+        and 15
+        or b
+        ld c,a
+        ld b,VT_PG
+        ld a,(bc)
+        ld e,a
+        ld a,(v_sfc)
+        add a,8
+        call ay_w
+        bit 0,d                 ; Rauschperiode
+        jr z,su_nx
+        ld a,d
+        rrca
+        rrca
+        rrca
+        and 0x1F
+        ld e,a
+        ld a,6
+        call ay_w
+        jr su_nx
+su_end: ld (ix+1),0             ; Folge zu Ende: Kanal still
+        ld a,(v_sfc)
+        add a,8
         ld e,0
+        call ay_w
+su_nx:  ld de,CH_SZ
+        add ix,de
+        ld a,(v_sfc)
+        inc a
+        ld (v_sfc),a
+        cp 3
+        jp nz,su_lp
+        ld a,(v_smix)
+        ld e,a
+        ld a,7
         jp ay_w
 
 ; ---------------------------------------------------------------------
@@ -3147,6 +3398,7 @@ sk_3:   ld (ix+5),a
         ld (ix+13),a
         ld (ix+14),a            ; Typ Komet
         ld (ix+0),a
+        sfx EV_COMET
         ld hl,v_ncomet
         inc (hl)
         ret
@@ -3185,7 +3437,16 @@ gu_over: ld a,2
         ld (v_state),a
         ld a,GO_LOCK
         ld (v_stt),a
-        jp check_record
+        call check_record
+        ld a,(v_newrec)
+        or a
+        jr nz,go_rec
+        sfx EV_OVER_C
+        sfx EV_OVER_B
+        ret
+go_rec: sfx EV_REC_C
+        sfx EV_REC_B
+        ret
 gu_go:  ld a,(v_stt)
         or a
         jr z,gu_w
@@ -3261,6 +3522,8 @@ new_game:
         ld (v_sy),a
         ld a,INV_T
         ld (v_inv),a
+        call sfx_stop
+        sfx EV_START
         ret
 
 ; ship_collide: Schiff gegen Asteroiden und Kometen (Trefferkasten kleiner als das Sprite)
@@ -3333,7 +3596,9 @@ sc_hit:                         ; IX = getroffenes Objekt
         or a
         jr nz,sh_1              ; Komet fliegt weiter
         ld (ix+0),0             ; Fels zerbricht (die Schiffsexplosion deckt ihn zu)
-sh_1:   ld a,(v_lives)
+sh_1:   sfx EV_DEATH
+        sfx EV_DEATH2
+        ld a,(v_lives)
         dec a
         ld (v_lives),a
         ld a,2
@@ -3497,6 +3762,7 @@ menu_update:
         call calc_fac
         ld a,2
         ld (v_tdirty),a
+        sfx EV_MENU
 mu_1:   bit 3,b
         jr z,mu_2
         ld a,(v_tempo)
@@ -3507,7 +3773,28 @@ mu_1:   bit 3,b
         call calc_fac
         ld a,2
         ld (v_tdirty),a
-mu_2:   bit 0,b
+        sfx EV_MENU
+mu_2:   bit 1,b                 ; Joystick hoch / runter: Lautstaerke
+        jr z,mu_3
+        ld a,(v_vol)
+        cp VOL_MAX
+        jr nc,mu_3
+        add a,16
+        ld (v_vol),a
+        ld a,2
+        ld (v_tdirty),a
+        sfx EV_MENU
+mu_3:   bit 2,b
+        jr z,mu_4
+        ld a,(v_vol)
+        or a
+        jr z,mu_4
+        sub 16
+        ld (v_vol),a
+        ld a,2
+        ld (v_tdirty),a
+        sfx EV_MENU
+mu_4:   bit 0,b
         ret z
         jp new_game
 
@@ -3549,6 +3836,8 @@ start_outro:
         ld (v_outr),a
         ld a,255
         ld (v_spawn),a          ; waehrend des Abspanns keine neuen Asteroiden
+        call sfx_stop
+        sfx EV_OUTRO
         ret
 
 ; outro_update: Kreis wachsen lassen, am Ende Titel
@@ -3596,6 +3885,9 @@ enter_title:
         ld (v_sx),a
         ld a,SHIP_Y0
         ld (v_sy),a
+        call sfx_stop
+        sfx EV_TITLE_B
+        sfx EV_TITLE_C
         ret
 
 ; outro_paint: Ring (weiss) und schwarze Scheibe ueber die Attribute des Zeichenpuffers
@@ -3636,6 +3928,7 @@ pause_tick:
         jr nz,pt_w
         inc a
         ld (v_pshown),a
+        call ay_mute
         ld a,(v_draw)
         push af
         xor 0x80                ; sichtbarer Puffer
@@ -3795,6 +4088,7 @@ title_draw:
         dec a
         ld (v_tdirty),a
         call td_menu
+        call td_vol
 td_s:   ld a,(v_tcnt)
         ld c,a
         inc a
@@ -3812,7 +4106,7 @@ td_s:   ld a,(v_tcnt)
         ld h,(hl)
         ld l,a
         jp (hl)
-td_jt:  dw td_b1,td_b2,td_b3,td_menu,td_start,td_keys,td_menu,td_keys
+td_jt:  dw td_b1,td_b2,td_b3,td_menu,td_start,td_keys,td_vol,td_keys
 
 td_b1:  ld hl,txt_ast1
         ld d,3
@@ -3867,12 +4161,29 @@ td_menu:
         inc hl
         ld h,(hl)
         ld l,a
-        ld de,0x0A07            ; Zeile 10, Spalte 7
+        ld de,0x0808            ; Zeile 8, Spalte 8
         call print_str
-        ld d,10
-        ld e,7
+        ld d,8
+        ld e,8
         ld b,17
         ld a,0x47
+        jp fill_attr
+
+td_vol: ld a,(v_vol)
+        rrca
+        rrca
+        rrca
+        rrca
+        and 15
+        add a,'0'
+        ld (txt_vol+9),a
+        ld hl,txt_vol
+        ld de,0x0A0A            ; Zeile 10, Spalte 10
+        call print_str
+        ld d,10
+        ld e,10
+        ld b,11
+        ld a,0x43
         jp fill_attr
 
 td_start:
@@ -3957,6 +4268,7 @@ txt_ast3:  db "IDS",0
 txt_pause: db "PAUSE",0
 txt_rec:   db "NEUER REKORD!",0
 txt_start: db "FEUER: START",0
+txt_vol:   db "TON:    <3>",0
 txt_keys:  db "JOYSTICK 6-0  P: PAUSE",0
 txt_t0:    db "TEMPO:  <NORMAL> ",0
 txt_t1:    db "TEMPO:  <SCHNELL>",0
@@ -4075,6 +4387,7 @@ hr_n:   add ix,de
 
 ; spawn_expl: Explosion an der Stelle des Asteroiden IX
 spawn_expl:
+        sfx EV_ROCK
         ld hl,EXPLS
         ld b,EXP_MAX
         ld de,8
@@ -4132,6 +4445,7 @@ add_score:
         ld (v_level),a
         ld a,2
         ld (v_lvdirty),a
+        sfx EV_LEVEL
         jp calc_fac
 
 ; print_score / print_hi: BCD-Zahl (2 Bilder lang nach jeder Aenderung)
@@ -5154,6 +5468,15 @@ dbl_tab:
         db 0x1F,0x98
         db 0x1F,0xE0
         db 0x1F,0xF8
+; --- Lautstaerke-Tabelle (Stufe 7): Index = Lautstaerke*16 + AY-Wert ---
+        ds ((256-($ and 255)) and 255)
+vol_tab:
+        db 0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00
+        db 0x00,0x01,0x01,0x01,0x01,0x01,0x01,0x01,0x02,0x02,0x02,0x02,0x02,0x02,0x03,0x03
+        db 0x00,0x01,0x01,0x01,0x02,0x02,0x02,0x03,0x03,0x03,0x04,0x04,0x05,0x05,0x05,0x06
+        db 0x00,0x01,0x01,0x02,0x03,0x03,0x04,0x04,0x05,0x06,0x06,0x07,0x08,0x08,0x09,0x09
+        db 0x00,0x01,0x02,0x02,0x03,0x04,0x05,0x06,0x07,0x07,0x08,0x09,0x0A,0x0B,0x0B,0x0C
+        db 0x00,0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08,0x09,0x0A,0x0B,0x0C,0x0D,0x0E,0x0F
 ; --- Abspann: Abstand jeder Feldzelle (Zeilen 2..23) vom Mittelpunkt in halben Zellen ---
 dist_tab:
         db 0x25,0x24,0x22,0x21,0x1F,0x1E,0x1C,0x1B,0x1A,0x19,0x18,0x17,0x16,0x16,0x15,0x15,0x15,0x15,0x16,0x16,0x17,0x18,0x19,0x1A,0x1B,0x1C,0x1E,0x1F,0x21,0x22,0x24,0x25
@@ -5178,6 +5501,133 @@ dist_tab:
         db 0x23,0x22,0x20,0x1E,0x1D,0x1B,0x19,0x18,0x17,0x15,0x14,0x13,0x12,0x12,0x11,0x11,0x11,0x11,0x12,0x12,0x13,0x14,0x15,0x17,0x18,0x19,0x1B,0x1D,0x1E,0x20,0x22,0x23
         db 0x24,0x23,0x21,0x1F,0x1E,0x1C,0x1B,0x19,0x18,0x17,0x16,0x15,0x14,0x14,0x13,0x13,0x13,0x13,0x14,0x14,0x15,0x16,0x17,0x18,0x19,0x1B,0x1C,0x1E,0x1F,0x21,0x23,0x24
         db 0x25,0x24,0x22,0x21,0x1F,0x1E,0x1C,0x1B,0x1A,0x19,0x18,0x17,0x16,0x16,0x15,0x15,0x15,0x15,0x16,0x16,0x17,0x18,0x19,0x1A,0x1B,0x1C,0x1E,0x1F,0x21,0x22,0x24,0x25
+; --- Klangfolgen (Stufe 7), erzeugt von tools/sound_data.py ---
+sq_laser:
+        db 8,0x30,0x00,0xA8,0x00,0x20,0xEC
+        db 0
+sq_rock:
+        db 5,0x00,0x01,0xF0,0x51,0x14,0xFB
+        db 12,0x00,0x00,0xC8,0x93,0x00,0xF6
+        db 10,0x00,0x00,0x50,0xD3,0x00,0xF9
+        db 0
+sq_death_b:
+        db 12,0x00,0x03,0xF0,0xC1,0x10,0xFC
+        db 28,0xC0,0x03,0xC0,0xE1,0x10,0xF9
+        db 0
+sq_death_c:
+        db 40,0x40,0x00,0xD0,0x00,0x0C,0xFB
+        db 0
+sq_comet:
+        db 24,0x00,0x00,0x10,0x33,0x00,0x08
+        db 24,0x00,0x00,0xD0,0x63,0x00,0xF7
+        db 0
+sq_level:
+        db 3,0xD4,0x00,0xC0,0x00,0x00,0xFC
+        db 3,0xA8,0x00,0xC0,0x00,0x00,0xFC
+        db 3,0x8D,0x00,0xC0,0x00,0x00,0xFC
+        db 12,0x6A,0x00,0xC0,0x00,0x00,0xF4
+        db 0
+sq_over_c:
+        db 10,0x1B,0x01,0xC0,0x00,0x00,0xFD
+        db 10,0x50,0x01,0xC0,0x00,0x00,0xFD
+        db 10,0xA8,0x01,0xC0,0x00,0x00,0xFD
+        db 60,0x36,0x02,0xC0,0x00,0x00,0xFD
+        db 0
+sq_over_b:
+        db 20,0x4F,0x03,0xB0,0x00,0x00,0xFF
+        db 60,0x4F,0x03,0x90,0x00,0x00,0xFE
+        db 0
+sq_rec_c:
+        db 6,0xD4,0x00,0xF0,0x00,0x00,0xFE
+        db 6,0xA8,0x00,0xF0,0x00,0x00,0xFE
+        db 6,0x8D,0x00,0xF0,0x00,0x00,0xFE
+        db 18,0x6A,0x00,0xF0,0x00,0x00,0xFE
+        db 6,0x8D,0x00,0xF0,0x00,0x00,0xFE
+        db 36,0x6A,0x00,0xF0,0x00,0x00,0xFC
+        db 0
+sq_rec_b:
+        db 12,0x4F,0x03,0xF0,0x00,0x00,0xFC
+        db 12,0x6B,0x04,0xF0,0x00,0x00,0xFC
+        db 12,0x4F,0x03,0xF0,0x00,0x00,0xFC
+        db 36,0x4F,0x03,0xF0,0x00,0x00,0xFD
+        db 0
+sq_start:
+        db 3,0xD4,0x00,0xC0,0x00,0x00,0xF8
+        db 3,0x8D,0x00,0xC0,0x00,0x00,0xF8
+        db 8,0x6A,0x00,0xC0,0x00,0x00,0xEC
+        db 0
+sq_menu:
+        db 3,0x5E,0x00,0xB0,0x00,0x00,0xE0
+        db 0
+sq_outro:
+        db 58,0x00,0x03,0x90,0x00,0xF6,0x00
+        db 0
+sq_title_b:
+        db 8,0xF0,0x03,0xB0,0x00,0x00,0xEE
+        db 8,0xF0,0x03,0xB0,0x00,0x00,0xEE
+        db 8,0xF0,0x03,0xB0,0x00,0x00,0xEE
+        db 8,0xF0,0x03,0xB0,0x00,0x00,0xEE
+        db 8,0xF6,0x04,0xB0,0x00,0x00,0xEE
+        db 8,0xF6,0x04,0xB0,0x00,0x00,0xEE
+        db 8,0xF6,0x04,0xB0,0x00,0x00,0xEE
+        db 8,0xF6,0x04,0xB0,0x00,0x00,0xEE
+        db 8,0x6B,0x04,0xB0,0x00,0x00,0xEE
+        db 8,0x6B,0x04,0xB0,0x00,0x00,0xEE
+        db 8,0x6B,0x04,0xB0,0x00,0x00,0xEE
+        db 8,0x6B,0x04,0xB0,0x00,0x00,0xEE
+        db 8,0x41,0x05,0xB0,0x00,0x00,0xEE
+        db 8,0x41,0x05,0xB0,0x00,0x00,0xEE
+        db 8,0x41,0x05,0xB0,0x00,0x00,0xEE
+        db 8,0x41,0x05,0xB0,0x00,0x00,0xEE
+        db 8,0xF0,0x03,0xB0,0x00,0x00,0xEE
+        db 8,0xF0,0x03,0xB0,0x00,0x00,0xEE
+        db 8,0xF0,0x03,0xB0,0x00,0x00,0xEE
+        db 8,0xF0,0x03,0xB0,0x00,0x00,0xEE
+        db 8,0xF6,0x04,0xB0,0x00,0x00,0xEE
+        db 8,0xF6,0x04,0xB0,0x00,0x00,0xEE
+        db 8,0xF6,0x04,0xB0,0x00,0x00,0xEE
+        db 8,0xF6,0x04,0xB0,0x00,0x00,0xEE
+        db 8,0x6B,0x04,0xB0,0x00,0x00,0xEE
+        db 8,0x6B,0x04,0xB0,0x00,0x00,0xEE
+        db 8,0x6B,0x04,0xB0,0x00,0x00,0xEE
+        db 8,0x6B,0x04,0xB0,0x00,0x00,0xEE
+        db 8,0x41,0x05,0xB0,0x00,0x00,0xEE
+        db 8,0x41,0x05,0xB0,0x00,0x00,0xEE
+        db 8,0x41,0x05,0xB0,0x00,0x00,0xEE
+        db 8,0x41,0x05,0xB0,0x00,0x00,0xEE
+        db 0xFF
+        dw sq_title_b
+sq_title_c:
+        db 8,0xFC,0x00,0x90,0x00,0x00,0xF8
+        db 8,0xD4,0x00,0x90,0x00,0x00,0xF8
+        db 8,0xA8,0x00,0x90,0x00,0x00,0xF8
+        db 8,0x7E,0x00,0x90,0x00,0x00,0xF8
+        db 8,0x3D,0x01,0x90,0x00,0x00,0xF8
+        db 8,0xFC,0x00,0x90,0x00,0x00,0xF8
+        db 8,0xD4,0x00,0x90,0x00,0x00,0xF8
+        db 8,0x9F,0x00,0x90,0x00,0x00,0xF8
+        db 8,0x1B,0x01,0x90,0x00,0x00,0xF8
+        db 8,0xE0,0x00,0x90,0x00,0x00,0xF8
+        db 8,0xBD,0x00,0x90,0x00,0x00,0xF8
+        db 8,0x8D,0x00,0x90,0x00,0x00,0xF8
+        db 8,0x50,0x01,0x90,0x00,0x00,0xF8
+        db 8,0x0B,0x01,0x90,0x00,0x00,0xF8
+        db 8,0xE0,0x00,0x90,0x00,0x00,0xF8
+        db 8,0xA8,0x00,0x90,0x00,0x00,0xF8
+        db 16,0x7E,0x00,0x90,0x00,0x00,0xFC
+        db 8,0x8D,0x00,0x90,0x00,0x00,0xFA
+        db 8,0xA8,0x00,0x90,0x00,0x00,0xFA
+        db 16,0x9F,0x00,0x90,0x00,0x00,0xFC
+        db 8,0xA8,0x00,0x90,0x00,0x00,0xFA
+        db 8,0xD4,0x00,0x90,0x00,0x00,0xFA
+        db 16,0xBD,0x00,0x90,0x00,0x00,0xFC
+        db 8,0x8D,0x00,0x90,0x00,0x00,0xFA
+        db 8,0xE0,0x00,0x90,0x00,0x00,0xFA
+        db 24,0xA8,0x00,0x90,0x00,0x00,0xFD
+        db 8,0x00,0x00,0x00,0x02,0x00,0x00
+        db 0xFF
+        dw sq_title_c
+
 
 ; --- Font 5x7 (ASCII 32..95, Grossbuchstaben), erzeugt von tools/build.py ---
 font:
