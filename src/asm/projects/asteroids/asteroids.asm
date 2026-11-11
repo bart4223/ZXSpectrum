@@ -178,7 +178,8 @@ ROCK_SZ     equ 16
 EXP_MAX     equ 4
 NOBJ        equ MAX_ROCKS+EXP_MAX
 ROCK_SPAWN  equ 1               ; 0 = keine Asteroiden (Regressionstests der Stufen 1-3)
-ATTR_ROCK   equ 0x06            ; dunkel gelb (Fels)
+ATTR_ROCK   equ 0x06            ; dunkel gelb (grosser Fels); mittel 0x02 (orange), klein 0x07 (grau)
+PAL_ANIM    equ 1               ; 1 = Palette je Bild animieren (Laser, Flamme, Komet, Todesblitz; nur ULAplus)
 ROCK_SCORE  equ 0x50            ; BCD, mittlerer Asteroid
 COMETS_ON   equ 1               ; 0 = keine Kometen (Regressionstest Stufe 4)
 COMET_MASK  equ 7               ; Komet bei jedem Spawn mit Wahrscheinlichkeit 1/(MASK+1)
@@ -1793,6 +1794,7 @@ mn_run: call read_input
         call print_dyn
         halt                    ; auf Bildanfang warten
         call flip               ; fertig gezeichneten Puffer anzeigen
+        call pal_anim
         call frame_stats
         jr main
 
@@ -1989,11 +1991,70 @@ ulp_l:  ld a,e
         jr nz,ulp_l
         ret
 
+; pal_anim: je Bild einige Palettenplaetze umschreiben (nur ULAplus, kostet kaum Zeit)
+;  22 = hell gelb (Flamme, Muendungsblitz, Explosion), 18 = hell rot (Laser),
+;  8 und 24 = Papier schwarz (roter Blitz beim Schiffstod)
+pal_anim:
+        ld a,PAL_ANIM
+        or a
+        ret z
+        ld a,(v_plus_on)
+        or a
+        ret z
+        ld a,(FRAMES)
+        and 3
+        ld e,a
+        ld d,0
+        ld hl,pa_fire
+        add hl,de
+        ld d,(hl)
+        ld e,22
+        call pal_wr
+        ld a,(FRAMES)
+        rrca
+        and 3
+        ld e,a
+        ld d,0
+        ld hl,pa_laser
+        add hl,de
+        ld d,(hl)
+        ld e,18
+        call pal_wr
+        ld d,0                  ; Todesblitz: Papier kurz rot, klingt ab
+        ld a,(v_mode)
+        cp 1
+        jr nz,pa_bg
+        ld a,(v_state)
+        cp 1
+        jr nz,pa_bg
+        ld a,DEATH_T
+        ld hl,v_stt
+        sub (hl)
+        cp 6
+        jr nc,pa_bg
+        ld e,a
+        ld d,0
+        ld hl,pa_flash
+        add hl,de
+        ld d,(hl)
+pa_bg:  ld e,8
+        call pal_wr
+        ld e,24
+pal_wr: ld bc,0xBF3B
+        out (c),e
+        ld b,0xFF
+        out (c),d
+        ret
+pa_fire:  db 0xFC,0x7C,0xFC,0xDC
+pa_laser: db 0x1C,0x5C,0x7C,0x5C
+pa_flash: db 0x1C,0x18,0x10,0x0C,0x08,0x04
+rock_attr: db ATTR_ROCK,0x02,0x07
+
 ; Farben als GGGRRRBB: schwarz blau rot magenta gruen cyan gelb weiss
 ; normal: blau = ferne Sterne (dunkles Blaugrau), cyan = mittlere Sterne (Stahlblau)
 ; hell:   weiss = nahe Sterne und HUD
 pal_tab:
-        db 0x00,0x26,0x14,0x16,0xA0,0x8F,0xB4,0xB6      ; normal
+        db 0x00,0x26,0x78,0x16,0xA0,0x8F,0xB4,0xB6      ; normal
         db 0x00,0x03,0x1C,0x1F,0xE0,0xE3,0xFC,0xFF      ; hell
 
 ; ---------------------------------------------------------------------
@@ -5229,7 +5290,12 @@ do_sz:  add hl,de
         ld a,(v_gy)
         add a,c
         ld (v_gy),a
-do_nr:  ld a,ATTR_ROCK
+do_nr:  ld a,(ix+15)            ; Farbe nach Groesse
+        ld c,a
+        ld b,0
+        ld hl,rock_attr
+        add hl,bc
+        ld a,(hl)
         jr do_dr
 do_cm:  ld a,(ix+10)
         and 1                   ; Flackerbild

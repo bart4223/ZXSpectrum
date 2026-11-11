@@ -103,12 +103,12 @@ Laser, Explosion (Rauschen, satter „Peng“), Kometen-Zischen, Schiffstod, Tit
 Groß → 2 mittlere → 2 kleine; Arcade-Punkte; Spawn-Gewichtung. Hier entscheidet sich, ob große Sprites in den Speicher passen.
 
 - 2. Meilenstein
-- State: InProgress
+- State: Done
 
 **Stufe 9 – Grafik-Feinschliff**
 ULAplus-Paletten je Objekttyp, Dither-Schattierung, Funken-Partikel bei Explosionen, Triebwerksglühen, evtl. ferner Planet/Nebel als Extra-Ebene, Classic-Fallback abgleichen.
 
-- State: Open
+- State: InProgress
 
 **Stufe 10 – Koop-Modus und Tuning**
 Moduswahl 1/2 Spieler im Titelbild per Joystick, zweites Schiff (eigene Farbe) mit Joystick 2 per Kontext-Tausch (`swap_ctx`), je Spieler 3 Leben und eigene Punkte, Performance-Feinschliff (mehr Objekte bei zwei Schiffen), mehrere Schwierigkeitsprofile.
