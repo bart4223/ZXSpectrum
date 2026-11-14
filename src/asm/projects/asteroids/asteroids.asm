@@ -1199,7 +1199,7 @@ comet_tab:                ; 2 Bilder x 8 Verschiebungen x 16 Zeilen x 3 x (Behal
 sw_tab: db v_sx & 255, v_sy & 255, v_fdelay & 255, v_score & 255, (v_score+1) & 255, (v_score+2) & 255
         db v_state & 255, v_stt & 255, v_inv & 255, v_lives & 255
 p2_init: db SHIP_X0, SHIP_Y0+40, 0, 0,0,0, 0, 0, INV_T, LIVES0
-txt_p2:  db "SPIEL2",0
+txt_p2:  db "SPIELER2 ",0
 txt_two: db "FEUER 2: ZWEI SPIELER",0
 swap_ctx:
         ld hl,sw_tab
@@ -1942,6 +1942,9 @@ print_dyn:
         jr z,pd_1
         ld hl,txt_plus
 pd_1:   ld de,0x011C            ; Zeile 1, Spalte 28
+        if COOP
+        jp print_str            ; die Anzeige "F1" (Bilder pro Durchlauf) gibt es nur noch in den alten Testbauten
+        else
         call print_str
         ld a,(v_dur)
         cp 10
@@ -1952,6 +1955,7 @@ pd_2:   add a,'0'
         ld hl,txt_f
         ld de,0x001E            ; Zeile 0, Spalte 30: "F1" = Bilder pro Durchlauf
         jp print_str
+        endif
 
 ; ---------------------------------------------------------------------
 ; Zufall: 16-Bit-LFSR (Galois, Rueckkopplung 0xB400), A = Zufallsbyte, zerstoert HL
@@ -4642,6 +4646,8 @@ print_hi:
         ld de,0x000F
         call print_str
         ld hl,v_p2+5
+        ld de,0x0018            ; Zeile 0, Spalte 24 (hinter SPIELER2)
+        jr pn3
 ph_1:
         endif
         ld de,0x0016            ; Zeile 0, Spalte 22
