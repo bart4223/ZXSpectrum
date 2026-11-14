@@ -26,9 +26,9 @@
 ULAPLUS_AUTO equ 1              ; 1 = ULAplus nutzen, 0 = nie anfassen (nur Classic)
 ULA_DETECT  equ 0               ; 1 = per Ruecklesen erkennen (geht auf "The Spectrum" nicht), 0 = blind schreiben
 ULA_START_ON equ 1              ; 1 = ULAplus sofort an, 0 = Classic, Taste C schaltet ein
-STARS_FAR   equ 10               ; Sterne je Ebene (mindestens 1 je Ebene, zusammen <= 85)
-STARS_MID   equ 8
-STARS_NEAR  equ 6
+STARS_FAR   equ 8               ; Sterne je Ebene (mindestens 1 je Ebene, zusammen <= 85)
+STARS_MID   equ 6
+STARS_NEAR  equ 4
 NSTARS      equ STARS_FAR+STARS_MID+STARS_NEAR
 
 VARS        equ 0xB600
@@ -170,16 +170,16 @@ OLDOBJ      equ 0xBAA0          ; je Puffer (MAX_ROCKS+EXP_MAX) x 4 Byte
 HITLOG      equ 0xBB00          ; Testprotokoll
 RT_M        equ 0xDB00          ; mittlere Felsen: 4 Bilder x 768 Byte (erzeugt)
 RT_S        equ 0xE700          ; kleine Felsen
-MAX_ROCKS   equ 3
+MAX_ROCKS   equ 4
 SPAWN_ACT   equ 3               ; neue grosse Felsen nur, solange weniger Objekte aktiv sind
-SPLIT_ON    equ 0               ; 1 = Zerfall gross -> 2 mittel -> 2 klein, Wertung 20/50/100
+SPLIT_ON    equ 1               ; 1 = Zerfall gross -> 2 mittel -> 2 klein, Wertung 20/50/100
 HIT_LOG     equ 0               ; 1 = Treffer protokollieren (nur Tests)
 ROCK_SZ     equ 16
 EXP_MAX     equ 4
 NOBJ        equ MAX_ROCKS+EXP_MAX
 ROCK_SPAWN  equ 1               ; 0 = keine Asteroiden (Regressionstests der Stufen 1-3)
 ATTR_ROCK   equ 0x06            ; dunkel gelb (grosser Fels); mittel 0x02 (orange), klein 0x07 (grau)
-PAL_ANIM    equ 0               ; 1 = Palette je Bild animieren (Laser, Flamme, Komet, Todesblitz; nur ULAplus)
+PAL_ANIM    equ 1               ; 1 = Palette je Bild animieren (Laser, Flamme, Komet, Todesblitz; nur ULAplus)
 ROCK_SCORE  equ 0x50            ; BCD, mittlerer Asteroid
 COMETS_ON   equ 1               ; 0 = keine Kometen (Regressionstest Stufe 4)
 COMET_MASK  equ 7               ; Komet bei jedem Spawn mit Wahrscheinlichkeit 1/(MASK+1)
@@ -189,12 +189,12 @@ LIVES0      equ 3
 DEATH_T     equ 45              ; Bilder von der Explosion bis zum neuen Schiff / Game Over
 INV_T       equ 150             ; Schutzzeit nach dem Start (Schiff blinkt)
 GO_LOCK     equ 50              ; nach Game Over so viele Bilder keine Eingabe
-START_MODE  equ 1               ; 0 = Titelbild, 1 = sofort Spiel (Regressionstests)
+START_MODE  equ 0               ; 0 = Titelbild, 1 = sofort Spiel (Regressionstests)
 FLOW_ON     equ 1               ; 1 = Game Over -> Abspann -> Titel; 0 = Game Over -> sofort neues Spiel
 LEVELS_ON   equ 1               ; 1 = Level und Tempo steigen alle 10 Treffer
 OUT_END     equ 58              ; Abspann: Bilder bis zum Titel
 TEMPO0      equ 0               ; Starttempo (0 normal, 1 schnell, 2 turbo)
-LEVEL_HITS  equ 10              ; Treffer je Level (ein ganz zerlegter Fels = 7 Treffer)
+LEVEL_HITS  equ 21              ; Treffer je Level (ein ganz zerlegter Fels = 7 Treffer)
 
 LASER_MAX   equ 4
 LASER_SPEED equ 4               ; Pixel/Bild
