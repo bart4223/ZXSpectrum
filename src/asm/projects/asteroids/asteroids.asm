@@ -1993,11 +1993,26 @@ ulp_l:  ld a,e
 
 ; pal_anim: je Bild einige Palettenplaetze umschreiben (nur ULAplus, kostet kaum Zeit)
 ;  22 = hell gelb (Flamme, Muendungsblitz, Explosion), 18 = hell rot (Laser),
-;  8 und 24 = Papier schwarz (roter Blitz beim Schiffstod)
+;  der Blitz beim Schiffstod laeuft ueber die Rahmenfarbe (Port 0xFE), nicht ueber die Palette
 pal_anim:
         ld a,PAL_ANIM
         or a
         ret z
+        ld d,0                  ; Todesblitz: Rahmen 4 Bilder lang rot (geht auch ohne ULAplus)
+        ld a,(v_mode)
+        cp 1
+        jr nz,pa_bg
+        ld a,(v_state)
+        cp 1
+        jr nz,pa_bg
+        ld a,DEATH_T
+        ld hl,v_stt
+        sub (hl)
+        cp 4
+        jr nc,pa_bg
+        ld d,2
+pa_bg:  ld a,d
+        out (0xFE),a
         ld a,(v_plus_on)
         or a
         ret z
@@ -2019,27 +2034,6 @@ pal_anim:
         add hl,de
         ld d,(hl)
         ld e,18
-        call pal_wr
-        ld d,0                  ; Todesblitz: Papier kurz rot, klingt ab
-        ld a,(v_mode)
-        cp 1
-        jr nz,pa_bg
-        ld a,(v_state)
-        cp 1
-        jr nz,pa_bg
-        ld a,DEATH_T
-        ld hl,v_stt
-        sub (hl)
-        cp 6
-        jr nc,pa_bg
-        ld e,a
-        ld d,0
-        ld hl,pa_flash
-        add hl,de
-        ld d,(hl)
-pa_bg:  ld e,8
-        call pal_wr
-        ld e,24
 pal_wr: ld bc,0xBF3B
         out (c),e
         ld b,0xFF
@@ -2047,7 +2041,6 @@ pal_wr: ld bc,0xBF3B
         ret
 pa_fire:  db 0xFC,0x7C,0xFC,0xDC
 pa_laser: db 0x1C,0x5C,0x7C,0x5C
-pa_flash: db 0x1C,0x18,0x10,0x0C,0x08,0x04
 rock_attr: db ATTR_ROCK,0x02,0x07
 
 ; Farben als GGGRRRBB: schwarz blau rot magenta gruen cyan gelb weiss
