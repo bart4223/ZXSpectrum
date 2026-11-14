@@ -12,7 +12,7 @@
 ;   - Zufall: 16-Bit-LFSR (feste Startzahl, Testlaeufe bleiben reproduzierbar)
 ;
 ; Speicher:  0x6000-0x7FFF reserviert (spaeter Sprites)
-;            0x8000-...    Code und Daten, Tabellen auf Seitengrenzen
+;            ab 0x6000     Code und Daten lueckenlos (Einsprung: Marke start), Tabellen auf Seitengrenzen
 ;            0xB600-0xB6FF Variablen (VARS)
 ;            0xB700-0xB7FF Sterne (3 Byte: Bruchteil, x, y)
 ;            0xB800/0xB900 alte Pixel je Puffer (3 Byte: Adresse, ~Maske)
@@ -26,9 +26,9 @@
 ULAPLUS_AUTO equ 1              ; 1 = ULAplus nutzen, 0 = nie anfassen (nur Classic)
 ULA_DETECT  equ 0               ; 1 = per Ruecklesen erkennen (geht auf "The Spectrum" nicht), 0 = blind schreiben
 ULA_START_ON equ 1              ; 1 = ULAplus sofort an, 0 = Classic, Taste C schaltet ein
-STARS_FAR   equ 8               ; Sterne je Ebene (mindestens 1 je Ebene, zusammen <= 85)
-STARS_MID   equ 6
-STARS_NEAR  equ 4
+STARS_FAR   equ 6               ; Sterne je Ebene (mindestens 1 je Ebene, zusammen <= 85)
+STARS_MID   equ 4
+STARS_NEAR  equ 3
 NSTARS      equ STARS_FAR+STARS_MID+STARS_NEAR
 
 VARS        equ 0xB600
@@ -1199,7 +1199,8 @@ comet_tab:                ; 2 Bilder x 8 Verschiebungen x 16 Zeilen x 3 x (Behal
 sw_tab: db v_sx & 255, v_sy & 255, v_fdelay & 255, v_score & 255, (v_score+1) & 255, (v_score+2) & 255
         db v_state & 255, v_stt & 255, v_inv & 255, v_lives & 255
 p2_init: db SHIP_X0, SHIP_Y0+40, 0, 0,0,0, 0, 0, INV_T, LIVES0
-txt_p2:  db "SPIELER2 ",0
+txt_p2:  db "  SPIELER2 ",0     ; ab Spalte 15: Spalte 15/16 loeschen den Rest von REKORD
+txt_p1s: db "SPIELER1 ",0
 txt_two: db "FEUER 2: ZWEI SPIELER",0
 swap_ctx:
         ld hl,sw_tab
@@ -1339,7 +1340,6 @@ td_two: ld hl,txt_two
 coop_end:
         endif
 
-        org 0x8000
 
 ; =====================================================================
 start:
@@ -2343,7 +2343,8 @@ erase_ship:
         ld c,a
         ld a,(v_ty)
         call row_addr
-        ld d,16
+        down                    ; Zeile 0 und 15 des Schiffs sind leer: nur 14 Zeilen
+        ld d,14
         ld e,0
 es2_l:  ld (hl),e
         inc l
@@ -2402,11 +2403,14 @@ draw_ship:
         ld a,(v_ty)
         call row_addr           ; HL = Bildschirmadresse der ersten Zeile
         ex de,hl                ; HL = Spritedaten, DE = Bildschirm
+        ld bc,8                 ; Zeile 0 ist leer: Daten und Bildschirm eine Zeile weiter
+        add hl,bc
         di
         ld (v_sp),sp
         ld sp,hl                ; Spritedaten per SP lesen (pop = Behalte-Maske, Pixel)
         ex de,hl
-        ld d,16
+        down
+        ld d,14
 dsh_l:  pop bc
         ld a,(hl)
         and c
@@ -4457,7 +4461,8 @@ sp_x:   ld a,(v_gcnt)
         ld (v_gcnt),a
         push ix
         ld ix,ASTS
-        ld a,(v_two)            ; zu zweit hoechstens 3 Felsen (Bildzeit)
+        ld a,(v_two)            ; zu zweit hoechstens 2 Felsen (Bildzeit)
+        add a,a
         neg
         add a,MAX_ROCKS
         ld b,a
@@ -4630,6 +4635,17 @@ print_score:
         ld (v_sdirty),a
         ld hl,v_score+2
         ld de,0x0007            ; Zeile 0, Spalte 7
+        if COOP
+        ld a,(v_two)
+        or a
+        jr z,pn3
+        push hl
+        ld hl,txt_p1s           ; zu zweit: SPIELER1 statt PUNKTE
+        ld de,0x0000
+        call print_str
+        pop hl
+        ld de,0x0009            ; Zeile 0, Spalte 9
+        endif
         jr pn3
 print_hi:
         ld a,(v_hdirty)
@@ -4646,7 +4662,7 @@ print_hi:
         ld de,0x000F
         call print_str
         ld hl,v_p2+5
-        ld de,0x0018            ; Zeile 0, Spalte 24 (hinter SPIELER2)
+        ld de,0x001A            ; Zeile 0, Spalte 26 (hinter SPIELER2)
         jr pn3
 ph_1:
         endif
