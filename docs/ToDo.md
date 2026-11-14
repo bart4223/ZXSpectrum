@@ -114,7 +114,7 @@ ULAplus-Paletten je Objekttyp, Dither-Schattierung, Funken-Partikel bei Explosio
 Moduswahl 1/2 Spieler im Titelbild per Joystick, zweites Schiff (eigene Farbe) mit Joystick 2 per Kontext-Tausch (`swap_ctx`), je Spieler 3 Leben und eigene Punkte, Performance-Feinschliff (mehr Objekte bei zwei Schiffen), mehrere Schwierigkeitsprofile.
 
 - 3. Meilenstein
-- State: InProgress
+- State: Done
 
 ## 4. Testbau und Abläufe
 - Headless-Emulator (libz80ex) mit Tasten-Skript, Frame-Dump als .scr → PNG, Speicherabzug per Umgebungsvariable.
