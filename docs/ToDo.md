@@ -108,13 +108,13 @@ Groß → 2 mittlere → 2 kleine; Arcade-Punkte; Spawn-Gewichtung. Hier entsche
 **Stufe 9 – Grafik-Feinschliff**
 ULAplus-Paletten je Objekttyp, Dither-Schattierung, Funken-Partikel bei Explosionen, Triebwerksglühen, evtl. ferner Planet/Nebel als Extra-Ebene, Classic-Fallback abgleichen.
 
-- State: InProgress
+- State: Done
 
 **Stufe 10 – Koop-Modus und Tuning**
 Moduswahl 1/2 Spieler im Titelbild per Joystick, zweites Schiff (eigene Farbe) mit Joystick 2 per Kontext-Tausch (`swap_ctx`), je Spieler 3 Leben und eigene Punkte, Performance-Feinschliff (mehr Objekte bei zwei Schiffen), mehrere Schwierigkeitsprofile.
 
 - 3. Meilenstein
-- State: Open
+- State: InProgress
 
 ## 4. Testbau und Abläufe
 - Headless-Emulator (libz80ex) mit Tasten-Skript, Frame-Dump als .scr → PNG, Speicherabzug per Umgebungsvariable.
