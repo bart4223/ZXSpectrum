@@ -88,7 +88,7 @@ Jede Stufe liefert: Code, `tools/test_stageN.py`, Screenshot oder GIF, `supermar
 - Stand: gebaut mit normalen Spectrum-Farben, Lader mit `end start` korrigiert; Rückmeldung vom Gerät und Freigabe stehen aus
 - Nacharbeit: auf ULAplus umstellen (eigene 64-Farben-Palette für Himmel, Wiese, Erde, Feuerwehrmann, Flämmchen) und Grafik der Figuren verfeinern
 
-- State: InProgress
+- State: Done
 
 ### Stufe 1: Feuerwehrmann läuft (klein und groß)
 
@@ -98,7 +98,7 @@ Jede Stufe liefert: Code, `tools/test_stageN.py`, Screenshot oder GIF, `supermar
 - Wechsel auf Code ab `0x6000` und Messung der Bildzeit als Grundlinie
 - Titelbild-Rohfassung mit Start per Joystick
 
-- State: Open
+- State: InProgress
 
 ### Stufe 2: Schwerkraft, Sprung und Kollision
 
