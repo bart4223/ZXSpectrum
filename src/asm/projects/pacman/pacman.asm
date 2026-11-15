@@ -316,6 +316,10 @@ new_game:
         ld (score+1),a
         ld (score+2),a
         ld (extra),a
+        ld (p2_score),a         ; auch die Punkte von Spieler 2 zuruecksetzen
+        ld (p2_score+1),a
+        ld (p2_score+2),a
+        ld (cur_pl),a
         ld a,1
         ld (level),a
         call pick_color         ; Wandfarbe fuer Level 1

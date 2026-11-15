@@ -1,4 +1,178 @@
-# Common
+# Super Mario
+
+## Eckdaten
+
+- Kacheln: 16x16 Pixel (2x2 Zeichenzellen), Bildschirm 16x12 Kacheln (256x192)
+- Figuren: klein 16x16, groß 16x32, beide von Anfang an
+- Scrolling: zuerst in 8-Pixel-Schritten (eine Zeichenzelle), später weich (Pixel)
+- Spieler: Ein- und Zwei-Spieler-Modus, gleichzeitig (Joy1 und Joy2, Sinclair IF2: Joy1 = Tasten 6-0, Joy2 = Tasten 1-5), Tastatur als Alternative
+
+## Thema: Ritter
+
+| Element | Festlegung |
+|---|---|
+| Spieler 1 | Junger Ritter (rote Farbgebung); klein = ohne Rüstung, groß = mit Helm und Rüstung |
+| Spieler 2 | Zweiter Ritter in anderer Farbe (blau), gleiche Grafik, andere Farbattribute |
+| Gegner | Skelette (Läufer), Skelett-Schildträger (Panzer-Typ: Schild bleibt liegen, kann geschubst werden), Fledermäuse (fliegen in Wellen), später Geister |
+| Endgegner | Drache am Ende des Burg-Levels (mehrere Treffer, Feuerspucken) |
+| Kacheln | Himmel, Gras/Erde, Stein, Ziegel, Truhe (statt Fragezeichen-Block), leere Truhe, Fass/Säule (statt Röhre), Münze, Fackel, Zugbrücke, Fahne |
+| Power-up 1 | Rüstung (Ritter wird groß, Hitbox 16x32) |
+| Power-up 2 | Feuerball (Ritter wirft Feuerbälle, springen von Boden und Wänden ab) |
+| Power-up 3 | Stern (kurze Unverwundbarkeit, blinkende Farben) |
+| Welten | Wiese, Wald, Höhle, Burg, Drachenhöhle |
+
+## Technische Grundentscheidungen
+
+| Thema | Entscheidung |
+|---|---|
+| Bildspeicher | Doppelpuffer ab Stufe 1 (Port 0x7FFD = 0x17, Bank 5/7), wie bei Pacman |
+| Level-Format | Textkarten `levels/LevelNN.map` (ein Zeichen = eine 16x16-Kachel), Build-Skript wandelt sie in Bytes um |
+| Level-Größe | Höhe 12 Kacheln, Breite bis 200 Kacheln (Byte pro Kachel, ca. 2,4 KB pro Level) |
+| Kollision | Kachelbasiert gegen die Level-Karte; Hitbox kleiner als Sprite, Höhe abhängig von klein/groß |
+| Physik | Festkomma 8.8 für Position und Geschwindigkeit, Gravitation pro Frame, variable Sprunghöhe (Taste gehalten = höher) |
+| Scrolling | Kamera-Position in Pixeln, Darstellung zunächst nur in 8er-Schritten; Kamera mit Totzone |
+| Zwei Spieler | Kontext-Tausch (swap_ctx: Zustandsblock tauschen) statt doppelter Routinen, wie bei Pacman; Kamera folgt dem vorderen Spieler, der hintere kann nicht links aus dem Bild laufen |
+| Speicher | Code gegen VARS prüfen (Erfahrung Pacman), Level-Daten und Sprites in eigenen 128K-Bänken, VARS bei Bedarf verschieben |
+| Farben | Attribut-Clash beachten: Himmel pro Zelle eine Farbe, Sprites mit freien Attributen; ULAplus automatisch, Fallback Classic |
+| Bauprozess | Template `src/mario.asm.in` + Python-Generator (Kacheln, Sprites, Tabellen, Level) -> `tools/build.sh` -> pasmo |
+| Test | Headless-Emulator mit Tasten-Skript, Frame-Dump als .scr -> PNG, Speicher-Dump zum Prüfen von Variablen |
+
+## Stufen
+
+### Stufe 0: Kacheln und statisches Level
+
+- Kachelsatz 16x16: Himmel, Gras, Stein, Ziegel, Truhe, Fass, Münze, Fackel
+- Figuren-Studien: Ritter klein (16x16) und groß (16x32), Skelett, Fledermaus, jeweils in zwei Bildern als Vorschau
+- Ein Bildschirm (16x12) mit Wiesenlandschaft, Wolken und Hügeln als Deko
+
+- State: InProgress
+
+### Stufe 1: Ritter läuft (klein und groß)
+
+- Ritter mit Joystick und Tastatur nach links/rechts, Blickrichtung, Laufanimation (2 bis 3 Bilder)
+- Taste zum Umschalten klein/groß zum Testen (wird in Stufe 6 durch das Power-up ersetzt)
+- Doppelpuffer, Beschleunigung und Abbremsen
+- Noch ohne Schwerkraft, Figur steht auf dem Boden
+- Tempo bei dir abfragen, "ein wenig langsamer/schneller" ist bei dir Standard
+
+- State: Open
+
+### Stufe 2: Schwerkraft, Sprung und Kollision
+
+- Gravitation, Fallen, Landen auf Boden, Ziegeln und Fässern
+- Sprung mit Feuertaste, variable Sprunghöhe (kurz tippen = kleiner Sprung)
+- Kollision seitlich, oben (Kopf stößt an Ziegel, bei der großen Figur 32 Pixel höher) und unten
+- Sprung- und Lande-Animation
+- Feinabstimmung von Sprunghöhe und Gravitation mit deinem Feedback
+
+- State: Open
+
+### Stufe 3: Scrolling in 8-Pixel-Schritten
+
+- Level wird breiter als der Bildschirm, Kamera folgt dem Ritter
+- Scrollen um eine Zeichenzelle (8 Pixel), Figur bewegt sich in Pixeln
+- Kachelspalten am Rand nachzeichnen, Bildspeicher per LDIR verschieben
+- Levelgrenzen links und rechts
+- Messung: Frames pro Sekunde, Reserve für Gegner, Sound und zweiten Spieler prüfen
+
+- 1. Meilenstein
+- State: Open
+
+### Stufe 4: Zwei Spieler
+
+- Zweiter Ritter mit Joy2, Kontext-Tausch statt doppelter Routinen
+- Kamera folgt dem vorderen Spieler, der hintere kann nicht links aus dem Bild
+- Moduswahl (1 oder 2 Spieler) per Joystick im Titelbild (Spalte wie bei Pacman, links/hoch = 1, rechts/runter = 2)
+- Früh eingebaut, damit alle späteren Stufen von Anfang an für zwei Spieler getestet werden
+
+- State: Open
+
+### Stufe 5: Truhen, Münzen, Punktestand
+
+- Truhe: von unten anspringen, Münze oder Power-up kommt heraus, Truhe wird leer
+- Ziegel: anspringen, bei der großen Figur zerbrechen sie
+- Münzen einsammeln, Münzzähler je Spieler
+- Kopfzeile: Punkte, Münzen, Welt/Level, Zeit, Leben (für beide Spieler)
+- Münz-Sound (Beeper, AY-Sound folgt in Stufe 9)
+
+- State: Open
+
+### Stufe 6: Gegner
+
+- Skelett: läuft auf der Kachelkarte, dreht an Wänden um, fällt von Kanten
+- Draufspringen besiegt es (Punkte), seitlicher Kontakt kostet Rüstung oder Leben
+- Skelett-Schildträger: beim Draufspringen bleibt der Schild liegen und kann geschubst werden
+- Fledermaus: fliegt in Wellenlinien
+- Gegnerlisten pro Level aus der Karte (Zeichen in der Textkarte), aktiv erst im Kamerabereich
+- Tod: Animation, Leben abziehen, Level neu starten (Zwei Spieler: der andere läuft weiter)
+
+- State: Open
+
+### Stufe 7: Power-ups
+
+- Rüstung: Ritter wird groß; Treffer als große Figur: schrumpfen statt sterben, kurze Unverwundbarkeit (Blinken)
+- Feuerball: Feuertaste wirft Feuerbälle, springen vom Boden ab, besiegen Gegner
+- Stern: kurze Unverwundbarkeit, wechselnde Farben, Gegner besiegt durch Berührung
+- Power-ups kommen aus Truhen
+
+### Stufe 8: Endgegner
+
+- Drache am Ende des Burg-Levels: mehrere Treffer (Feuerball oder auf den Kopf springen), Feuerspucken, Bewegungsmuster
+- Zugbrücke oder Brücke über Lava als Arena
+- Sieg öffnet das Ende des Levels
+
+- 2. Meilenstein
+- State: Open
+
+### Stufe 9: Sound und Musik (128K)
+
+- AY-Musik für Titel, Level und Fanfaren, eigene Melodien (keine Originalmelodien)
+- Effekte: Sprung, Münze, Truhe, Gegner besiegt, Feuerball, Stern, Schrumpfen, Tod, Levelende, Drachenbrüllen
+- Lautstärke per Taste T durchschalten (5 Stufen plus Aus), wie bei XBlast
+- Musik im Spiel optional abschaltbar
+
+- State: Open
+
+### Stufe 10: Spielablauf, Titelbild, Abspann
+
+- Titelbild mit Moduswahl, Titelmelodie
+- Levelende mit Fahne, Zeitbonus, Übergang zum nächsten Level
+- Leben, Game Over, Highscore pro Sitzung
+- Pause mit P, Farbraum automatisch erweitert (ULAplus), Fallback Classic, Umschalter C
+- Abspann nach dem letzten Level
+
+- 3. Meilenstein
+- State: Open
+
+### Stufe 11: Weiches Scrolling und Feintuning
+
+- Pixel-Scrolling mit vorverschobenen Kacheln (8 Versionen pro Kachel)
+- Sprite-Bewegung in 1-Pixel-Schritten (8 vorverschobene Kopien, auch für 16x32)
+- Tempo, Sprunghöhe und Gegner-Geschwindigkeit nach deinem Feedback
+- Speicherlayout und Codegröße prüfen
+
+- State: Open
+
+### Stufe 12: Level
+
+- Welt 1 Wiese: Level 1 als Einstieg, danach weitere Level im Retro-Stil
+- Welt 2 Wald, Welt 3 Höhle (dunkle Farben), Welt 4 Burg mit Drachen, optional Wasser-Level (andere Physik)
+- Bonusbereiche (Fass führt in einen Münzraum)
+- Alle Level in `levels/LevelNN.map` und `Level.md` mit Übersicht
+- Eigene Nachbauten nach deinen Screenshots von Vorlagen, wenn du sie schickst (als eigene Gestaltung)
+
+- 4. Meilenstein
+- State: Open
+
+## Risiken
+
+- **Rechenzeit beim Scrollen:** Spalten nachzeichnen und Doppelpuffer kosten Frames, mit zwei Spielern und großen Figuren noch mehr. Deshalb früh messen (Stufe 3 und 4), bevor Gegner dazukommen.
+- **Attribut-Clash:** Zwei Ritter plus Gegner auf bunten Kacheln; Himmel und Sprite-Farben von Anfang an mit freien Attributen planen.
+- **Speicher:** Level, Sprites (klein, groß, Gegner, vorverschobene Kopien) und Code in 128K-Bänken verteilen, Code gegen Variablenbereich prüfen (Pacman-Erfahrung).
+- **Kamera bei zwei Spielern:** Der hintere Spieler darf nicht links aus dem Bild; Verhalten beim Tod und beim Wiedereinsteigen früh testen.
+- **pasmo:** `jr` nur +-127, Labels global eindeutig.
+
+---
 
 # Asteroids
 
@@ -245,182 +419,6 @@ Der Spectrum kennt nur eine Ink-Farbe pro 8x8-Zelle. Zwei Spuren in derselben Ze
 - **Speicher:** Code gegen den Variablenbereich prüfen (Pacman-Erfahrung), VARS ausreichend weit oben legen; 128K: ab 0xC000 liegt Bank 7.
 - **Doppelpuffer:** Nicht nötig, solange nur Köpfe und Spur gesetzt werden. Eventuell nur für Explosionseffekte.
 - **Tests ohne Hardware:** Headless-Emulator mit Tastenskript, Frame-Dump nach PNG, Speicherdump per Env-Variable. Feste Testfälle: Wandcrash, Eigenspur, Frontalzusammenstoß, gleichzeitiger Zielpixel, Kreuzung zweier Spuren in einer Zelle.
-
----
-
-# Super Mario
-
-## Eckdaten
-
-- Kacheln: 16x16 Pixel (2x2 Zeichenzellen), Bildschirm 16x12 Kacheln (256x192)
-- Figuren: klein 16x16, groß 16x32, beide von Anfang an
-- Scrolling: zuerst in 8-Pixel-Schritten (eine Zeichenzelle), später weich (Pixel)
-- Spieler: Ein- und Zwei-Spieler-Modus, gleichzeitig (Joy1 und Joy2, Sinclair IF2: Joy1 = Tasten 6-0, Joy2 = Tasten 1-5), Tastatur als Alternative
-
-## Thema: Ritter
-
-| Element | Festlegung |
-|---|---|
-| Spieler 1 | Junger Ritter (rote Farbgebung); klein = ohne Rüstung, groß = mit Helm und Rüstung |
-| Spieler 2 | Zweiter Ritter in anderer Farbe (blau), gleiche Grafik, andere Farbattribute |
-| Gegner | Skelette (Läufer), Skelett-Schildträger (Panzer-Typ: Schild bleibt liegen, kann geschubst werden), Fledermäuse (fliegen in Wellen), später Geister |
-| Endgegner | Drache am Ende des Burg-Levels (mehrere Treffer, Feuerspucken) |
-| Kacheln | Himmel, Gras/Erde, Stein, Ziegel, Truhe (statt Fragezeichen-Block), leere Truhe, Fass/Säule (statt Röhre), Münze, Fackel, Zugbrücke, Fahne |
-| Power-up 1 | Rüstung (Ritter wird groß, Hitbox 16x32) |
-| Power-up 2 | Feuerball (Ritter wirft Feuerbälle, springen von Boden und Wänden ab) |
-| Power-up 3 | Stern (kurze Unverwundbarkeit, blinkende Farben) |
-| Welten | Wiese, Wald, Höhle, Burg, Drachenhöhle |
-
-## Technische Grundentscheidungen
-
-| Thema | Entscheidung |
-|---|---|
-| Bildspeicher | Doppelpuffer ab Stufe 1 (Port 0x7FFD = 0x17, Bank 5/7), wie bei Pacman |
-| Level-Format | Textkarten `levels/LevelNN.map` (ein Zeichen = eine 16x16-Kachel), Build-Skript wandelt sie in Bytes um |
-| Level-Größe | Höhe 12 Kacheln, Breite bis 200 Kacheln (Byte pro Kachel, ca. 2,4 KB pro Level) |
-| Kollision | Kachelbasiert gegen die Level-Karte; Hitbox kleiner als Sprite, Höhe abhängig von klein/groß |
-| Physik | Festkomma 8.8 für Position und Geschwindigkeit, Gravitation pro Frame, variable Sprunghöhe (Taste gehalten = höher) |
-| Scrolling | Kamera-Position in Pixeln, Darstellung zunächst nur in 8er-Schritten; Kamera mit Totzone |
-| Zwei Spieler | Kontext-Tausch (swap_ctx: Zustandsblock tauschen) statt doppelter Routinen, wie bei Pacman; Kamera folgt dem vorderen Spieler, der hintere kann nicht links aus dem Bild laufen |
-| Speicher | Code gegen VARS prüfen (Erfahrung Pacman), Level-Daten und Sprites in eigenen 128K-Bänken, VARS bei Bedarf verschieben |
-| Farben | Attribut-Clash beachten: Himmel pro Zelle eine Farbe, Sprites mit freien Attributen; ULAplus automatisch, Fallback Classic |
-| Bauprozess | Template `src/mario.asm.in` + Python-Generator (Kacheln, Sprites, Tabellen, Level) -> `tools/build.sh` -> pasmo |
-| Test | Headless-Emulator mit Tasten-Skript, Frame-Dump als .scr -> PNG, Speicher-Dump zum Prüfen von Variablen |
-
-## Stufen
-
-### Stufe 0: Kacheln und statisches Level
-
-- Kachelsatz 16x16: Himmel, Gras, Stein, Ziegel, Truhe, Fass, Münze, Fackel
-- Figuren-Studien: Ritter klein (16x16) und groß (16x32), Skelett, Fledermaus, jeweils in zwei Bildern als Vorschau
-- Ein Bildschirm (16x12) mit Wiesenlandschaft, Wolken und Hügeln als Deko
-
-- State: Open
-
-### Stufe 1: Ritter läuft (klein und groß)
-
-- Ritter mit Joystick und Tastatur nach links/rechts, Blickrichtung, Laufanimation (2 bis 3 Bilder)
-- Taste zum Umschalten klein/groß zum Testen (wird in Stufe 6 durch das Power-up ersetzt)
-- Doppelpuffer, Beschleunigung und Abbremsen
-- Noch ohne Schwerkraft, Figur steht auf dem Boden
-- Tempo bei dir abfragen, "ein wenig langsamer/schneller" ist bei dir Standard
-
-- State: Open
-
-### Stufe 2: Schwerkraft, Sprung und Kollision
-
-- Gravitation, Fallen, Landen auf Boden, Ziegeln und Fässern
-- Sprung mit Feuertaste, variable Sprunghöhe (kurz tippen = kleiner Sprung)
-- Kollision seitlich, oben (Kopf stößt an Ziegel, bei der großen Figur 32 Pixel höher) und unten
-- Sprung- und Lande-Animation
-- Feinabstimmung von Sprunghöhe und Gravitation mit deinem Feedback
-
-- State: Open
-
-### Stufe 3: Scrolling in 8-Pixel-Schritten
-
-- Level wird breiter als der Bildschirm, Kamera folgt dem Ritter
-- Scrollen um eine Zeichenzelle (8 Pixel), Figur bewegt sich in Pixeln
-- Kachelspalten am Rand nachzeichnen, Bildspeicher per LDIR verschieben
-- Levelgrenzen links und rechts
-- Messung: Frames pro Sekunde, Reserve für Gegner, Sound und zweiten Spieler prüfen
-
-- 1. Meilenstein
-- State: Open
-
-### Stufe 4: Zwei Spieler
-
-- Zweiter Ritter mit Joy2, Kontext-Tausch statt doppelter Routinen
-- Kamera folgt dem vorderen Spieler, der hintere kann nicht links aus dem Bild
-- Moduswahl (1 oder 2 Spieler) per Joystick im Titelbild (Spalte wie bei Pacman, links/hoch = 1, rechts/runter = 2)
-- Früh eingebaut, damit alle späteren Stufen von Anfang an für zwei Spieler getestet werden
-
-- State: Open
-
-### Stufe 5: Truhen, Münzen, Punktestand
-
-- Truhe: von unten anspringen, Münze oder Power-up kommt heraus, Truhe wird leer
-- Ziegel: anspringen, bei der großen Figur zerbrechen sie
-- Münzen einsammeln, Münzzähler je Spieler
-- Kopfzeile: Punkte, Münzen, Welt/Level, Zeit, Leben (für beide Spieler)
-- Münz-Sound (Beeper, AY-Sound folgt in Stufe 9)
-
-- State: Open
-
-### Stufe 6: Gegner
-
-- Skelett: läuft auf der Kachelkarte, dreht an Wänden um, fällt von Kanten
-- Draufspringen besiegt es (Punkte), seitlicher Kontakt kostet Rüstung oder Leben
-- Skelett-Schildträger: beim Draufspringen bleibt der Schild liegen und kann geschubst werden
-- Fledermaus: fliegt in Wellenlinien
-- Gegnerlisten pro Level aus der Karte (Zeichen in der Textkarte), aktiv erst im Kamerabereich
-- Tod: Animation, Leben abziehen, Level neu starten (Zwei Spieler: der andere läuft weiter)
-
-- State: Open
-
-### Stufe 7: Power-ups
-
-- Rüstung: Ritter wird groß; Treffer als große Figur: schrumpfen statt sterben, kurze Unverwundbarkeit (Blinken)
-- Feuerball: Feuertaste wirft Feuerbälle, springen vom Boden ab, besiegen Gegner
-- Stern: kurze Unverwundbarkeit, wechselnde Farben, Gegner besiegt durch Berührung
-- Power-ups kommen aus Truhen
-
-### Stufe 8: Endgegner
-
-- Drache am Ende des Burg-Levels: mehrere Treffer (Feuerball oder auf den Kopf springen), Feuerspucken, Bewegungsmuster
-- Zugbrücke oder Brücke über Lava als Arena
-- Sieg öffnet das Ende des Levels
-
-- 2. Meilenstein
-- State: Open
-
-### Stufe 9: Sound und Musik (128K)
-
-- AY-Musik für Titel, Level und Fanfaren, eigene Melodien (keine Originalmelodien)
-- Effekte: Sprung, Münze, Truhe, Gegner besiegt, Feuerball, Stern, Schrumpfen, Tod, Levelende, Drachenbrüllen
-- Lautstärke per Taste T durchschalten (5 Stufen plus Aus), wie bei XBlast
-- Musik im Spiel optional abschaltbar
-
-- State: Open
-
-### Stufe 10: Spielablauf, Titelbild, Abspann
-
-- Titelbild mit Moduswahl, Titelmelodie
-- Levelende mit Fahne, Zeitbonus, Übergang zum nächsten Level
-- Leben, Game Over, Highscore pro Sitzung
-- Pause mit P, Farbraum automatisch erweitert (ULAplus), Fallback Classic, Umschalter C
-- Abspann nach dem letzten Level
-
-- 3. Meilenstein
-- State: Open
-
-### Stufe 11: Weiches Scrolling und Feintuning
-
-- Pixel-Scrolling mit vorverschobenen Kacheln (8 Versionen pro Kachel)
-- Sprite-Bewegung in 1-Pixel-Schritten (8 vorverschobene Kopien, auch für 16x32)
-- Tempo, Sprunghöhe und Gegner-Geschwindigkeit nach deinem Feedback
-- Speicherlayout und Codegröße prüfen
-
-- State: Open
-
-### Stufe 12: Level
-
-- Welt 1 Wiese: Level 1 als Einstieg, danach weitere Level im Retro-Stil
-- Welt 2 Wald, Welt 3 Höhle (dunkle Farben), Welt 4 Burg mit Drachen, optional Wasser-Level (andere Physik)
-- Bonusbereiche (Fass führt in einen Münzraum)
-- Alle Level in `levels/LevelNN.map` und `Level.md` mit Übersicht
-- Eigene Nachbauten nach deinen Screenshots von Vorlagen, wenn du sie schickst (als eigene Gestaltung)
-
-- 4. Meilenstein
-- State: Open
-
-## Risiken
-
-- **Rechenzeit beim Scrollen:** Spalten nachzeichnen und Doppelpuffer kosten Frames, mit zwei Spielern und großen Figuren noch mehr. Deshalb früh messen (Stufe 3 und 4), bevor Gegner dazukommen.
-- **Attribut-Clash:** Zwei Ritter plus Gegner auf bunten Kacheln; Himmel und Sprite-Farben von Anfang an mit freien Attributen planen.
-- **Speicher:** Level, Sprites (klein, groß, Gegner, vorverschobene Kopien) und Code in 128K-Bänken verteilen, Code gegen Variablenbereich prüfen (Pacman-Erfahrung).
-- **Kamera bei zwei Spielern:** Der hintere Spieler darf nicht links aus dem Bild; Verhalten beim Tod und beim Wiedereinsteigen früh testen.
-- **pasmo:** `jr` nur +-127, Labels global eindeutig.
 
 ---
 
