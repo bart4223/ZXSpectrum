@@ -98,7 +98,7 @@ Jede Stufe liefert: Code, `tools/test_stageN.py`, Screenshot oder GIF, `supermar
 - Wechsel auf Code ab `0x6000` und Messung der Bildzeit als Grundlinie
 - Titelbild-Rohfassung mit Start per Joystick
 
-- State: InProgress
+- State: Done
 
 ### Stufe 2: Schwerkraft, Sprung und Kollision
 
@@ -108,7 +108,7 @@ Jede Stufe liefert: Code, `tools/test_stageN.py`, Screenshot oder GIF, `supermar
 - Sprunghilfen: Nachsprungzeit an Kanten und Sprungpuffer
 - Sprung- und Lande-Animation; Feinabstimmung von Sprunghöhe und Gravitation mit deinem Feedback
 
-- State: Open
+- State: InProgress
 
 ### Stufe 3: Scrolling in 8-Pixel-Schritten
 

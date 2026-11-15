@@ -1,10 +1,10 @@
 ; ===========================================================
 ;  SUPERMARIO (Feuerwehr-Jump'n'Run)  -  ZX Spectrum 128K
-;  Stufe 1: Feuerwehrmann laeuft (klein/gross), Doppelpuffer, ULAplus
+;  Stufe 2: Laufen, Springen, Schwerkraft, Kollision (klein/gross), Doppelpuffer, ULAplus
 ;  Assembler: pasmo   (pasmo --tapbas --name supermario supermario.asm supermario.tap)
 ;  Diese Datei wird aus src/supermario.asm.in + tools/gen.py erzeugt.
 ;
-;  Steuerung: Joystick 1 (Sinclair, Tasten 6-0) oder O/P, Leertaste/Feuer = Start
+;  Steuerung: Joystick 1 (Sinclair, Tasten 6-0) oder O/P, Leertaste/Feuer = Start und Sprung
 ;             G = zwischen klein und gross umschalten (Test, ab Stufe 7 Power-up)
 ;  Speicher:  Code ab 6000h; Variablen ab VARS (nicht im TAP); IM2-Tabelle 0BE00h;
 ;             Bank 7 (0C000h) = zweiter Bildschirm, Stack ganz oben.
@@ -33,6 +33,10 @@ FRIC            equ 0020h               ; Auslaufen ohne Eingabe
 MAXV            equ 0200h               ; hoechstes Tempo 2 Pixel/Bild
 XMAX            equ 0F000h              ; rechte Grenze 240 Pixel
 ANIMPER         equ 5                   ; Bilder je Laufphase
+GRAV            equ 0038h               ; Schwerkraft je Bild
+JUMPV           equ 0500h               ; Absprunggeschwindigkeit (5 Pixel/Bild nach oben)
+CUTV            equ 0200h               ; Feuer losgelassen: Aufstieg auf 2 Pixel/Bild begrenzen
+MAXFALL         equ 0600h
 
 ; ---- Variablen (VARS, bei Start geloescht) ----
 V_BANK          equ VARS+0              ; Zeichenpuffer: 0 = Bank 5 (4000h), 80h = Bank 7 (0C000h)
@@ -45,25 +49,44 @@ PTIM            equ VARS+8
 PSIZE           equ VARS+9              ; 0 klein, 1 gross
 INP             equ VARS+10
 INPOLD          equ VARS+11
-OLD0            equ VARS+12             ; Merker Puffer 0: gueltig, x, Groesse
-OLD1            equ VARS+15             ; Merker Puffer 1
-V_X             equ VARS+18
-V_CX            equ VARS+19
-V_CY            equ VARS+20
-V_ROWS          equ VARS+21
-V_FL            equ VARS+22
-V_INK           equ VARS+23
-V_RX            equ VARS+24
-V_RS            equ VARS+25
-V_TX0           equ VARS+26
-V_TX1           equ VARS+27
-V_TY0           equ VARS+28
-V_IMG           equ VARS+30             ; Wort
-V_FLG           equ VARS+32             ; Wort
-V_INKP          equ VARS+34             ; Wort
-V_BLK           equ VARS+36             ; Wort
-V_FLGOFF        equ VARS+38             ; Wort
-VARS_LEN        equ 48
+OLD0            equ VARS+12             ; Merker Puffer 0: gueltig, x, Groesse, y
+OLD1            equ VARS+16             ; Merker Puffer 1
+PY              equ VARS+20             ; y (Oberkante) als 8.8
+VY              equ VARS+22             ; vertikales Tempo 8.8 mit Vorzeichen
+PGND            equ VARS+24             ; 1 = steht auf festem Grund
+V_JREQ          equ VARS+25             ; Sprung-Anforderung (Feuer-Flanke)
+V_H             equ VARS+26             ; Hoehe 16 oder 32
+V_TY0           equ VARS+27             ; Kachelzeilen der Figur
+V_TY1           equ VARS+28
+V_XL            equ VARS+29             ; Koerperkanten x+2 / x+13
+V_XR            equ VARS+30
+V_Y             equ VARS+31
+V_CX            equ VARS+32
+V_ROWS          equ VARS+33
+V_O             equ VARS+34
+V_K             equ VARS+35
+V_R1            equ VARS+36
+V_R2            equ VARS+37
+V_NR            equ VARS+38
+V_I1            equ VARS+39
+V_I2            equ VARS+40
+V_F1            equ VARS+41
+V_F2            equ VARS+42
+V_RX            equ VARS+43
+V_RS            equ VARS+44
+V_RY            equ VARS+45
+V_TX0           equ VARS+46
+V_TX1           equ VARS+47
+V_RTY1          equ VARS+48
+V_IMG           equ VARS+50             ; Wort
+V_FLG           equ VARS+52             ; Wort
+V_INKP          equ VARS+54             ; Wort
+V_BLK           equ VARS+56             ; Wort
+V_FLGOFF        equ VARS+58             ; Wort
+V_SAVEY         equ VARS+60
+V_CY            equ VARS+61
+V_X             equ VARS+62
+VARS_LEN        equ 64
 
                 org 6000h
 
@@ -244,6 +267,13 @@ new_game:       xor a
                 ld (OLD0),a
                 ld (OLD1),a
                 ld (INPOLD),a
+                ld (VY),a
+                ld (VY+1),a
+                ld (V_JREQ),a
+                ld hl,9000h             ; y = 144 (klein, auf dem Boden)
+                ld (PY),hl
+                ld a,1
+                ld (PGND),a
                 ret                     ; V_BANK = 80h: erst in Bank 7 zeichnen, Bank 5 ist sichtbar
 
 draw_scene:     ld hl,level_map
@@ -424,16 +454,22 @@ ri_4:           ld a,d
 ; ---------------------------------------------------------
 ; Spieler: Groesse, Beschleunigung, Bewegung, Animation
 ; ---------------------------------------------------------
-update_player:  ld a,(INPOLD)           ; G: Flanke -> klein/gross
+update_player:  ld a,(INPOLD)           ; Feuer-Flanke -> Sprung-Anforderung
+                cpl
+                ld b,a
+                ld a,(INP)
+                and b
+                and I_FIRE
+                ld (V_JREQ),a
+                ld a,(INPOLD)           ; G: Flanke -> klein/gross
                 and I_SIZE
                 jr nz,up_sz_done
                 ld a,(INP)
                 and I_SIZE
                 jr z,up_sz_done
-                ld a,(PSIZE)
-                xor 1
-                ld (PSIZE),a
-up_sz_done:     ld a,(INP)
+                call toggle_size
+up_sz_done:     call calc_rows
+                ld a,(INP)
                 ld (INPOLD),a
                 and I_LEFT+I_RIGHT
                 jr z,up_none
@@ -517,7 +553,24 @@ um_neg:         ld hl,(PV)
                 ld de,0
                 ld (PV),de
 um_st:          ld (PX),hl
+                call hcollide
+                call vertical
 ; ---- Animation
+                ld a,(PGND)
+                or a
+                jr nz,an_gr
+                ld a,3                  ; Sprungbild
+                ld (PFRM),a
+                xor a
+                ld (PTIM),a
+                ret
+an_gr:          ld a,(PFRM)
+                cp 3
+                jr nz,an_g2
+                xor a
+                ld (PFRM),a
+                ld (PTIM),a
+an_g2:
                 ld hl,(PV)
                 bit 7,h
                 jr z,an_1
@@ -575,6 +628,9 @@ ro_a:           ld a,(hl)
                 inc hl
                 ld a,(hl)
                 ld (V_RS),a
+                inc hl
+                ld a,(hl)
+                ld (V_RY),a
                 ld a,(V_RX)             ; Kachelspalten von x bis x+15
                 rrca
                 rrca
@@ -590,10 +646,26 @@ ro_a:           ld a,(hl)
                 rrca
                 and 0Fh
                 ld (V_TX1),a
-                ld a,(V_RS)             ; Kachelzeilen: klein 9, gross 8..9
-                ld b,a
-                ld a,9
-                sub b
+                ld a,(V_RS)             ; Kachelzeilen von y bis y+H-1
+                or a
+                ld a,15
+                jr z,ro_h
+                ld a,31
+ro_h:           ld b,a
+                ld a,(V_RY)
+                add a,b
+                rrca
+                rrca
+                rrca
+                rrca
+                and 0Fh
+                ld (V_RTY1),a
+                ld a,(V_RY)
+                rrca
+                rrca
+                rrca
+                rrca
+                and 0Fh
                 ld b,a
 ro_row:         ld a,(V_TX0)
                 ld c,a
@@ -616,11 +688,11 @@ ro_col:         push bc
                 jr z,ro_cd
                 inc c
                 jr ro_col
-ro_cd:          inc b
-                ld a,b
-                cp 10
-                jr c,ro_row
-                ret
+ro_cd:          ld a,(V_RTY1)
+                cp b
+                ret z
+                inc b
+                jr ro_row
 
 ; ---------------------------------------------------------
 ; Spieler zeichnen: Bild (Groesse, Richtung, Phase) in der Verschiebung (x and 6)/2,
@@ -628,16 +700,16 @@ ro_cd:          inc b
 ; ---------------------------------------------------------
 draw_player:    ld a,(PX+1)
                 ld (V_X),a
-                ld a,(PSIZE)            ; Bildnummer = Groesse*6 + Richtung*3 + Phase
-                ld b,a
+                ld a,(PY+1)
+                ld (V_Y),a
+                ld a,(PSIZE)            ; Bildnummer = Groesse*8 + Richtung*4 + Phase
                 add a,a
-                add a,b
+                add a,a
                 add a,a
                 ld b,a
                 ld a,(PDIR)
-                ld c,a
                 add a,a
-                add a,c
+                add a,a
                 add a,b
                 ld hl,PFRM
                 add a,(hl)
@@ -658,8 +730,6 @@ draw_player:    ld a,(PX+1)
                 ld (V_INKP),hl
                 ld a,2
                 ld (V_ROWS),a
-                ld a,18
-                ld (V_CY),a
                 ld hl,96
                 ld (V_FLGOFF),hl
                 jr dp_c
@@ -669,8 +739,6 @@ dp_large:       ld hl,BLK_LARGE
                 ld (V_INKP),hl
                 ld a,4
                 ld (V_ROWS),a
-                ld a,16
-                ld (V_CY),a
                 ld hl,192
                 ld (V_FLGOFF),hl
 dp_c:           ld a,(V_X)              ; Verschiebung (x and 6)/2
@@ -694,13 +762,36 @@ dp_s0:          ld (V_IMG),hl
                 rrca
                 and 1Fh
                 ld (V_CX),a
-dp_row:         ld a,(V_CY)
-                ld b,a
-                ld a,(V_CX)
+; ---- Pixelzeilen: Bildschirmadresse der Zeile y, Spalte cx
+                ld a,(V_Y)
                 ld c,a
-                call cell_addr
+                and 0C0h
+                rrca
+                rrca
+                rrca
+                ld b,a
+                ld a,c
+                and 7
+                or b
+                or 40h
+                ld b,a
+                ld a,(V_BANK)
+                or b
+                ld d,a
+                ld a,c
+                and 38h
+                add a,a
+                add a,a
+                ld e,a
+                ld a,(V_CX)
+                add a,e
+                ld e,a
+                ld a,(V_ROWS)
+                add a,a
+                add a,a
+                add a,a
+                ld b,a                  ; Zeilen
                 ld hl,(V_IMG)
-                ld b,8
 dp_line:        ld a,(de)
                 and (hl)
                 inc hl
@@ -723,45 +814,131 @@ dp_line:        ld a,(de)
                 ld (de),a
                 dec e
                 dec e
-                inc d
-                djnz dp_line
-                ld (V_IMG),hl
-                ld hl,(V_FLG)           ; Flags und Ink dieser Zellzeile
+                inc d                   ; naechste Pixelzeile
+                ld a,d
+                and 7
+                jr nz,dp_nx
+                ld a,e
+                add a,32
+                ld e,a
+                jr c,dp_nx
+                ld a,d
+                sub 8
+                ld d,a
+dp_nx:          djnz dp_line
+; ---- Attribute: je Bildschirm-Zellzeile k, Bildzeilen r1..r2 bestimmen den Ink
+                ld a,(V_Y)
+                and 7
+                ld (V_O),a
+                ld a,(V_Y)
+                rrca
+                rrca
+                rrca
+                and 1Fh
+                ld (V_CY),a
+                ld a,(V_ROWS)
+                ld b,a
+                ld a,(V_O)
+                or a
+                ld a,b
+                jr z,dp_nr
+                inc a
+dp_nr:          ld (V_NR),a
+                xor a
+                ld (V_K),a
+dp_ar:          ld a,(V_K)
+                or a
+                jr z,dp_r1z             ; k=0 -> r1=0
+                ld b,a
+                ld a,(V_O)
+                or a
+                ld a,b
+                jr z,dp_r1z             ; o=0 -> r1=k
+                dec a                   ; sonst r1=k-1
+dp_r1z:         ld (V_R1),a
+                ld a,(V_K)
+                ld b,a
+                ld a,(V_ROWS)
+                dec a
+                cp b
+                jr c,dp_r2              ; r2 = min(k, rows-1)
+                ld a,b
+dp_r2:          ld (V_R2),a
+                ld a,(V_O)              ; o=1..4: untere Bildzeile ueberwiegt -> zuerst sie
+                or a
+                jr z,dp_nosw
+                cp 5
+                jr nc,dp_nosw
+                ld a,(V_R1)
+                ld b,a
+                ld a,(V_R2)
+                ld (V_R1),a
+                ld a,b
+                ld (V_R2),a
+dp_nosw:
+                ld hl,(V_FLG)
+                ld a,(V_R1)
+                ld e,a
+                ld d,0
+                add hl,de
                 ld a,(hl)
-                inc hl
-                ld (V_FLG),hl
-                ld (V_FL),a
+                ld (V_F1),a
+                ld hl,(V_FLG)
+                ld a,(V_R2)
+                ld e,a
+                add hl,de
+                ld a,(hl)
+                ld (V_F2),a
                 ld hl,(V_INKP)
+                ld a,(V_R1)
+                ld e,a
+                add hl,de
                 ld a,(hl)
-                inc hl
-                ld (V_INKP),hl
-                ld (V_INK),a
+                ld (V_I1),a
+                ld hl,(V_INKP)
+                ld a,(V_R2)
+                ld e,a
+                add hl,de
+                ld a,(hl)
+                ld (V_I2),a
                 ld a,(V_CY)
                 ld b,a
                 ld a,(V_CX)
                 ld c,a
                 call attr_addr
-                ld a,(V_FL)
+                ld a,(V_F1)
                 ld b,a
-                ld a,(V_INK)
+                ld a,(V_F2)
                 ld c,a
-                ld l,3
-dp_at:          srl b
-                jr nc,dp_an
+                ld h,1
+dp_at:          ld a,b
+                and h
+                jr z,dp_a2
+                ld a,(V_I1)
+                jr dp_aset
+dp_a2:          ld a,c
+                and h
+                jr z,dp_an
+                ld a,(V_I2)
+dp_aset:        ld l,a
                 ld a,(de)
                 and 0F8h                ; Paper und Palettenbits behalten
-                or c
+                or l
                 ld (de),a
 dp_an:          inc e
-                dec l
+                sla h
+                ld a,h
+                cp 8
                 jr nz,dp_at
                 ld a,(V_CY)
                 inc a
                 ld (V_CY),a
-                ld a,(V_ROWS)
-                dec a
-                ld (V_ROWS),a
-                jp nz,dp_row
+                ld a,(V_K)
+                inc a
+                ld (V_K),a
+                ld hl,V_NR
+                cp (hl)
+                jp c,dp_ar
                 ld hl,OLD0              ; Merker fuer diesen Puffer
                 ld a,(V_BANK)
                 or a
@@ -774,15 +951,298 @@ dp_o:           ld (hl),1
                 inc hl
                 ld a,(PSIZE)
                 ld (hl),a
+                inc hl
+                ld a,(V_Y)
+                ld (hl),a
+                ret
+
+; ---------------------------------------------------------
+; Kollision und Schwerkraft
+; ---------------------------------------------------------
+; tile_solid: B = ty, C = tx -> A <> 0 wenn fest (unterhalb der Karte = fest). B, C bleiben erhalten.
+tile_solid:     ld a,b
+                cp 12
+                jr nc,ts_yes
+                add a,a
+                add a,a
+                add a,a
+                add a,a
+                or c
+                ld e,a
+                ld d,0
+                ld hl,level_map
+                add hl,de
+                ld e,(hl)
+                ld hl,solid_tab
+                add hl,de
+                ld a,(hl)
+                ret
+ts_yes:         ld a,1
+                ret
+
+; calc_rows: V_H, V_TY0, V_TY1 aus PSIZE und PY
+calc_rows:      ld a,(PSIZE)
+                or a
+                ld a,16
+                jr z,cr_h
+                ld a,32
+cr_h:           ld (V_H),a
+                dec a
+                ld b,a
+                ld a,(PY+1)
+                add a,b
+                rrca
+                rrca
+                rrca
+                rrca
+                and 0Fh
+                ld (V_TY1),a
+                ld a,(PY+1)
+                rrca
+                rrca
+                rrca
+                rrca
+                and 0Fh
+                ld (V_TY0),a
+                ret
+
+; solid_col: A = Pixel-x -> NZ wenn eine Kachel dieser Spalte (Zeilen V_TY0..V_TY1) fest ist
+solid_col:      rrca
+                rrca
+                rrca
+                rrca
+                and 0Fh
+                ld c,a
+                ld a,(V_TY0)
+                ld b,a
+sc_l:           call tile_solid
+                or a
+                ret nz
+                ld a,(V_TY1)
+                cp b
+                ret z
+                inc b
+                jr sc_l
+
+; solid_row: B = ty -> NZ wenn die Kachel unter einer Koerperkante (V_XL / V_XR) fest ist
+solid_row:      ld a,(V_XL)
+                rrca
+                rrca
+                rrca
+                rrca
+                and 0Fh
+                ld c,a
+                call tile_solid
+                or a
+                ret nz
+                ld a,(V_XR)
+                rrca
+                rrca
+                rrca
+                rrca
+                and 0Fh
+                ld c,a
+                call tile_solid
+                or a
+                ret
+
+set_edges:      ld a,(PX+1)
+                add a,2
+                ld (V_XL),a
+                add a,11
+                ld (V_XR),a
+                ret
+
+; Groesse umschalten: beim Wachsen nach oben (nur wenn Platz ist), beim Schrumpfen Fuesse halten
+toggle_size:    ld a,(PY+1)
+                ld (V_SAVEY),a
+                ld a,(PSIZE)
+                xor 1
+                ld (PSIZE),a
+                jr z,ts_shrink
+                ld a,(V_SAVEY)
+                sub 16
+                jr c,ts_cancel
+                ld (PY+1),a
+                call calc_rows
+                ld a,(PX+1)
+                add a,2
+                call solid_col
+                jr nz,ts_cancel
+                ld a,(PX+1)
+                add a,13
+                call solid_col
+                jr nz,ts_cancel
+                ret
+ts_shrink:      ld a,(V_SAVEY)
+                add a,16
+                ld (PY+1),a
+                ret
+ts_cancel:      ld a,(V_SAVEY)
+                ld (PY+1),a
+                ld a,(PSIZE)
+                xor 1
+                ld (PSIZE),a
+                ret
+
+; hcollide: nach der Bewegung in x gegen feste Kacheln pruefen, an der Kante ausrichten
+hcollide:       call calc_rows
+                ld hl,(PV)
+                ld a,h
+                or l
+                ret z
+                bit 7,h
+                jr nz,hc_left
+                ld a,(PX+1)
+                add a,13
+                call solid_col
+                ret z
+                ld a,(PX+1)
+                add a,13
+                and 0F0h
+                sub 14
+                jr hc_snap
+hc_left:        ld a,(PX+1)
+                add a,2
+                call solid_col
+                ret z
+                ld a,(PX+1)
+                add a,2
+                and 0F0h
+                add a,14
+hc_snap:        ld h,a
+                ld l,0
+                ld (PX),hl
+                ld hl,0
+                ld (PV),hl
+                ret
+
+; vertical: Sprung, Schwerkraft, Landen, Kopfstoss, Bodenkontakt
+vertical:       call calc_rows          ; V_H
+                ld a,(PGND)
+                or a
+                jr z,vt_air
+                ld a,(V_JREQ)
+                or a
+                jr z,vt_stand
+                ld hl,0-JUMPV           ; Absprung
+                ld (VY),hl
+                xor a
+                ld (PGND),a
+                jp vt_move
+vt_stand:       ld hl,0
+                ld (VY),hl
+                jp vt_probe
+vt_air:         ld hl,(VY)
+                bit 7,h
+                jr z,vt_g2
+                ld a,(INP)              ; Aufstieg: Feuer losgelassen -> abbremsen
+                and I_FIRE
+                jr nz,vt_g2
+                ld de,0-CUTV
+                push hl
+                or a
+                sbc hl,de
+                pop hl
+                jr nc,vt_g2
+                ex de,hl
+vt_g2:          ld de,GRAV
+                add hl,de
+                bit 7,h
+                jr nz,vt_g3
+                ld a,h
+                cp 6
+                jr c,vt_g3
+                ld hl,MAXFALL
+vt_g3:          ld (VY),hl
+vt_move:        ld hl,(VY)
+                ld de,(PY)
+                add hl,de
+                ld a,(VY+1)
+                bit 7,a
+                jp z,vt_down
+; ---- aufwaerts
+                jr c,vt_up
+                ld hl,0                 ; oben aus dem Bild: bei 0 anhalten
+vt_up:          ld (PY),hl
+                call set_edges
+                ld a,(PY+1)
+                rrca
+                rrca
+                rrca
+                rrca
+                and 0Fh
+                ld b,a
+                call solid_row
+                jp z,vt_probe
+                ld a,(PY+1)             ; Kopfstoss: unter die Kachel setzen
+                and 0F0h
+                add a,16
+                ld h,a
+                ld l,0
+                ld (PY),hl
+                ld hl,0
+                ld (VY),hl
+                jp vt_probe
+; ---- abwaerts
+vt_down:        ld (PY),hl
+                call set_edges
+                ld a,(V_H)
+                dec a
+                ld c,a
+                ld a,(PY+1)
+                add a,c
+                rrca
+                rrca
+                rrca
+                rrca
+                and 0Fh
+                ld b,a
+                call solid_row
+                jp z,vt_probe
+                ld a,(V_H)              ; Landen: Fuesse auf die Kachelkante
+                ld c,a
+                dec a
+                ld b,a
+                ld a,(PY+1)
+                add a,b
+                and 0F0h
+                sub c
+                ld h,a
+                ld l,0
+                ld (PY),hl
+                ld hl,0
+                ld (VY),hl
+; ---- Bodenkontakt pruefen (nur wenn nicht aufsteigend)
+vt_probe:       call set_edges
+                xor a
+                ld (PGND),a
+                ld a,(VY+1)
+                bit 7,a
+                ret nz
+                ld a,(V_H)
+                ld c,a
+                ld a,(PY+1)
+                add a,c
+                rrca
+                rrca
+                rrca
+                rrca
+                and 0Fh
+                ld b,a
+                call solid_row
+                ret z
+                ld a,1
+                ld (PGND),a
                 ret
 
 ; ---------------------------------------------------------
 ; Texte
 ; ---------------------------------------------------------
 txt_title:      db "FEUERWEHRMANN",0
-txt_stage:      db "STUFE 1 - LAUFEN",0
+txt_stage:      db "STUFE 2 - SPRINGEN",0
 txt_start:      db "FEUER ODER LEERTASTE = START",0
-txt_keys:       db "O P = LAUFEN  G = KLEIN/GROSS",0
+txt_keys:       db "O P LAUFEN SPACE SPRUNG G=GROSS",0
 
 ; ---------------------------------------------------------
 ; Daten (vom Generator erzeugt)
@@ -805,11 +1265,18 @@ tile_ptr:
                 dw tile_brick
                 dw tile_chest
                 dw tile_sky_3
+                dw tile_stone
                 dw tile_hill_l_3
                 dw tile_hill_m_3
                 dw tile_hill_r_3
+                dw tile_barrel
+                dw tile_hydrant
                 dw tile_grass
                 dw tile_dirt
+
+; ---- fest (1) oder frei (0) je Kachel-Instanz ----
+solid_tab:
+                db 0,0,0,0,0,0,1,1,0,1,0,0,0,1,1,1,1
 
 ; ---- Kacheln: TL,TR,BL,BR je 8 Byte, dann 4 Attribute ----
 tile_sky_0:
@@ -866,6 +1333,12 @@ tile_sky_3:
                 db 0,0,0,0,0,0,0,0
                 db 0,0,0,0,0,0,0,0
                 db 019h,019h,019h,019h
+tile_stone:
+                db 0FFh,080h,080h,080h,080h,080h,080h,080h
+                db 0FFh,0,0,0,0,0,0,0
+                db 0FFh,0,0,0,0,0,0,0
+                db 0FFh,080h,080h,080h,080h,080h,080h,080h
+                db 057h,057h,057h,057h
 tile_hill_l_3:
                 db 0,0,0,0,0,0,0,0
                 db 0,0,0,0,0,0,0,0
@@ -884,6 +1357,18 @@ tile_hill_r_3:
                 db 0,0,0,0,0,0,0,0
                 db 0,0,0,0,0,0,0,0
                 db 019h,019h,021h,019h
+tile_barrel:
+                db 07Fh,092h,0FFh,0FFh,092h,092h,092h,092h
+                db 0FEh,049h,0FFh,0FFh,049h,049h,049h,049h
+                db 092h,092h,092h,092h,0FFh,0FFh,092h,07Fh
+                db 049h,049h,049h,049h,0FFh,0FFh,049h,0FEh
+                db 06Dh,06Dh,06Dh,06Dh
+tile_hydrant:
+                db 0,0,7,00Fh,00Fh,7,00Fh,03Fh
+                db 0,0,0E0h,0F0h,0F0h,0E0h,0F0h,0FCh
+                db 03Fh,0EFh,0EFh,03Fh,00Fh,00Fh,03Fh,03Fh
+                db 0FCh,0F7h,0F7h,0FCh,0F0h,0F0h,0FCh,0FCh
+                db 076h,076h,076h,076h
 tile_grass:
                 db 0,0,020h,0,2,0ADh,089h,0
                 db 0,0,084h,0,010h,06Bh,024h,0
@@ -906,11 +1391,11 @@ level_map:
                 db 3,3,3,3,3,3,4,4,4,3,3,3,3,3,3,3
                 db 3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3
                 db 5,5,5,5,5,6,7,6,7,6,5,5,5,5,5,5
-                db 5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5
-                db 8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8
-                db 8,8,8,8,8,8,8,8,8,8,9,00Ah,00Bh,8,8,8
-                db 00Ch,00Ch,00Ch,00Ch,00Ch,00Ch,00Ch,00Ch,00Ch,00Ch,00Ch,00Ch,00Ch,00Ch,00Ch,00Ch
-                db 00Dh,00Dh,00Dh,00Dh,00Dh,00Dh,00Dh,00Dh,00Dh,00Dh,00Dh,00Dh,00Dh,00Dh,00Dh,00Dh
+                db 5,5,5,5,5,5,5,5,5,5,5,5,5,6,6,5
+                db 8,8,8,8,8,8,8,8,8,8,8,9,8,8,8,8
+                db 8,8,00Ah,00Bh,00Ch,8,8,00Dh,8,8,9,9,8,8,00Eh,8
+                db 00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh
+                db 010h,010h,010h,010h,010h,010h,010h,010h,010h,010h,010h,010h,010h,010h,010h,010h
 
 BLK_SMALL       equ 98
 BLK_LARGE       equ 196
@@ -926,15 +1411,19 @@ img_ptr:
                 dw img_s0_d0_f0
                 dw img_s0_d0_f1
                 dw img_s0_d0_f2
+                dw img_s0_d0_f3
                 dw img_s0_d1_f0
                 dw img_s0_d1_f1
                 dw img_s0_d1_f2
+                dw img_s0_d1_f3
                 dw img_s1_d0_f0
                 dw img_s1_d0_f1
                 dw img_s1_d0_f2
+                dw img_s1_d0_f3
                 dw img_s1_d1_f0
                 dw img_s1_d1_f1
                 dw img_s1_d1_f2
+                dw img_s1_d1_f3
 
 ; ---- Bilder: je 4 Verschiebungen x (Zeilen x 6 Byte + Flags) ----
 img_s0_d0_f0:
@@ -1144,6 +1633,75 @@ img_s0_d0_f2:
                 db 0FFh,0,0E6h,019h,03Fh,0C0h
                 db 0FFh,0,0C7h,038h,08Fh,070h
                 db 7,6
+img_s0_d0_f3:
+                db 0F8h,7,01Fh,0E0h,0FFh,0
+                db 0F0h,00Fh,00Fh,0F0h,0FFh,0
+                db 0E0h,01Fh,7,0F8h,0FFh,0
+                db 080h,07Fh,1,0FEh,0FFh,0
+                db 0F0h,00Fh,00Fh,0F0h,0FFh,0
+                db 0F0h,00Fh,08Fh,070h,0FFh,0
+                db 0F0h,00Fh,00Fh,0F0h,0FFh,0
+                db 0F8h,7,01Fh,0E0h,0FFh,0
+                db 0E0h,01Fh,7,0F8h,0FFh,0
+                db 0C0h,03Fh,2,0FDh,0FFh,0
+                db 0C8h,037h,012h,0EDh,0FFh,0
+                db 0C8h,037h,012h,0EDh,0FFh,0
+                db 0F0h,00Fh,00Fh,0F0h,0FFh,0
+                db 0E3h,01Ch,0C7h,038h,0FFh,0
+                db 0C7h,038h,0E3h,01Ch,0FFh,0
+                db 08Fh,070h,0F1h,00Eh,0FFh,0
+                db 3,3
+                db 0FEh,1,7,0F8h,0FFh,0
+                db 0FCh,3,3,0FCh,0FFh,0
+                db 0F8h,7,1,0FEh,0FFh,0
+                db 0E0h,01Fh,0,0FFh,07Fh,080h
+                db 0FCh,3,3,0FCh,0FFh,0
+                db 0FCh,3,023h,0DCh,0FFh,0
+                db 0FCh,3,3,0FCh,0FFh,0
+                db 0FEh,1,7,0F8h,0FFh,0
+                db 0F8h,7,1,0FEh,0FFh,0
+                db 0F0h,00Fh,0,0FFh,0BFh,040h
+                db 0F2h,00Dh,4,0FBh,0BFh,040h
+                db 0F2h,00Dh,4,0FBh,0BFh,040h
+                db 0FCh,3,3,0FCh,0FFh,0
+                db 0F8h,7,0F1h,00Eh,0FFh,0
+                db 0F1h,00Eh,0F8h,7,0FFh,0
+                db 0E3h,01Ch,0FCh,3,07Fh,080h
+                db 7,7
+                db 0FFh,0,081h,07Eh,0FFh,0
+                db 0FFh,0,0,0FFh,0FFh,0
+                db 0FEh,1,0,0FFh,07Fh,080h
+                db 0F8h,7,0,0FFh,01Fh,0E0h
+                db 0FFh,0,0,0FFh,0FFh,0
+                db 0FFh,0,8,0F7h,0FFh,0
+                db 0FFh,0,0,0FFh,0FFh,0
+                db 0FFh,0,081h,07Eh,0FFh,0
+                db 0FEh,1,0,0FFh,07Fh,080h
+                db 0FCh,3,0,0FFh,02Fh,0D0h
+                db 0FCh,3,081h,07Eh,02Fh,0D0h
+                db 0FCh,3,081h,07Eh,02Fh,0D0h
+                db 0FFh,0,0,0FFh,0FFh,0
+                db 0FEh,1,03Ch,0C3h,07Fh,080h
+                db 0FCh,3,07Eh,081h,03Fh,0C0h
+                db 0F8h,7,0FFh,0,01Fh,0E0h
+                db 7,7
+                db 0FFh,0,0E0h,01Fh,07Fh,080h
+                db 0FFh,0,0C0h,03Fh,03Fh,0C0h
+                db 0FFh,0,080h,07Fh,01Fh,0E0h
+                db 0FEh,1,0,0FFh,7,0F8h
+                db 0FFh,0,0C0h,03Fh,03Fh,0C0h
+                db 0FFh,0,0C2h,03Dh,03Fh,0C0h
+                db 0FFh,0,0C0h,03Fh,03Fh,0C0h
+                db 0FFh,0,0E0h,01Fh,07Fh,080h
+                db 0FFh,0,080h,07Fh,01Fh,0E0h
+                db 0FFh,0,0,0FFh,00Bh,0F4h
+                db 0FFh,0,020h,0DFh,04Bh,0B4h
+                db 0FFh,0,020h,0DFh,04Bh,0B4h
+                db 0FFh,0,0C0h,03Fh,03Fh,0C0h
+                db 0FFh,0,08Fh,070h,01Fh,0E0h
+                db 0FFh,0,01Fh,0E0h,08Fh,070h
+                db 0FEh,1,03Fh,0C0h,0C7h,038h
+                db 7,7
 img_s0_d1_f0:
                 db 0F8h,7,01Fh,0E0h,0FFh,0
                 db 0F0h,00Fh,00Fh,0F0h,0FFh,0
@@ -1350,6 +1908,75 @@ img_s0_d1_f2:
                 db 0FFh,0,0F0h,00Fh,0FFh,0
                 db 0FFh,0,0C6h,039h,07Fh,080h
                 db 0FFh,0,01Eh,0E1h,03Fh,0C0h
+                db 7,7
+img_s0_d1_f3:
+                db 0F8h,7,01Fh,0E0h,0FFh,0
+                db 0F0h,00Fh,00Fh,0F0h,0FFh,0
+                db 0E0h,01Fh,7,0F8h,0FFh,0
+                db 080h,07Fh,1,0FEh,0FFh,0
+                db 0F0h,00Fh,00Fh,0F0h,0FFh,0
+                db 0F1h,00Eh,00Fh,0F0h,0FFh,0
+                db 0F0h,00Fh,00Fh,0F0h,0FFh,0
+                db 0F8h,7,01Fh,0E0h,0FFh,0
+                db 0E0h,01Fh,7,0F8h,0FFh,0
+                db 040h,0BFh,3,0FCh,0FFh,0
+                db 048h,0B7h,013h,0ECh,0FFh,0
+                db 048h,0B7h,013h,0ECh,0FFh,0
+                db 0F0h,00Fh,00Fh,0F0h,0FFh,0
+                db 0E3h,01Ch,0C7h,038h,0FFh,0
+                db 0C7h,038h,0E3h,01Ch,0FFh,0
+                db 08Fh,070h,0F1h,00Eh,0FFh,0
+                db 3,3
+                db 0FEh,1,7,0F8h,0FFh,0
+                db 0FCh,3,3,0FCh,0FFh,0
+                db 0F8h,7,1,0FEh,0FFh,0
+                db 0E0h,01Fh,0,0FFh,07Fh,080h
+                db 0FCh,3,3,0FCh,0FFh,0
+                db 0FCh,3,043h,0BCh,0FFh,0
+                db 0FCh,3,3,0FCh,0FFh,0
+                db 0FEh,1,7,0F8h,0FFh,0
+                db 0F8h,7,1,0FEh,0FFh,0
+                db 0D0h,02Fh,0,0FFh,0FFh,0
+                db 0D2h,02Dh,4,0FBh,0FFh,0
+                db 0D2h,02Dh,4,0FBh,0FFh,0
+                db 0FCh,3,3,0FCh,0FFh,0
+                db 0F8h,7,0F1h,00Eh,0FFh,0
+                db 0F1h,00Eh,0F8h,7,0FFh,0
+                db 0E3h,01Ch,0FCh,3,07Fh,080h
+                db 7,7
+                db 0FFh,0,081h,07Eh,0FFh,0
+                db 0FFh,0,0,0FFh,0FFh,0
+                db 0FEh,1,0,0FFh,07Fh,080h
+                db 0F8h,7,0,0FFh,01Fh,0E0h
+                db 0FFh,0,0,0FFh,0FFh,0
+                db 0FFh,0,010h,0EFh,0FFh,0
+                db 0FFh,0,0,0FFh,0FFh,0
+                db 0FFh,0,081h,07Eh,0FFh,0
+                db 0FEh,1,0,0FFh,07Fh,080h
+                db 0F4h,00Bh,0,0FFh,03Fh,0C0h
+                db 0F4h,00Bh,081h,07Eh,03Fh,0C0h
+                db 0F4h,00Bh,081h,07Eh,03Fh,0C0h
+                db 0FFh,0,0,0FFh,0FFh,0
+                db 0FEh,1,03Ch,0C3h,07Fh,080h
+                db 0FCh,3,07Eh,081h,03Fh,0C0h
+                db 0F8h,7,0FFh,0,01Fh,0E0h
+                db 7,7
+                db 0FFh,0,0E0h,01Fh,07Fh,080h
+                db 0FFh,0,0C0h,03Fh,03Fh,0C0h
+                db 0FFh,0,080h,07Fh,01Fh,0E0h
+                db 0FEh,1,0,0FFh,7,0F8h
+                db 0FFh,0,0C0h,03Fh,03Fh,0C0h
+                db 0FFh,0,0C4h,03Bh,03Fh,0C0h
+                db 0FFh,0,0C0h,03Fh,03Fh,0C0h
+                db 0FFh,0,0E0h,01Fh,07Fh,080h
+                db 0FFh,0,080h,07Fh,01Fh,0E0h
+                db 0FDh,2,0,0FFh,00Fh,0F0h
+                db 0FDh,2,020h,0DFh,04Fh,0B0h
+                db 0FDh,2,020h,0DFh,04Fh,0B0h
+                db 0FFh,0,0C0h,03Fh,03Fh,0C0h
+                db 0FFh,0,08Fh,070h,01Fh,0E0h
+                db 0FFh,0,01Fh,0E0h,08Fh,070h
+                db 0FEh,1,03Fh,0C0h,0C7h,038h
                 db 7,7
 img_s1_d0_f0:
                 db 0FEh,1,07Fh,080h,0FFh,0
@@ -1750,6 +2377,139 @@ img_s1_d0_f2:
                 db 0FFh,0,01Fh,0E0h,08Fh,070h
                 db 0FFh,0,03Fh,0C0h,0CFh,030h
                 db 7,6,7,6
+img_s1_d0_f3:
+                db 0FEh,1,07Fh,080h,0FFh,0
+                db 0F8h,7,01Fh,0E0h,0FFh,0
+                db 0F0h,00Fh,00Fh,0F0h,0FFh,0
+                db 0E0h,01Fh,7,0F8h,0FFh,0
+                db 0E0h,01Fh,7,0F8h,0FFh,0
+                db 080h,07Fh,1,0FEh,0FFh,0
+                db 080h,07Fh,1,0FEh,0FFh,0
+                db 0FFh,0,0FFh,0,0FFh,0
+                db 0F0h,00Fh,00Fh,0F0h,0FFh,0
+                db 0F4h,00Bh,02Fh,0D0h,0FFh,0
+                db 0F0h,00Fh,00Fh,0F0h,0FFh,0
+                db 0F0h,00Fh,00Fh,0F0h,0FFh,0
+                db 0F8h,7,01Fh,0E0h,0FFh,0
+                db 0FCh,3,03Fh,0C0h,0FFh,0
+                db 0FCh,3,03Fh,0C0h,0FFh,0
+                db 0F0h,00Fh,00Fh,0F0h,0FFh,0
+                db 0C0h,03Fh,3,0FCh,0FFh,0
+                db 080h,07Fh,1,0FEh,0FFh,0
+                db 010h,0EFh,8,0F7h,0FFh,0
+                db 011h,0EEh,088h,077h,0FFh,0
+                db 010h,0EFh,8,0F7h,0FFh,0
+                db 010h,0EFh,8,0F7h,0FFh,0
+                db 0F0h,00Fh,00Fh,0F0h,0FFh,0
+                db 0F8h,7,01Fh,0E0h,0FFh,0
+                db 0F1h,00Eh,08Fh,070h,0FFh,0
+                db 0E3h,01Ch,0C7h,038h,0FFh,0
+                db 0C7h,038h,0E3h,01Ch,0FFh,0
+                db 0C7h,038h,0E3h,01Ch,0FFh,0
+                db 0CFh,030h,0F3h,00Ch,0FFh,0
+                db 0CFh,030h,0F3h,00Ch,0FFh,0
+                db 08Fh,070h,0F1h,00Eh,0FFh,0
+                db 08Fh,070h,0F1h,00Eh,0FFh,0
+                db 3,3,3,3
+                db 0FFh,0,09Fh,060h,0FFh,0
+                db 0FEh,1,7,0F8h,0FFh,0
+                db 0FCh,3,3,0FCh,0FFh,0
+                db 0F8h,7,1,0FEh,0FFh,0
+                db 0F8h,7,1,0FEh,0FFh,0
+                db 0E0h,01Fh,0,0FFh,07Fh,080h
+                db 0E0h,01Fh,0,0FFh,07Fh,080h
+                db 0FFh,0,0FFh,0,0FFh,0
+                db 0FCh,3,3,0FCh,0FFh,0
+                db 0FDh,2,00Bh,0F4h,0FFh,0
+                db 0FCh,3,3,0FCh,0FFh,0
+                db 0FCh,3,3,0FCh,0FFh,0
+                db 0FEh,1,7,0F8h,0FFh,0
+                db 0FFh,0,00Fh,0F0h,0FFh,0
+                db 0FFh,0,00Fh,0F0h,0FFh,0
+                db 0FCh,3,3,0FCh,0FFh,0
+                db 0F0h,00Fh,0,0FFh,0FFh,0
+                db 0E0h,01Fh,0,0FFh,07Fh,080h
+                db 0C4h,03Bh,2,0FDh,03Fh,0C0h
+                db 0C4h,03Bh,062h,09Dh,03Fh,0C0h
+                db 0C4h,03Bh,2,0FDh,03Fh,0C0h
+                db 0C4h,03Bh,2,0FDh,03Fh,0C0h
+                db 0FCh,3,3,0FCh,0FFh,0
+                db 0FEh,1,7,0F8h,0FFh,0
+                db 0FCh,3,063h,09Ch,0FFh,0
+                db 0F8h,7,0F1h,00Eh,0FFh,0
+                db 0F1h,00Eh,0F8h,7,0FFh,0
+                db 0F1h,00Eh,0F8h,7,0FFh,0
+                db 0F3h,00Ch,0FCh,3,0FFh,0
+                db 0F3h,00Ch,0FCh,3,0FFh,0
+                db 0E3h,01Ch,0FCh,3,07Fh,080h
+                db 0E3h,01Ch,0FCh,3,07Fh,080h
+                db 7,3,7,7
+                db 0FFh,0,0E7h,018h,0FFh,0
+                db 0FFh,0,081h,07Eh,0FFh,0
+                db 0FFh,0,0,0FFh,0FFh,0
+                db 0FEh,1,0,0FFh,07Fh,080h
+                db 0FEh,1,0,0FFh,07Fh,080h
+                db 0F8h,7,0,0FFh,01Fh,0E0h
+                db 0F8h,7,0,0FFh,01Fh,0E0h
+                db 0FFh,0,0FFh,0,0FFh,0
+                db 0FFh,0,0,0FFh,0FFh,0
+                db 0FFh,0,042h,0BDh,0FFh,0
+                db 0FFh,0,0,0FFh,0FFh,0
+                db 0FFh,0,0,0FFh,0FFh,0
+                db 0FFh,0,081h,07Eh,0FFh,0
+                db 0FFh,0,0C3h,03Ch,0FFh,0
+                db 0FFh,0,0C3h,03Ch,0FFh,0
+                db 0FFh,0,0,0FFh,0FFh,0
+                db 0FCh,3,0,0FFh,03Fh,0C0h
+                db 0F8h,7,0,0FFh,01Fh,0E0h
+                db 0F1h,00Eh,0,0FFh,08Fh,070h
+                db 0F1h,00Eh,018h,0E7h,08Fh,070h
+                db 0F1h,00Eh,0,0FFh,08Fh,070h
+                db 0F1h,00Eh,0,0FFh,08Fh,070h
+                db 0FFh,0,0,0FFh,0FFh,0
+                db 0FFh,0,081h,07Eh,0FFh,0
+                db 0FFh,0,018h,0E7h,0FFh,0
+                db 0FEh,1,03Ch,0C3h,07Fh,080h
+                db 0FCh,3,07Eh,081h,03Fh,0C0h
+                db 0FCh,3,07Eh,081h,03Fh,0C0h
+                db 0FCh,3,0FFh,0,03Fh,0C0h
+                db 0FCh,3,0FFh,0,03Fh,0C0h
+                db 0F8h,7,0FFh,0,01Fh,0E0h
+                db 0F8h,7,0FFh,0,01Fh,0E0h
+                db 7,2,7,7
+                db 0FFh,0,0F9h,6,0FFh,0
+                db 0FFh,0,0E0h,01Fh,07Fh,080h
+                db 0FFh,0,0C0h,03Fh,03Fh,0C0h
+                db 0FFh,0,080h,07Fh,01Fh,0E0h
+                db 0FFh,0,080h,07Fh,01Fh,0E0h
+                db 0FEh,1,0,0FFh,7,0F8h
+                db 0FEh,1,0,0FFh,7,0F8h
+                db 0FFh,0,0FFh,0,0FFh,0
+                db 0FFh,0,0C0h,03Fh,03Fh,0C0h
+                db 0FFh,0,0D0h,02Fh,0BFh,040h
+                db 0FFh,0,0C0h,03Fh,03Fh,0C0h
+                db 0FFh,0,0C0h,03Fh,03Fh,0C0h
+                db 0FFh,0,0E0h,01Fh,07Fh,080h
+                db 0FFh,0,0F0h,00Fh,0FFh,0
+                db 0FFh,0,0F0h,00Fh,0FFh,0
+                db 0FFh,0,0C0h,03Fh,03Fh,0C0h
+                db 0FFh,0,0,0FFh,00Fh,0F0h
+                db 0FEh,1,0,0FFh,7,0F8h
+                db 0FCh,3,040h,0BFh,023h,0DCh
+                db 0FCh,3,046h,0B9h,023h,0DCh
+                db 0FCh,3,040h,0BFh,023h,0DCh
+                db 0FCh,3,040h,0BFh,023h,0DCh
+                db 0FFh,0,0C0h,03Fh,03Fh,0C0h
+                db 0FFh,0,0E0h,01Fh,07Fh,080h
+                db 0FFh,0,0C6h,039h,03Fh,0C0h
+                db 0FFh,0,08Fh,070h,01Fh,0E0h
+                db 0FFh,0,01Fh,0E0h,08Fh,070h
+                db 0FFh,0,01Fh,0E0h,08Fh,070h
+                db 0FFh,0,03Fh,0C0h,0CFh,030h
+                db 0FFh,0,03Fh,0C0h,0CFh,030h
+                db 0FEh,1,03Fh,0C0h,0C7h,038h
+                db 0FEh,1,03Fh,0C0h,0C7h,038h
+                db 7,6,7,7
 img_s1_d1_f0:
                 db 0FEh,1,07Fh,080h,0FFh,0
                 db 0F8h,7,01Fh,0E0h,0FFh,0
@@ -2149,6 +2909,139 @@ img_s1_d1_f2:
                 db 0FFh,0,01Fh,0E0h,08Fh,070h
                 db 0FFh,0,03Fh,0C0h,0CFh,030h
                 db 7,6,7,6
+img_s1_d1_f3:
+                db 0FEh,1,07Fh,080h,0FFh,0
+                db 0F8h,7,01Fh,0E0h,0FFh,0
+                db 0F0h,00Fh,00Fh,0F0h,0FFh,0
+                db 0E0h,01Fh,7,0F8h,0FFh,0
+                db 0E0h,01Fh,7,0F8h,0FFh,0
+                db 080h,07Fh,1,0FEh,0FFh,0
+                db 080h,07Fh,1,0FEh,0FFh,0
+                db 0FFh,0,0FFh,0,0FFh,0
+                db 0F0h,00Fh,00Fh,0F0h,0FFh,0
+                db 0F4h,00Bh,02Fh,0D0h,0FFh,0
+                db 0F0h,00Fh,00Fh,0F0h,0FFh,0
+                db 0F0h,00Fh,00Fh,0F0h,0FFh,0
+                db 0F8h,7,01Fh,0E0h,0FFh,0
+                db 0FCh,3,03Fh,0C0h,0FFh,0
+                db 0FCh,3,03Fh,0C0h,0FFh,0
+                db 0F0h,00Fh,00Fh,0F0h,0FFh,0
+                db 0C0h,03Fh,3,0FCh,0FFh,0
+                db 080h,07Fh,1,0FEh,0FFh,0
+                db 010h,0EFh,8,0F7h,0FFh,0
+                db 011h,0EEh,088h,077h,0FFh,0
+                db 010h,0EFh,8,0F7h,0FFh,0
+                db 010h,0EFh,8,0F7h,0FFh,0
+                db 0F0h,00Fh,00Fh,0F0h,0FFh,0
+                db 0F8h,7,01Fh,0E0h,0FFh,0
+                db 0F1h,00Eh,08Fh,070h,0FFh,0
+                db 0E3h,01Ch,0C7h,038h,0FFh,0
+                db 0C7h,038h,0E3h,01Ch,0FFh,0
+                db 0C7h,038h,0E3h,01Ch,0FFh,0
+                db 0CFh,030h,0F3h,00Ch,0FFh,0
+                db 0CFh,030h,0F3h,00Ch,0FFh,0
+                db 08Fh,070h,0F1h,00Eh,0FFh,0
+                db 08Fh,070h,0F1h,00Eh,0FFh,0
+                db 3,3,3,3
+                db 0FFh,0,09Fh,060h,0FFh,0
+                db 0FEh,1,7,0F8h,0FFh,0
+                db 0FCh,3,3,0FCh,0FFh,0
+                db 0F8h,7,1,0FEh,0FFh,0
+                db 0F8h,7,1,0FEh,0FFh,0
+                db 0E0h,01Fh,0,0FFh,07Fh,080h
+                db 0E0h,01Fh,0,0FFh,07Fh,080h
+                db 0FFh,0,0FFh,0,0FFh,0
+                db 0FCh,3,3,0FCh,0FFh,0
+                db 0FDh,2,00Bh,0F4h,0FFh,0
+                db 0FCh,3,3,0FCh,0FFh,0
+                db 0FCh,3,3,0FCh,0FFh,0
+                db 0FEh,1,7,0F8h,0FFh,0
+                db 0FFh,0,00Fh,0F0h,0FFh,0
+                db 0FFh,0,00Fh,0F0h,0FFh,0
+                db 0FCh,3,3,0FCh,0FFh,0
+                db 0F0h,00Fh,0,0FFh,0FFh,0
+                db 0E0h,01Fh,0,0FFh,07Fh,080h
+                db 0C4h,03Bh,2,0FDh,03Fh,0C0h
+                db 0C4h,03Bh,062h,09Dh,03Fh,0C0h
+                db 0C4h,03Bh,2,0FDh,03Fh,0C0h
+                db 0C4h,03Bh,2,0FDh,03Fh,0C0h
+                db 0FCh,3,3,0FCh,0FFh,0
+                db 0FEh,1,7,0F8h,0FFh,0
+                db 0FCh,3,063h,09Ch,0FFh,0
+                db 0F8h,7,0F1h,00Eh,0FFh,0
+                db 0F1h,00Eh,0F8h,7,0FFh,0
+                db 0F1h,00Eh,0F8h,7,0FFh,0
+                db 0F3h,00Ch,0FCh,3,0FFh,0
+                db 0F3h,00Ch,0FCh,3,0FFh,0
+                db 0E3h,01Ch,0FCh,3,07Fh,080h
+                db 0E3h,01Ch,0FCh,3,07Fh,080h
+                db 7,3,7,7
+                db 0FFh,0,0E7h,018h,0FFh,0
+                db 0FFh,0,081h,07Eh,0FFh,0
+                db 0FFh,0,0,0FFh,0FFh,0
+                db 0FEh,1,0,0FFh,07Fh,080h
+                db 0FEh,1,0,0FFh,07Fh,080h
+                db 0F8h,7,0,0FFh,01Fh,0E0h
+                db 0F8h,7,0,0FFh,01Fh,0E0h
+                db 0FFh,0,0FFh,0,0FFh,0
+                db 0FFh,0,0,0FFh,0FFh,0
+                db 0FFh,0,042h,0BDh,0FFh,0
+                db 0FFh,0,0,0FFh,0FFh,0
+                db 0FFh,0,0,0FFh,0FFh,0
+                db 0FFh,0,081h,07Eh,0FFh,0
+                db 0FFh,0,0C3h,03Ch,0FFh,0
+                db 0FFh,0,0C3h,03Ch,0FFh,0
+                db 0FFh,0,0,0FFh,0FFh,0
+                db 0FCh,3,0,0FFh,03Fh,0C0h
+                db 0F8h,7,0,0FFh,01Fh,0E0h
+                db 0F1h,00Eh,0,0FFh,08Fh,070h
+                db 0F1h,00Eh,018h,0E7h,08Fh,070h
+                db 0F1h,00Eh,0,0FFh,08Fh,070h
+                db 0F1h,00Eh,0,0FFh,08Fh,070h
+                db 0FFh,0,0,0FFh,0FFh,0
+                db 0FFh,0,081h,07Eh,0FFh,0
+                db 0FFh,0,018h,0E7h,0FFh,0
+                db 0FEh,1,03Ch,0C3h,07Fh,080h
+                db 0FCh,3,07Eh,081h,03Fh,0C0h
+                db 0FCh,3,07Eh,081h,03Fh,0C0h
+                db 0FCh,3,0FFh,0,03Fh,0C0h
+                db 0FCh,3,0FFh,0,03Fh,0C0h
+                db 0F8h,7,0FFh,0,01Fh,0E0h
+                db 0F8h,7,0FFh,0,01Fh,0E0h
+                db 7,2,7,7
+                db 0FFh,0,0F9h,6,0FFh,0
+                db 0FFh,0,0E0h,01Fh,07Fh,080h
+                db 0FFh,0,0C0h,03Fh,03Fh,0C0h
+                db 0FFh,0,080h,07Fh,01Fh,0E0h
+                db 0FFh,0,080h,07Fh,01Fh,0E0h
+                db 0FEh,1,0,0FFh,7,0F8h
+                db 0FEh,1,0,0FFh,7,0F8h
+                db 0FFh,0,0FFh,0,0FFh,0
+                db 0FFh,0,0C0h,03Fh,03Fh,0C0h
+                db 0FFh,0,0D0h,02Fh,0BFh,040h
+                db 0FFh,0,0C0h,03Fh,03Fh,0C0h
+                db 0FFh,0,0C0h,03Fh,03Fh,0C0h
+                db 0FFh,0,0E0h,01Fh,07Fh,080h
+                db 0FFh,0,0F0h,00Fh,0FFh,0
+                db 0FFh,0,0F0h,00Fh,0FFh,0
+                db 0FFh,0,0C0h,03Fh,03Fh,0C0h
+                db 0FFh,0,0,0FFh,00Fh,0F0h
+                db 0FEh,1,0,0FFh,7,0F8h
+                db 0FCh,3,040h,0BFh,023h,0DCh
+                db 0FCh,3,046h,0B9h,023h,0DCh
+                db 0FCh,3,040h,0BFh,023h,0DCh
+                db 0FCh,3,040h,0BFh,023h,0DCh
+                db 0FFh,0,0C0h,03Fh,03Fh,0C0h
+                db 0FFh,0,0E0h,01Fh,07Fh,080h
+                db 0FFh,0,0C6h,039h,03Fh,0C0h
+                db 0FFh,0,08Fh,070h,01Fh,0E0h
+                db 0FFh,0,01Fh,0E0h,08Fh,070h
+                db 0FFh,0,01Fh,0E0h,08Fh,070h
+                db 0FFh,0,03Fh,0C0h,0CFh,030h
+                db 0FFh,0,03Fh,0C0h,0CFh,030h
+                db 0FEh,1,03Fh,0C0h,0C7h,038h
+                db 0FEh,1,03Fh,0C0h,0C7h,038h
+                db 7,6,7,7
 
 code_end:
 
