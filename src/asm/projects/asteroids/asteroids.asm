@@ -26,10 +26,27 @@
 ULAPLUS_AUTO equ 1              ; 1 = ULAplus nutzen, 0 = nie anfassen (nur Classic)
 ULA_DETECT  equ 0               ; 1 = per Ruecklesen erkennen (geht auf "The Spectrum" nicht), 0 = blind schreiben
 ULA_START_ON equ 1              ; 1 = ULAplus sofort an, 0 = Classic, Taste C schaltet ein
-STARS_FAR   equ 6               ; Sterne je Ebene (mindestens 1 je Ebene, zusammen <= 85)
-STARS_MID   equ 4
-STARS_NEAR  equ 3
+STARS_FAR   equ 8               ; Sterne je Ebene im Einzelspiel (mindestens 1 je Ebene, zusammen <= 85)
+STARS_MID   equ 6
+STARS_NEAR  equ 4
 NSTARS      equ STARS_FAR+STARS_MID+STARS_NEAR
+; zu zweit weniger Sterne (Bildzeit): fern -2, mittel -2, nah -1 (mindestens 1 je Ebene)
+        if STARS_FAR>2
+STARS2_FAR  equ STARS_FAR-2
+        else
+STARS2_FAR  equ STARS_FAR
+        endif
+        if STARS_MID>2
+STARS2_MID  equ STARS_MID-2
+        else
+STARS2_MID  equ STARS_MID
+        endif
+        if STARS_NEAR>1
+STARS2_NEAR equ STARS_NEAR-1
+        else
+STARS2_NEAR equ STARS_NEAR
+        endif
+NSTARS2     equ STARS2_FAR+STARS2_MID+STARS2_NEAR
 
 VARS        equ 0xB600
 STAR_BASE   equ 0xB700
@@ -42,6 +59,11 @@ DISP_A      equ 0x17            ; 48K-ROM, Bank 7 bei 0xC000, Bank 5 sichtbar
 END_FAR     equ (STAR_BASE+3*STARS_FAR) and 255
 END_MID     equ (STAR_BASE+3*(STARS_FAR+STARS_MID)) and 255
 END_NEAR    equ (STAR_BASE+3*NSTARS) and 255
+ST_MID      equ (STAR_BASE+3*STARS_FAR) and 255                     ; Anfang der mittleren Ebene
+ST_NEAR     equ (STAR_BASE+3*(STARS_FAR+STARS_MID)) and 255         ; Anfang der nahen Ebene
+END2_FAR    equ (STAR_BASE+3*STARS2_FAR) and 255
+END2_MID    equ (STAR_BASE+3*(STARS_FAR+STARS2_MID)) and 255
+END2_NEAR   equ (STAR_BASE+3*(STARS_FAR+STARS_MID+STARS2_NEAR)) and 255
 RNG_SEED    equ 0xACE1
 
 ; ---- Variablen -------------------------------------------------------
@@ -118,6 +140,8 @@ v_gp        equ VARS+0x91       ; 2 Byte Hilfszeiger
 v_lvbuf     equ VARS+0x93       ; 2 Ziffern + 0
 v_tcnt      equ VARS+0x96       ; Titel: Bildzaehler (welcher Textteil wird erneuert)
 v_tdirty    equ VARS+0x97       ; Menuezeile sofort neu zeichnen (2 Bilder)
+v_nst       equ VARS+0x98       ; aktive Sterne (Einzelspiel NSTARS, zu zweit NSTARS2)
+v_nst4      equ VARS+0x99       ; dasselbe mal 4 (Slotgroesse)
 v_ch        equ VARS+0xA0       ; AY-Treiber: 3 Kanaele x CH_SZ (Folgenzeiger 2, Rest, Periode 2, Vol, Flags, dper, dvol)
 CH_SZ       equ 10
 v_sfc       equ VARS+0xBE       ; aktueller Kanal
@@ -1995,6 +2019,11 @@ rnd_y:
 ; Sterne
 ; stars_init: Anfangsverteilung, alte-Pixel-Slots mit "nichts loeschen" fuellen
 stars_init:
+        ld a,NSTARS
+        ld (v_nst),a
+        add a,a
+        add a,a
+        ld (v_nst4),a
         ld hl,STAR_BASE
         ld de,rows_far
         ld b,STARS_FAR
@@ -2050,6 +2079,7 @@ sl_l:   push bc
 ; erase_stars: die Pixel loeschen, die in diesem Puffer zuletzt gesetzt wurden
 ; (Slots werden per SP gelesen: je Stern 4 Byte = Adresse, ~Maske, 0)
 erase_stars:
+        call stars_mode
         di
         ld (v_sp),sp
         ld a,(v_buf)
@@ -2057,7 +2087,8 @@ erase_stars:
         ld sp,SLOT0
         jr z,es_go
         ld sp,SLOT1
-es_go:  ld b,NSTARS
+es_go:  ld a,(v_nst)
+        ld b,a
 es_l:   pop hl
         pop de
         ld a,(hl)
@@ -2068,11 +2099,74 @@ es_l:   pop hl
         ei
         ret
 
+; stars_mode: Sternanzahl dem Spielmodus anpassen (Einzelspiel NSTARS, zu zweit NSTARS2).
+; Bei einem Wechsel zuerst die alten Sterne beider Puffer loeschen, dann Slots neu
+; (nichts zu loeschen) und die Schleifenenden der drei Ebenen umpatchen.
+stars_mode:
+        ld a,(v_two)
+        or a
+        ld a,NSTARS
+        jr z,sm_n
+        ld a,NSTARS2
+sm_n:   ld hl,v_nst
+        cp (hl)
+        ret z
+        ld c,a                  ; C = neue Anzahl
+        di
+        ld (v_sp),sp
+        ld b,(hl)
+        ld sp,SLOT0
+sm_e0:  pop hl
+        pop de
+        ld a,(hl)
+        and e
+        ld (hl),a
+        djnz sm_e0
+        ld a,(v_nst)
+        ld b,a
+        ld sp,SLOT1
+sm_e1:  pop hl
+        pop de
+        ld a,(hl)
+        and e
+        ld (hl),a
+        djnz sm_e1
+        ld sp,(v_sp)
+        ei
+        ld a,c
+        ld (v_nst),a
+        add a,a
+        add a,a
+        ld (v_nst4),a
+        ld hl,SLOT0
+        ld de,0x4000
+        call si_slots
+        ld hl,SLOT1
+        ld de,0xC000
+        call si_slots
+        ld a,(v_two)
+        or a
+        jr nz,sm_2
+        ld a,END_FAR
+        ld (pt_f+1),a
+        ld a,END_MID
+        ld (pt_m+1),a
+        ld a,END_NEAR
+        ld (pt_n+1),a
+        ret
+sm_2:   ld a,END2_FAR
+        ld (pt_f+1),a
+        ld a,END2_MID
+        ld (pt_m+1),a
+        ld a,END2_NEAR
+        ld (pt_n+1),a
+        ret
+
 ; starpass: eine Ebene bewegen und zeichnen
 ;   slo/shi = Geschwindigkeit (8.8) nach links, endv = Low-Byte hinter dem letzten
 ;   Stern der Ebene, rows = Zeilenliste fuer das Wiederauftauchen
 ;   HL = Sternzeiger, IX = Slotzeiger (laufen weiter)
-starpass macro slo,shi,endv,rows
+starpass macro slo,shi,endv,rows,pat
         local lp,ok,dr
 lp:     ld a,(hl)
         sub slo
@@ -2132,22 +2226,27 @@ dr:     ld e,b
         push de                 ;       Adresse (Slots rueckwaerts per SP geschrieben)
         inc hl                  ; naechster Stern
         ld a,l
-        cp endv
+pat:    cp endv                 ; Operand wird von stars_mode umgepatcht
         jp nz,lp
         endm
 
 move_draw_stars:
         di
         ld (v_sp),sp
+        ld a,(v_nst4)
+        ld l,a
         ld a,(v_buf)
         or a
-        ld sp,SLOT0+NSTARS*4
-        jr z,md_go
-        ld sp,SLOT1+NSTARS*4
-md_go:  ld hl,STAR_BASE
-        starpass 0x40,0,END_FAR,rows_far        ; fern: 0,25 Pixel/Bild
-        starpass 0x80,0,END_MID,rows_mid        ; mittel: 0,5 Pixel/Bild
-        starpass 0x00,1,END_NEAR,rows_near      ; nah: 1 Pixel/Bild
+        ld h,SLOT0>>8
+        jr z,md_hs
+        ld h,SLOT1>>8
+md_hs:  ld sp,hl                ; Slots werden rueckwaerts ab Ende geschrieben
+        ld hl,STAR_BASE
+        starpass 0x40,0,END_FAR,rows_far,pt_f   ; fern: 0,25 Pixel/Bild
+        ld l,ST_MID
+        starpass 0x80,0,END_MID,rows_mid,pt_m   ; mittel: 0,5 Pixel/Bild
+        ld l,ST_NEAR
+        starpass 0x00,1,END_NEAR,rows_near,pt_n ; nah: 1 Pixel/Bild
         ld sp,(v_sp)
         ei
         ret
