@@ -952,13 +952,53 @@ ms_cur: ld a,(pl_dir)
         ret z                   ; Wand voraus: stehen bleiben
         jr ms_go
 ms_between:
-        ld a,(pl_dir)           ; zwischen Kacheln nur Umkehren
+        ld a,(pl_dir)           ; zwischen Kacheln: Umkehren, sonst Abbiegen kurz vor/nach der Kachelmitte
         xor 2
         ld b,a
         ld a,(pl_want)
         cp b
-        jr nz,ms_go
+        jr nz,ms_nr
         ld (pl_dir),a
+        jr ms_go
+ms_nr:  ld a,(pl_dir)
+        ld b,a
+        ld a,(pl_want)
+        xor b
+        and 1
+        jr z,ms_go              ; gleiche Richtung: weiter
+        ld a,b                  ; Abbiegewunsch: Achse der Fahrtrichtung waehlen
+        and 1
+        ld hl,pl_x
+        jr nz,ms_cn
+        ld hl,pl_y
+ms_cn:  ld a,(hl)
+        ld c,a                  ; C = Position auf der Fahrachse
+        and 7
+        ld d,a                  ; D = Abstand zur Kachelmitte dahinter
+        cp 4
+        jr c,ms_sb
+        cp 5
+        jr c,ms_go              ; genau dazwischen: kein Abbiegen
+        ld a,8                  ; bis zu 3 Pixel vor der Mitte: auf die Mitte vorziehen
+        sub d
+        add a,c
+        jr ms_try
+ms_sb:  ld a,c                  ; bis zu 3 Pixel nach der Mitte: auf die Mitte zurueck
+        sub d
+ms_try: ld (hl),a
+        push hl
+        push bc
+        ld a,(pl_want)
+        call can_move
+        pop bc
+        pop hl
+        jr nz,ms_snap
+        ld (hl),c               ; Abbiegen nicht moeglich: Position zurueck
+        jr ms_go
+ms_snap:
+        ld a,(pl_want)
+        ld (pl_dir),a
+        call eat                ; die Kachelmitte zaehlt als erreicht
 ms_go:  ld a,(pl_dir)
         or a
         jr z,ms_up
