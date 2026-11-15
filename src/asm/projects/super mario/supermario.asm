@@ -1,6 +1,6 @@
 ; ===========================================================
 ;  SUPERMARIO (Feuerwehr-Jump'n'Run)  -  ZX Spectrum 128K
-;  Stufe 2: Laufen, Springen, Schwerkraft, Kollision (klein/gross), Doppelpuffer, ULAplus
+;  Stufe 3: Laufen, Springen, Kollision, Scrolling in 8-Pixel-Schritten (64 Kacheln breit), Doppelpuffer, ULAplus
 ;  Assembler: pasmo   (pasmo --tapbas --name supermario supermario.asm supermario.tap)
 ;  Diese Datei wird aus src/supermario.asm.in + tools/gen.py erzeugt.
 ;
@@ -37,6 +37,8 @@ GRAV            equ 0038h               ; Schwerkraft je Bild
 JUMPV           equ 0500h               ; Absprunggeschwindigkeit (5 Pixel/Bild nach oben)
 CUTV            equ 0200h               ; Feuer losgelassen: Aufstieg auf 2 Pixel/Bild begrenzen
 MAXFALL         equ 0600h
+CAMTR_R         equ 136                 ; ab dieser Bildschirm-x scrollt die Kamera nach rechts
+CAMTR_L         equ 104                 ; unter dieser Bildschirm-x nach links
 
 ; ---- Variablen (VARS, bei Start geloescht) ----
 V_BANK          equ VARS+0              ; Zeichenpuffer: 0 = Bank 5 (4000h), 80h = Bank 7 (0C000h)
@@ -86,7 +88,24 @@ V_FLGOFF        equ VARS+58             ; Wort
 V_SAVEY         equ VARS+60
 V_CY            equ VARS+61
 V_X             equ VARS+62
-VARS_LEN        equ 64
+CAM             equ VARS+64             ; Kameraposition in Zellen (Ziel)
+BCAM0           equ VARS+65             ; Kamera, die Puffer 0 gerade zeigt
+BCAM1           equ VARS+66
+V_CAMD          equ VARS+67             ; Kamera des gezeichneten Puffers
+V_CI            equ VARS+68
+V_TP            equ VARS+69             ; Wort
+V_KB            equ VARS+71
+V_J             equ VARS+72
+V_M0            equ VARS+73
+V_M1            equ VARS+74
+V_M2            equ VARS+75
+V_R             equ VARS+76
+V_MB            equ VARS+77
+V_MP            equ VARS+78             ; Wort
+V_IP            equ VARS+80             ; Wort: Zeiger in scroll_idx
+V_AH            equ VARS+82
+V_DIR           equ VARS+83             ; 0 = Kamera rechts, 1 = links
+VARS_LEN        equ 96
 
                 org 6000h
 
@@ -134,6 +153,7 @@ pal_loop:       ld bc,0BF3Bh            ; Registerport
 main_loop:      call read_input
                 call update_player
                 call restore_old
+                call sync_cam
                 call draw_player
 main_wait:      halt                    ; auf den naechsten Bildwechsel warten
                 call flip
@@ -267,6 +287,9 @@ new_game:       xor a
                 ld (OLD0),a
                 ld (OLD1),a
                 ld (INPOLD),a
+                ld (CAM),a
+                ld (BCAM0),a
+                ld (BCAM1),a
                 ld (VY),a
                 ld (VY+1),a
                 ld (V_JREQ),a
@@ -290,6 +313,8 @@ ds_col:         push hl
                 ld a,c
                 cp 16
                 jr nz,ds_col
+                ld de,48                ; Zeilenabstand der Welt = 64
+                add hl,de
                 inc b
                 ld a,b
                 cp 12
@@ -555,6 +580,7 @@ um_neg:         ld hl,(PV)
 um_st:          ld (PX),hl
                 call hcollide
                 call vertical
+                call camera
 ; ---- Animation
                 ld a,(PGND)
                 or a
@@ -615,11 +641,15 @@ an_stand:       xor a
 ; Merker je Puffer: gueltig, x, Groesse
 ; ---------------------------------------------------------
 restore_old:    ld hl,OLD0
+                ld de,BCAM0
                 ld a,(V_BANK)
                 or a
                 jr z,ro_a
                 ld hl,OLD1
-ro_a:           ld a,(hl)
+                ld de,BCAM1
+ro_a:           ld a,(de)
+                ld (V_CAMD),a
+                ld a,(hl)
                 or a
                 ret z
                 inc hl
@@ -631,22 +661,20 @@ ro_a:           ld a,(hl)
                 inc hl
                 ld a,(hl)
                 ld (V_RY),a
-                ld a,(V_RX)             ; Kachelspalten von x bis x+15
+                ld a,(V_RX)             ; Zellspalten von x bis x+15
                 rrca
                 rrca
                 rrca
-                rrca
-                and 0Fh
+                and 1Fh
                 ld (V_TX0),a
                 ld a,(V_RX)
                 add a,15
                 rrca
                 rrca
                 rrca
-                rrca
-                and 0Fh
+                and 1Fh
                 ld (V_TX1),a
-                ld a,(V_RS)             ; Kachelzeilen von y bis y+H-1
+                ld a,(V_RS)             ; Zellzeilen von y bis y+H-1
                 or a
                 ld a,15
                 jr z,ro_h
@@ -657,31 +685,18 @@ ro_h:           ld b,a
                 rrca
                 rrca
                 rrca
-                rrca
-                and 0Fh
+                and 1Fh
                 ld (V_RTY1),a
                 ld a,(V_RY)
                 rrca
                 rrca
                 rrca
-                rrca
-                and 0Fh
+                and 1Fh
                 ld b,a
 ro_row:         ld a,(V_TX0)
                 ld c,a
 ro_col:         push bc
-                ld a,b                  ; Karten-Index = ty*16 + tx
-                add a,a
-                add a,a
-                add a,a
-                add a,a
-                or c
-                ld e,a
-                ld d,0
-                ld hl,level_map
-                add hl,de
-                ld a,(hl)
-                call draw_tile
+                call draw_cell
                 pop bc
                 ld a,(V_TX1)
                 cp c
@@ -693,6 +708,248 @@ ro_cd:          ld a,(V_RTY1)
                 ret z
                 inc b
                 jr ro_row
+
+; ---------------------------------------------------------
+; Kamera: Bildschirm-x ueber/unter der Zone -> eine Zelle (8 Pixel) scrollen, x um 8 anpassen
+; ---------------------------------------------------------
+camera:         ld a,(PX+1)
+                cp CAMTR_R
+                jr c,cm_l
+                ld a,(CAM)
+                cp CAMMAX
+                ret nc
+                inc a
+                ld (CAM),a
+                ld a,(PX+1)
+                sub 8
+                ld (PX+1),a
+                ret
+cm_l:           cp CAMTR_L
+                ret nc
+                ld a,(CAM)
+                or a
+                ret z
+                dec a
+                ld (CAM),a
+                ld a,(PX+1)
+                add a,8
+                ld (PX+1),a
+                ret
+
+; ---------------------------------------------------------
+; draw_cell: B = Zellzeile (0..23), C = Bildschirmspalte (0..31); zeichnet die Weltzelle (V_CAMD + C)
+; aus der Kachelkarte in den Zeichenpuffer (8 Pixelzeilen + Attribut). Zerstoert alle Register.
+; ---------------------------------------------------------
+draw_cell:      push bc
+                ld a,(V_CAMD)
+                add a,c
+                ld e,a                  ; Weltzelle
+                ld a,b
+                and 1
+                add a,a
+                ld d,a
+                ld a,e
+                and 1
+                or d
+                ld (V_CI),a             ; Zelle in der Kachel: 0 TL, 1 TR, 2 BL, 3 BR
+                ld a,e
+                srl a
+                ld e,a                  ; Welt-Kachelspalte
+                ld a,b
+                srl a
+                ld l,a
+                ld h,0
+                add hl,hl
+                add hl,hl
+                add hl,hl
+                add hl,hl
+                add hl,hl
+                add hl,hl               ; ty*64
+                ld d,0
+                add hl,de
+                ld de,level_map
+                add hl,de
+                ld e,(hl)               ; Kachel-Instanz
+                ld d,0
+                ld hl,tile_ptr
+                add hl,de
+                add hl,de
+                ld e,(hl)
+                inc hl
+                ld d,(hl)
+                ex de,hl                ; HL = Kachel-Daten
+                ld (V_TP),hl
+                ld a,(V_CI)
+                add a,a
+                add a,a
+                add a,a
+                ld c,a
+                ld b,0
+                add hl,bc               ; HL = Pixel der Zelle
+                pop bc
+                push bc
+                call cell_addr
+                call blit8
+                pop bc
+                call attr_addr
+                ld hl,(V_TP)
+                ld a,(V_CI)
+                add a,32
+                ld c,a
+                ld b,0
+                add hl,bc
+                ld a,(hl)
+                ld (de),a
+                ret
+
+; ---------------------------------------------------------
+; sync_cam: Zeichenpuffer schrittweise auf die Zielkamera bringen (nur Zellen neu zeichnen, die sich aendern)
+; ---------------------------------------------------------
+sync_cam:       ld hl,BCAM0
+                ld a,(V_BANK)
+                or a
+                jr z,sy_a
+                ld hl,BCAM1
+sy_a:           ld a,(CAM)
+                ld c,(hl)
+                cp c
+                ret z
+                jr c,sy_left
+                ld a,c                  ; rechts: Grenzen ab c
+                ld (V_KB),a
+                xor a
+                ld (V_DIR),a
+                inc c
+                jr sy_go
+sy_left:        dec c
+                ld a,c                  ; links: Grenzen ab c-1
+                ld (V_KB),a
+                ld a,1
+                ld (V_DIR),a
+sy_go:          ld (hl),c
+                ld a,c
+                ld (V_CAMD),a
+                push hl
+                call scroll_step
+                pop hl
+                jr sy_a
+
+scroll_step:    ld a,(V_BANK)
+                or 58h
+                ld (V_AH+0),a           ; Attribut-Highbyte-Basis zwischenspeichern (V_AHB = V_AH)
+                ld hl,scroll_idxR
+                ld a,(V_DIR)
+                or a
+                jr z,ss_d
+                ld hl,scroll_idxL
+ss_d:           ld a,(V_KB)
+                ld e,a
+                ld d,0
+                add hl,de
+                add hl,de
+                ld (V_IP),hl
+                xor a
+                ld (V_J),a
+ss_col:         ld hl,(V_IP)
+                ld c,(hl)
+                inc hl
+                ld b,(hl)
+                inc hl
+                ld (V_IP),hl            ; BC = Liste dieser Spalte
+ss_ent:         ld a,(bc)               ; E-Basis
+                ld l,a
+                inc bc
+                ld a,(bc)               ; D-Basis, 0 = Ende
+                or a
+                jr z,ss_cn
+                ld h,a
+                inc bc
+                ld a,(V_J)              ; Spalte und Puffer einsetzen
+                or l
+                ld l,a
+                ld a,(V_BANK)
+                or h
+                ld h,a
+                and 18h                 ; Attribut-Highbyte vorbereiten
+                rrca
+                rrca
+                rrca
+                ld d,a
+                ld a,(V_AH)             ; = Bank | 58h (siehe oben)
+                or d
+                ld d,a                  ; D = Attribut-Highbyte (merken)
+                ld a,(bc)               ; Zeiger auf die Zellgrafik
+                ld e,a
+                inc bc
+                ld a,(bc)
+                inc bc
+                or a
+                jr z,ss_emp
+                push de                 ; D merken
+                ld d,a
+                ld a,(de)
+                ld (hl),a
+                inc de
+                inc h
+                ld a,(de)
+                ld (hl),a
+                inc de
+                inc h
+                ld a,(de)
+                ld (hl),a
+                inc de
+                inc h
+                ld a,(de)
+                ld (hl),a
+                inc de
+                inc h
+                ld a,(de)
+                ld (hl),a
+                inc de
+                inc h
+                ld a,(de)
+                ld (hl),a
+                inc de
+                inc h
+                ld a,(de)
+                ld (hl),a
+                inc de
+                inc h
+                ld a,(de)
+                ld (hl),a
+                pop de
+                ld h,d                  ; HL = Attributadresse
+                ld a,(bc)
+                inc bc
+                ld (hl),a
+                jr ss_ent
+ss_emp:         xor a                   ; leere Zelle: 8 Nullzeilen
+                ld (hl),a
+                inc h
+                ld (hl),a
+                inc h
+                ld (hl),a
+                inc h
+                ld (hl),a
+                inc h
+                ld (hl),a
+                inc h
+                ld (hl),a
+                inc h
+                ld (hl),a
+                inc h
+                ld (hl),a
+                ld h,d
+                ld a,(bc)
+                inc bc
+                ld (hl),a
+                jr ss_ent
+ss_cn:          ld a,(V_J)
+                inc a
+                ld (V_J),a
+                cp 32
+                jr c,ss_col
+                ret
 
 ; ---------------------------------------------------------
 ; Spieler zeichnen: Bild (Groesse, Richtung, Phase) in der Verschiebung (x and 6)/2,
@@ -963,16 +1220,21 @@ dp_o:           ld (hl),1
 tile_solid:     ld a,b
                 cp 12
                 jr nc,ts_yes
-                add a,a
-                add a,a
-                add a,a
-                add a,a
-                or c
-                ld e,a
+                ld l,a
+                ld h,0
+                add hl,hl
+                add hl,hl
+                add hl,hl
+                add hl,hl
+                add hl,hl
+                add hl,hl               ; ty*64
+                ld e,c
                 ld d,0
-                ld hl,level_map
+                add hl,de
+                ld de,level_map
                 add hl,de
                 ld e,(hl)
+                ld d,0
                 ld hl,solid_tab
                 add hl,de
                 ld a,(hl)
@@ -1006,13 +1268,20 @@ cr_h:           ld (V_H),a
                 ld (V_TY0),a
                 ret
 
-; solid_col: A = Pixel-x -> NZ wenn eine Kachel dieser Spalte (Zeilen V_TY0..V_TY1) fest ist
-solid_col:      rrca
+; px_tx: A = Bildschirm-x in Pixeln -> C = Weltkachel (Kamera in Zellen: tx = (CAM + x/8) / 2)
+px_tx:          rrca
                 rrca
                 rrca
-                rrca
-                and 0Fh
+                and 1Fh
                 ld c,a
+                ld a,(CAM)
+                add a,c
+                srl a
+                ld c,a
+                ret
+
+; solid_col: A = Pixel-x -> NZ wenn eine Kachel dieser Spalte (Zeilen V_TY0..V_TY1) fest ist
+solid_col:      call px_tx
                 ld a,(V_TY0)
                 ld b,a
 sc_l:           call tile_solid
@@ -1026,22 +1295,12 @@ sc_l:           call tile_solid
 
 ; solid_row: B = ty -> NZ wenn die Kachel unter einer Koerperkante (V_XL / V_XR) fest ist
 solid_row:      ld a,(V_XL)
-                rrca
-                rrca
-                rrca
-                rrca
-                and 0Fh
-                ld c,a
+                call px_tx
                 call tile_solid
                 or a
                 ret nz
                 ld a,(V_XR)
-                rrca
-                rrca
-                rrca
-                rrca
-                and 0Fh
-                ld c,a
+                call px_tx
                 call tile_solid
                 or a
                 ret
@@ -1097,18 +1356,34 @@ hcollide:       call calc_rows
                 add a,13
                 call solid_col
                 ret z
+                ld a,(CAM)              ; Kachelkanten liegen bei x = q (mod 16), q = 8 * (CAM and 1)
+                and 1
+                add a,a
+                add a,a
+                add a,a
+                ld c,a
                 ld a,(PX+1)
                 add a,13
+                sub c
                 and 0F0h
+                add a,c
                 sub 14
                 jr hc_snap
 hc_left:        ld a,(PX+1)
                 add a,2
                 call solid_col
                 ret z
+                ld a,(CAM)
+                and 1
+                add a,a
+                add a,a
+                add a,a
+                ld c,a
                 ld a,(PX+1)
                 add a,2
+                sub c
                 and 0F0h
+                add a,c
                 add a,14
 hc_snap:        ld h,a
                 ld l,0
@@ -1240,7 +1515,7 @@ vt_probe:       call set_edges
 ; Texte
 ; ---------------------------------------------------------
 txt_title:      db "FEUERWEHRMANN",0
-txt_stage:      db "STUFE 2 - SPRINGEN",0
+txt_stage:      db "STUFE 3 - SCROLLEN",0
 txt_start:      db "FEUER ODER LEERTASTE = START",0
 txt_keys:       db "O P LAUFEN SPACE SPRUNG G=GROSS",0
 
@@ -1261,22 +1536,22 @@ tile_ptr:
                 dw tile_cloud_r_0
                 dw tile_sky_1
                 dw tile_coin_1
-                dw tile_sky_2
+                dw tile_stone
                 dw tile_brick
                 dw tile_chest
+                dw tile_sky_2
                 dw tile_sky_3
-                dw tile_stone
+                dw tile_barrel
                 dw tile_hill_l_3
                 dw tile_hill_m_3
                 dw tile_hill_r_3
-                dw tile_barrel
                 dw tile_hydrant
                 dw tile_grass
                 dw tile_dirt
 
 ; ---- fest (1) oder frei (0) je Kachel-Instanz ----
 solid_tab:
-                db 0,0,0,0,0,0,1,1,0,1,0,0,0,1,1,1,1
+                db 0,0,0,0,0,1,1,1,0,0,1,0,0,0,1,1,1
 
 ; ---- Kacheln: TL,TR,BL,BR je 8 Byte, dann 4 Attribute ----
 tile_sky_0:
@@ -1309,12 +1584,12 @@ tile_coin_1:
                 db 00Eh,00Eh,00Eh,00Fh,7,3,0,0
                 db 070h,070h,070h,0F0h,0E0h,0C0h,0,0
                 db 00Ah,00Ah,00Ah,00Ah
-tile_sky_2:
-                db 0,0,0,0,0,0,0,0
-                db 0,0,0,0,0,0,0,0
-                db 0,0,0,0,0,0,0,0
-                db 0,0,0,0,0,0,0,0
-                db 011h,011h,011h,011h
+tile_stone:
+                db 0FFh,080h,080h,080h,080h,080h,080h,080h
+                db 0FFh,080h,080h,080h,080h,080h,080h,080h
+                db 0FFh,8,8,8,8,8,8,8
+                db 0FFh,8,8,8,8,8,8,8
+                db 057h,057h,057h,057h
 tile_brick:
                 db 0FFh,080h,080h,080h,0FFh,8,8,8
                 db 0FFh,080h,080h,080h,0FFh,8,8,8
@@ -1327,18 +1602,24 @@ tile_chest:
                 db 083h,083h,081h,080h,080h,080h,080h,0FFh
                 db 0C1h,0C1h,081h,1,1,1,1,0FFh
                 db 064h,064h,064h,064h
+tile_sky_2:
+                db 0,0,0,0,0,0,0,0
+                db 0,0,0,0,0,0,0,0
+                db 0,0,0,0,0,0,0,0
+                db 0,0,0,0,0,0,0,0
+                db 011h,011h,011h,011h
 tile_sky_3:
                 db 0,0,0,0,0,0,0,0
                 db 0,0,0,0,0,0,0,0
                 db 0,0,0,0,0,0,0,0
                 db 0,0,0,0,0,0,0,0
                 db 019h,019h,019h,019h
-tile_stone:
-                db 0FFh,080h,080h,080h,080h,080h,080h,080h
-                db 0FFh,0,0,0,0,0,0,0
-                db 0FFh,0,0,0,0,0,0,0
-                db 0FFh,080h,080h,080h,080h,080h,080h,080h
-                db 057h,057h,057h,057h
+tile_barrel:
+                db 07Fh,092h,0FFh,0FFh,092h,092h,092h,092h
+                db 0FEh,049h,0FFh,0FFh,049h,049h,049h,049h
+                db 092h,092h,092h,092h,0FFh,0FFh,092h,07Fh
+                db 049h,049h,049h,049h,0FFh,0FFh,049h,0FEh
+                db 06Dh,06Dh,06Dh,06Dh
 tile_hill_l_3:
                 db 0,0,0,0,0,0,0,0
                 db 0,0,0,0,0,0,0,0
@@ -1357,12 +1638,6 @@ tile_hill_r_3:
                 db 0,0,0,0,0,0,0,0
                 db 0,0,0,0,0,0,0,0
                 db 019h,019h,021h,019h
-tile_barrel:
-                db 07Fh,092h,0FFh,0FFh,092h,092h,092h,092h
-                db 0FEh,049h,0FFh,0FFh,049h,049h,049h,049h
-                db 092h,092h,092h,092h,0FFh,0FFh,092h,07Fh
-                db 049h,049h,049h,049h,0FFh,0FFh,049h,0FEh
-                db 06Dh,06Dh,06Dh,06Dh
 tile_hydrant:
                 db 0,0,7,00Fh,00Fh,7,00Fh,03Fh
                 db 0,0,0E0h,0F0h,0F0h,0E0h,0F0h,0FCh
@@ -1371,31 +1646,2282 @@ tile_hydrant:
                 db 076h,076h,076h,076h
 tile_grass:
                 db 0,0,020h,0,2,0ADh,089h,0
-                db 0,0,084h,0,010h,06Bh,024h,0
+                db 0,0,020h,0,2,0ADh,089h,0
                 db 044h,2,082h,010h,021h,2,040h,8
-                db 022h,8,020h,010h,0,022h,8,040h
+                db 044h,2,082h,010h,021h,2,040h,8
                 db 042h,042h,04Dh,04Dh
 tile_dirt:
-                db 0,0,0,2,011h,038h,040h,081h
-                db 010h,2,040h,0DAh,0,2,0,0
-                db 090h,031h,010h,044h,050h,0,0,080h
-                db 019h,8,040h,0,010h,080h,040h,8
+                db 0,010h,0,2,0,040h,2,0DAh
+                db 0,010h,0,2,0,040h,2,0DAh
+                db 0,010h,0,2,0,040h,2,0DAh
+                db 0,010h,0,2,0,040h,2,0DAh
                 db 04Dh,04Dh,04Dh,04Dh
 
-; ---- Karte 16x12 (Kachel-Instanz-Nummern) ----
+; ---- Welt: 64 Kacheln breit, Zeilenabstand 64 (Kachel-Instanz-Nummern) ----
+CAMMAX          equ 96
 level_map:
-                db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-                db 0,0,1,2,0,0,0,0,0,0,0,0,0,1,2,0
-                db 0,0,0,0,0,0,0,0,0,1,2,0,0,0,0,0
-                db 3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3
-                db 3,3,3,3,3,3,4,4,4,3,3,3,3,3,3,3
-                db 3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3
-                db 5,5,5,5,5,6,7,6,7,6,5,5,5,5,5,5
-                db 5,5,5,5,5,5,5,5,5,5,5,5,5,6,6,5
-                db 8,8,8,8,8,8,8,8,8,8,8,9,8,8,8,8
-                db 8,8,00Ah,00Bh,00Ch,8,8,00Dh,8,8,9,9,8,8,00Eh,8
-                db 00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh
-                db 010h,010h,010h,010h,010h,010h,010h,010h,010h,010h,010h,010h,010h,010h,010h,010h
+                db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+                db 0,0,1,2,0,0,0,0,0,0,0,0,0,1,2,0,0,0,0,0,1,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,2,0,0,0,0,0
+                db 0,0,0,0,0,0,0,0,0,1,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,2,0,0,0,0,0,0,0,0,0,0,0,0,0
+                db 3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,4,4,4,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,5
+                db 3,3,3,3,3,3,4,4,4,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,4,4,4,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,5
+                db 3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,6,7,6,7,6,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,5,5
+                db 8,8,8,8,8,6,7,6,7,6,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,5,5,5
+                db 8,8,8,8,8,8,8,8,8,8,8,8,8,6,6,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,6,7,6,8,8,8,8,8,8,8,8,8,8,8,8,8,8,5,5,8,8,8,8,8,8,8,8,8,5,5,5,5
+                db 9,9,9,9,9,9,9,9,9,9,9,5,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,00Ah,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,5,9,9,5,5,5,5,9,9,9,9,00Ah,9,9,5,5,5,5,5
+                db 9,9,00Bh,00Ch,00Dh,9,9,00Ah,9,9,5,5,9,9,00Eh,9,9,9,9,9,00Eh,9,9,9,00Bh,00Ch,00Dh,9,00Ah,00Ah,9,9,9,9,9,9,9,9,9,9,00Bh,00Ch,00Dh,9,5,5,9,5,5,5,5,5,5,9,00Eh,9,00Ah,00Ah,5,5,5,5,5,5
+                db 00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh
+                db 010h,010h,010h,010h,010h,010h,010h,010h,010h,010h,010h,010h,010h,010h,010h,010h,010h,010h,010h,010h,010h,010h,010h,010h,010h,010h,010h,010h,010h,010h,010h,010h,010h,010h,010h,010h,010h,010h,010h,010h,010h,010h,010h,010h,010h,010h,010h,010h,010h,010h,010h,010h,010h,010h,010h,010h,010h,010h,010h,010h,010h,010h,010h,010h
+
+; ---- Zellgrafiken: 34 verschiedene Zellen ----
+cell_gfx:
+                db 0,0,0,0,0,0,0,0
+                db 0,0,0,0,0,0,0,0
+                db 0,0,0,0,0,0,0,0
+                db 0,0,0,0,0,0,0,0
+                db 0,0,020h,0,2,0ADh,089h,0
+                db 044h,2,082h,010h,021h,2,040h,8
+                db 0,010h,0,2,0,040h,2,0DAh
+                db 0,0,0,3,7,00Fh,03Fh,07Fh
+                db 0FFh,0FFh,0FFh,07Fh,03Fh,0,0,0
+                db 0,0,0,0E0h,0F0h,0F8h,0F8h,0FFh
+                db 0FFh,0FFh,0FFh,0FFh,0FFh,0,0,0
+                db 0,0,0,0,0,0,0,0
+                db 0,0,0,7,00Fh,01Fh,01Fh,0FFh
+                db 0,0,0,0C0h,0E0h,0F0h,0FCh,0FEh
+                db 0FFh,0FFh,0FFh,0FEh,0FCh,0,0,0
+                db 0FFh,080h,080h,080h,0FFh,8,8,8
+                db 0,0,3,7,00Fh,00Eh,00Eh,00Eh
+                db 00Eh,00Eh,00Eh,00Fh,7,3,0,0
+                db 0FFh,080h,080h,080h,080h,0FFh,080h,081h
+                db 083h,083h,081h,080h,080h,080h,080h,0FFh
+                db 0,0,0C0h,0E0h,0F0h,070h,070h,070h
+                db 070h,070h,070h,0F0h,0E0h,0C0h,0,0
+                db 0FFh,1,1,1,1,0FFh,1,081h
+                db 0C1h,0C1h,081h,1,1,1,1,0FFh
+                db 07Fh,092h,0FFh,0FFh,092h,092h,092h,092h
+                db 092h,092h,092h,092h,0FFh,0FFh,092h,07Fh
+                db 0FEh,049h,0FFh,0FFh,049h,049h,049h,049h
+                db 049h,049h,049h,049h,0FFh,0FFh,049h,0FEh
+                db 0FFh,080h,080h,080h,080h,080h,080h,080h
+                db 0FFh,8,8,8,8,8,8,8
+                db 0,0,7,00Fh,00Fh,7,00Fh,03Fh
+                db 03Fh,0EFh,0EFh,03Fh,00Fh,00Fh,03Fh,03Fh
+                db 0,0,0E0h,0F0h,0F0h,0E0h,0F0h,0FCh
+                db 0FCh,0F7h,0F7h,0FCh,0F0h,0F0h,0FCh,0FCh
+
+; ---- Scroll-Listen je Zellgrenze (rechts: Zelle k+1 sichtbar machen, links: Zelle k) ----
+sl_none:        db 0,0
+slR_3:
+                db 64,64
+                dw cell_gfx+56
+                db 1
+                db 96,64
+                dw cell_gfx+64
+                db 1
+                db 0,0
+slR_4:
+                db 64,64
+                dw cell_gfx+72
+                db 1
+                db 96,64
+                dw cell_gfx+80
+                db 1
+                db 96,80
+                dw 0
+                db 33
+                db 0,0
+slR_5:
+                db 64,64
+                dw cell_gfx+96
+                db 1
+                db 64,80
+                dw 0
+                db 33
+                db 0,0
+slR_6:
+                db 64,64
+                dw cell_gfx+104
+                db 1
+                db 96,64
+                dw cell_gfx+112
+                db 1
+                db 0,0
+slR_7:
+                db 64,64
+                dw 0
+                db 1
+                db 96,64
+                dw 0
+                db 1
+                db 64,80
+                dw 0
+                db 25
+                db 0,0
+slR_8:
+                db 96,80
+                dw 0
+                db 25
+                db 0,0
+slR_9:
+                db 128,72
+                dw cell_gfx+120
+                db 95
+                db 160,72
+                dw cell_gfx+120
+                db 95
+                db 0,0
+slR_11:
+                db 0,72
+                dw cell_gfx+128
+                db 10
+                db 32,72
+                dw cell_gfx+136
+                db 10
+                db 128,72
+                dw cell_gfx+144
+                db 100
+                db 160,72
+                dw cell_gfx+152
+                db 100
+                db 0,0
+slR_12:
+                db 0,72
+                dw cell_gfx+160
+                db 10
+                db 32,72
+                dw cell_gfx+168
+                db 10
+                db 128,72
+                dw cell_gfx+176
+                db 100
+                db 160,72
+                dw cell_gfx+184
+                db 100
+                db 0,0
+slR_13:
+                db 0,72
+                dw cell_gfx+128
+                db 10
+                db 32,72
+                dw cell_gfx+136
+                db 10
+                db 128,72
+                dw cell_gfx+120
+                db 95
+                db 160,72
+                dw cell_gfx+120
+                db 95
+                db 64,80
+                dw cell_gfx+192
+                db 109
+                db 96,80
+                dw cell_gfx+200
+                db 109
+                db 0,0
+slR_14:
+                db 0,72
+                dw cell_gfx+160
+                db 10
+                db 32,72
+                dw cell_gfx+168
+                db 10
+                db 64,80
+                dw cell_gfx+208
+                db 109
+                db 96,80
+                dw cell_gfx+216
+                db 109
+                db 0,0
+slR_15:
+                db 0,72
+                dw cell_gfx+128
+                db 10
+                db 32,72
+                dw cell_gfx+136
+                db 10
+                db 128,72
+                dw cell_gfx+144
+                db 100
+                db 160,72
+                dw cell_gfx+152
+                db 100
+                db 64,80
+                dw 0
+                db 25
+                db 96,80
+                dw 0
+                db 25
+                db 0,0
+slR_16:
+                db 0,72
+                dw cell_gfx+160
+                db 10
+                db 32,72
+                dw cell_gfx+168
+                db 10
+                db 128,72
+                dw cell_gfx+176
+                db 100
+                db 160,72
+                dw cell_gfx+184
+                db 100
+                db 0,0
+slR_17:
+                db 128,64
+                dw cell_gfx+56
+                db 1
+                db 160,64
+                dw cell_gfx+64
+                db 1
+                db 0,72
+                dw 0
+                db 9
+                db 32,72
+                dw 0
+                db 9
+                db 128,72
+                dw cell_gfx+120
+                db 95
+                db 160,72
+                dw cell_gfx+120
+                db 95
+                db 0,0
+slR_18:
+                db 128,64
+                dw cell_gfx+72
+                db 1
+                db 160,64
+                dw cell_gfx+80
+                db 1
+                db 0,0
+slR_19:
+                db 128,64
+                dw cell_gfx+96
+                db 1
+                db 128,72
+                dw 0
+                db 17
+                db 160,72
+                dw 0
+                db 17
+                db 64,80
+                dw cell_gfx+224
+                db 87
+                db 96,80
+                dw cell_gfx+232
+                db 87
+                db 0,0
+slR_20:
+                db 128,64
+                dw cell_gfx+104
+                db 1
+                db 160,64
+                dw cell_gfx+112
+                db 1
+                db 0,0
+slR_21:
+                db 128,64
+                dw 0
+                db 1
+                db 160,64
+                dw 0
+                db 1
+                db 0,80
+                dw cell_gfx+224
+                db 87
+                db 32,80
+                dw cell_gfx+232
+                db 87
+                db 0,0
+slR_23:
+                db 0,80
+                dw 0
+                db 25
+                db 32,80
+                dw 0
+                db 25
+                db 64,80
+                dw 0
+                db 25
+                db 96,80
+                dw 0
+                db 25
+                db 0,0
+slR_25:
+                db 64,64
+                dw cell_gfx+56
+                db 1
+                db 96,64
+                dw cell_gfx+64
+                db 1
+                db 192,72
+                dw cell_gfx+120
+                db 95
+                db 224,72
+                dw cell_gfx+120
+                db 95
+                db 0,0
+slR_26:
+                db 64,64
+                dw cell_gfx+72
+                db 1
+                db 96,64
+                dw cell_gfx+80
+                db 1
+                db 0,0
+slR_27:
+                db 64,64
+                dw cell_gfx+96
+                db 1
+                db 64,80
+                dw cell_gfx+240
+                db 118
+                db 96,80
+                dw cell_gfx+248
+                db 118
+                db 0,0
+slR_28:
+                db 64,64
+                dw cell_gfx+104
+                db 1
+                db 96,64
+                dw cell_gfx+112
+                db 1
+                db 64,80
+                dw cell_gfx+256
+                db 118
+                db 96,80
+                dw cell_gfx+264
+                db 118
+                db 0,0
+slR_29:
+                db 64,64
+                dw 0
+                db 1
+                db 96,64
+                dw 0
+                db 1
+                db 192,72
+                dw 0
+                db 17
+                db 224,72
+                dw 0
+                db 17
+                db 64,80
+                dw 0
+                db 25
+                db 96,80
+                dw 0
+                db 25
+                db 0,0
+slR_39:
+                db 64,64
+                dw cell_gfx+56
+                db 1
+                db 96,64
+                dw cell_gfx+64
+                db 1
+                db 64,80
+                dw cell_gfx+240
+                db 118
+                db 96,80
+                dw cell_gfx+248
+                db 118
+                db 0,0
+slR_40:
+                db 64,64
+                dw cell_gfx+72
+                db 1
+                db 96,64
+                dw cell_gfx+80
+                db 1
+                db 64,80
+                dw cell_gfx+256
+                db 118
+                db 96,80
+                dw cell_gfx+264
+                db 118
+                db 0,0
+slR_41:
+                db 64,64
+                dw cell_gfx+96
+                db 1
+                db 64,80
+                dw 0
+                db 25
+                db 96,80
+                dw 0
+                db 25
+                db 0,0
+slR_42:
+                db 64,64
+                dw cell_gfx+104
+                db 1
+                db 96,64
+                dw cell_gfx+112
+                db 1
+                db 0,0
+slR_43:
+                db 64,64
+                dw 0
+                db 1
+                db 96,64
+                dw 0
+                db 1
+                db 0,0
+slR_48:
+                db 96,80
+                dw 0
+                db 33
+                db 0,0
+slR_49:
+                db 64,80
+                dw 0
+                db 33
+                db 0,0
+slR_51:
+                db 64,80
+                dw 0
+                db 25
+                db 0,0
+slR_52:
+                db 96,80
+                dw 0
+                db 25
+                db 0,0
+slR_55:
+                db 64,80
+                dw cell_gfx+192
+                db 109
+                db 96,80
+                dw cell_gfx+200
+                db 109
+                db 0,0
+slR_56:
+                db 64,80
+                dw cell_gfx+208
+                db 109
+                db 96,80
+                dw cell_gfx+216
+                db 109
+                db 0,0
+slR_57:
+                db 0,80
+                dw cell_gfx+192
+                db 109
+                db 32,80
+                dw cell_gfx+200
+                db 109
+                db 64,80
+                dw cell_gfx+192
+                db 109
+                db 96,80
+                dw cell_gfx+200
+                db 109
+                db 0,0
+slR_58:
+                db 0,80
+                dw cell_gfx+208
+                db 109
+                db 32,80
+                dw cell_gfx+216
+                db 109
+                db 64,80
+                dw cell_gfx+208
+                db 109
+                db 96,80
+                dw cell_gfx+216
+                db 109
+                db 0,0
+slR_59:
+                db 0,80
+                dw 0
+                db 25
+                db 32,80
+                dw 0
+                db 25
+                db 64,80
+                dw 0
+                db 25
+                db 96,80
+                dw 0
+                db 25
+                db 0,0
+slR_61:
+                db 128,64
+                dw cell_gfx+56
+                db 1
+                db 160,64
+                dw cell_gfx+64
+                db 1
+                db 0,0
+slR_62:
+                db 128,64
+                dw cell_gfx+72
+                db 1
+                db 160,64
+                dw cell_gfx+80
+                db 1
+                db 0,0
+slR_63:
+                db 128,64
+                dw cell_gfx+96
+                db 1
+                db 192,72
+                dw cell_gfx+120
+                db 95
+                db 224,72
+                dw cell_gfx+120
+                db 95
+                db 0,0
+slR_64:
+                db 128,64
+                dw cell_gfx+104
+                db 1
+                db 160,64
+                dw cell_gfx+112
+                db 1
+                db 0,0
+slR_65:
+                db 128,64
+                dw 0
+                db 1
+                db 160,64
+                dw 0
+                db 1
+                db 0,72
+                dw cell_gfx+128
+                db 10
+                db 32,72
+                dw cell_gfx+136
+                db 10
+                db 192,72
+                dw cell_gfx+144
+                db 100
+                db 224,72
+                dw cell_gfx+152
+                db 100
+                db 0,0
+slR_66:
+                db 0,72
+                dw cell_gfx+160
+                db 10
+                db 32,72
+                dw cell_gfx+168
+                db 10
+                db 192,72
+                dw cell_gfx+176
+                db 100
+                db 224,72
+                dw cell_gfx+184
+                db 100
+                db 0,0
+slR_67:
+                db 0,72
+                dw cell_gfx+128
+                db 10
+                db 32,72
+                dw cell_gfx+136
+                db 10
+                db 192,72
+                dw cell_gfx+120
+                db 95
+                db 224,72
+                dw cell_gfx+120
+                db 95
+                db 0,0
+slR_68:
+                db 0,72
+                dw cell_gfx+160
+                db 10
+                db 32,72
+                dw cell_gfx+168
+                db 10
+                db 0,0
+slR_69:
+                db 0,72
+                dw cell_gfx+128
+                db 10
+                db 32,72
+                dw cell_gfx+136
+                db 10
+                db 192,72
+                dw 0
+                db 17
+                db 224,72
+                dw 0
+                db 17
+                db 0,0
+slR_70:
+                db 0,72
+                dw cell_gfx+160
+                db 10
+                db 32,72
+                dw cell_gfx+168
+                db 10
+                db 0,0
+slR_71:
+                db 0,72
+                dw 0
+                db 9
+                db 32,72
+                dw 0
+                db 9
+                db 64,72
+                dw cell_gfx+120
+                db 95
+                db 96,72
+                dw cell_gfx+120
+                db 95
+                db 0,0
+slR_73:
+                db 64,72
+                dw cell_gfx+144
+                db 100
+                db 96,72
+                dw cell_gfx+152
+                db 100
+                db 0,0
+slR_74:
+                db 64,72
+                dw cell_gfx+176
+                db 100
+                db 96,72
+                dw cell_gfx+184
+                db 100
+                db 0,0
+slR_75:
+                db 64,64
+                dw cell_gfx+56
+                db 1
+                db 96,64
+                dw cell_gfx+64
+                db 1
+                db 192,64
+                dw cell_gfx+128
+                db 10
+                db 224,64
+                dw cell_gfx+136
+                db 10
+                db 64,72
+                dw cell_gfx+120
+                db 95
+                db 96,72
+                dw cell_gfx+120
+                db 95
+                db 0,0
+slR_76:
+                db 64,64
+                dw cell_gfx+72
+                db 1
+                db 96,64
+                dw cell_gfx+80
+                db 1
+                db 192,64
+                dw cell_gfx+160
+                db 10
+                db 224,64
+                dw cell_gfx+168
+                db 10
+                db 0,0
+slR_77:
+                db 64,64
+                dw cell_gfx+96
+                db 1
+                db 192,64
+                dw cell_gfx+128
+                db 10
+                db 224,64
+                dw cell_gfx+136
+                db 10
+                db 64,72
+                dw cell_gfx+144
+                db 100
+                db 96,72
+                dw cell_gfx+152
+                db 100
+                db 0,0
+slR_78:
+                db 64,64
+                dw cell_gfx+104
+                db 1
+                db 96,64
+                dw cell_gfx+112
+                db 1
+                db 192,64
+                dw cell_gfx+160
+                db 10
+                db 224,64
+                dw cell_gfx+168
+                db 10
+                db 64,72
+                dw cell_gfx+176
+                db 100
+                db 96,72
+                dw cell_gfx+184
+                db 100
+                db 0,0
+slR_79:
+                db 64,64
+                dw 0
+                db 1
+                db 96,64
+                dw 0
+                db 1
+                db 192,64
+                dw cell_gfx+128
+                db 10
+                db 224,64
+                dw cell_gfx+136
+                db 10
+                db 64,72
+                dw cell_gfx+120
+                db 95
+                db 96,72
+                dw cell_gfx+120
+                db 95
+                db 0,0
+slR_80:
+                db 192,64
+                dw cell_gfx+160
+                db 10
+                db 224,64
+                dw cell_gfx+168
+                db 10
+                db 96,80
+                dw 0
+                db 33
+                db 0,0
+slR_81:
+                db 192,64
+                dw 0
+                db 9
+                db 224,64
+                dw 0
+                db 9
+                db 64,72
+                dw 0
+                db 9
+                db 96,72
+                dw 0
+                db 9
+                db 64,80
+                dw 0
+                db 33
+                db 0,0
+slR_83:
+                db 64,80
+                dw 0
+                db 25
+                db 0,0
+slR_84:
+                db 96,80
+                dw 0
+                db 25
+                db 0,0
+slR_87:
+                db 64,80
+                dw cell_gfx+224
+                db 87
+                db 96,80
+                dw cell_gfx+232
+                db 87
+                db 0,0
+slR_89:
+                db 0,80
+                dw cell_gfx+224
+                db 87
+                db 32,80
+                dw cell_gfx+232
+                db 87
+                db 0,0
+slR_91:
+                db 0,80
+                dw 0
+                db 25
+                db 32,80
+                dw 0
+                db 25
+                db 64,80
+                dw 0
+                db 25
+                db 96,80
+                dw 0
+                db 25
+                db 0,0
+slR_93:
+                db 64,80
+                dw cell_gfx+224
+                db 87
+                db 96,80
+                dw cell_gfx+232
+                db 87
+                db 0,0
+slR_95:
+                db 0,80
+                dw cell_gfx+224
+                db 87
+                db 32,80
+                dw cell_gfx+232
+                db 87
+                db 0,0
+slR_97:
+                db 128,64
+                dw cell_gfx+56
+                db 1
+                db 160,64
+                dw cell_gfx+64
+                db 1
+                db 192,72
+                dw cell_gfx+224
+                db 87
+                db 224,72
+                dw cell_gfx+232
+                db 87
+                db 0,0
+slR_98:
+                db 128,64
+                dw cell_gfx+72
+                db 1
+                db 160,64
+                dw cell_gfx+80
+                db 1
+                db 0,0
+slR_99:
+                db 128,64
+                dw cell_gfx+96
+                db 1
+                db 0,0
+slR_100:
+                db 128,64
+                dw cell_gfx+104
+                db 1
+                db 160,64
+                dw cell_gfx+112
+                db 1
+                db 0,0
+slR_101:
+                db 128,64
+                dw 0
+                db 1
+                db 160,64
+                dw 0
+                db 1
+                db 192,72
+                dw 0
+                db 17
+                db 224,72
+                dw 0
+                db 17
+                db 0,0
+slR_103:
+                db 0,80
+                dw 0
+                db 25
+                db 32,80
+                dw 0
+                db 25
+                db 0,0
+slR_105:
+                db 64,80
+                dw 0
+                db 25
+                db 96,80
+                dw 0
+                db 25
+                db 0,0
+slR_107:
+                db 64,80
+                dw cell_gfx+240
+                db 118
+                db 96,80
+                dw cell_gfx+248
+                db 118
+                db 0,0
+slR_108:
+                db 64,80
+                dw cell_gfx+256
+                db 118
+                db 96,80
+                dw cell_gfx+264
+                db 118
+                db 0,0
+slR_109:
+                db 64,80
+                dw 0
+                db 25
+                db 96,80
+                dw 0
+                db 25
+                db 0,0
+slR_111:
+                db 0,80
+                dw cell_gfx+192
+                db 109
+                db 32,80
+                dw cell_gfx+200
+                db 109
+                db 64,80
+                dw cell_gfx+192
+                db 109
+                db 96,80
+                dw cell_gfx+200
+                db 109
+                db 0,0
+slR_112:
+                db 0,80
+                dw cell_gfx+208
+                db 109
+                db 32,80
+                dw cell_gfx+216
+                db 109
+                db 64,80
+                dw cell_gfx+208
+                db 109
+                db 96,80
+                dw cell_gfx+216
+                db 109
+                db 0,0
+slR_113:
+                db 64,64
+                dw cell_gfx+56
+                db 1
+                db 96,64
+                dw cell_gfx+64
+                db 1
+                db 0,80
+                dw 0
+                db 25
+                db 32,80
+                dw 0
+                db 25
+                db 64,80
+                dw cell_gfx+192
+                db 109
+                db 96,80
+                dw cell_gfx+200
+                db 109
+                db 0,0
+slR_114:
+                db 64,64
+                dw cell_gfx+72
+                db 1
+                db 96,64
+                dw cell_gfx+80
+                db 1
+                db 64,80
+                dw cell_gfx+208
+                db 109
+                db 96,80
+                dw cell_gfx+216
+                db 109
+                db 0,0
+slR_115:
+                db 64,64
+                dw cell_gfx+96
+                db 1
+                db 64,80
+                dw cell_gfx+224
+                db 87
+                db 96,80
+                dw cell_gfx+232
+                db 87
+                db 0,0
+slR_116:
+                db 64,64
+                dw cell_gfx+104
+                db 1
+                db 96,64
+                dw cell_gfx+112
+                db 1
+                db 0,0
+slR_117:
+                db 64,64
+                dw 0
+                db 1
+                db 96,64
+                dw 0
+                db 1
+                db 0,80
+                dw cell_gfx+224
+                db 87
+                db 32,80
+                dw cell_gfx+232
+                db 87
+                db 0,0
+slR_119:
+                db 192,72
+                dw cell_gfx+224
+                db 87
+                db 224,72
+                dw cell_gfx+232
+                db 87
+                db 0,0
+slR_121:
+                db 128,72
+                dw cell_gfx+224
+                db 87
+                db 160,72
+                dw cell_gfx+232
+                db 87
+                db 0,0
+slR_123:
+                db 64,72
+                dw cell_gfx+224
+                db 87
+                db 96,72
+                dw cell_gfx+232
+                db 87
+                db 0,0
+slR_125:
+                db 192,64
+                dw cell_gfx+224
+                db 87
+                db 224,64
+                dw cell_gfx+232
+                db 87
+                db 0,72
+                dw cell_gfx+224
+                db 87
+                db 32,72
+                dw cell_gfx+232
+                db 87
+                db 0,0
+slL_3:
+                db 64,64
+                dw 0
+                db 1
+                db 96,64
+                dw 0
+                db 1
+                db 0,0
+slL_4:
+                db 64,64
+                dw cell_gfx+56
+                db 1
+                db 96,64
+                dw cell_gfx+64
+                db 1
+                db 96,80
+                dw 0
+                db 25
+                db 0,0
+slL_5:
+                db 64,64
+                dw cell_gfx+72
+                db 1
+                db 64,80
+                dw 0
+                db 25
+                db 0,0
+slL_6:
+                db 64,64
+                dw cell_gfx+96
+                db 1
+                db 96,64
+                dw cell_gfx+80
+                db 1
+                db 0,0
+slL_7:
+                db 64,64
+                dw cell_gfx+104
+                db 1
+                db 96,64
+                dw cell_gfx+112
+                db 1
+                db 64,80
+                dw 0
+                db 33
+                db 0,0
+slL_8:
+                db 96,80
+                dw 0
+                db 33
+                db 0,0
+slL_9:
+                db 128,72
+                dw 0
+                db 17
+                db 160,72
+                dw 0
+                db 17
+                db 0,0
+slL_11:
+                db 0,72
+                dw 0
+                db 9
+                db 32,72
+                dw 0
+                db 9
+                db 128,72
+                dw cell_gfx+120
+                db 95
+                db 160,72
+                dw cell_gfx+120
+                db 95
+                db 0,0
+slL_12:
+                db 0,72
+                dw cell_gfx+128
+                db 10
+                db 32,72
+                dw cell_gfx+136
+                db 10
+                db 128,72
+                dw cell_gfx+144
+                db 100
+                db 160,72
+                dw cell_gfx+152
+                db 100
+                db 0,0
+slL_13:
+                db 0,72
+                dw cell_gfx+160
+                db 10
+                db 32,72
+                dw cell_gfx+168
+                db 10
+                db 128,72
+                dw cell_gfx+176
+                db 100
+                db 160,72
+                dw cell_gfx+184
+                db 100
+                db 64,80
+                dw 0
+                db 25
+                db 96,80
+                dw 0
+                db 25
+                db 0,0
+slL_14:
+                db 0,72
+                dw cell_gfx+128
+                db 10
+                db 32,72
+                dw cell_gfx+136
+                db 10
+                db 64,80
+                dw cell_gfx+192
+                db 109
+                db 96,80
+                dw cell_gfx+200
+                db 109
+                db 0,0
+slL_15:
+                db 0,72
+                dw cell_gfx+160
+                db 10
+                db 32,72
+                dw cell_gfx+168
+                db 10
+                db 128,72
+                dw cell_gfx+120
+                db 95
+                db 160,72
+                dw cell_gfx+120
+                db 95
+                db 64,80
+                dw cell_gfx+208
+                db 109
+                db 96,80
+                dw cell_gfx+216
+                db 109
+                db 0,0
+slL_16:
+                db 0,72
+                dw cell_gfx+128
+                db 10
+                db 32,72
+                dw cell_gfx+136
+                db 10
+                db 128,72
+                dw cell_gfx+144
+                db 100
+                db 160,72
+                dw cell_gfx+152
+                db 100
+                db 0,0
+slL_17:
+                db 128,64
+                dw 0
+                db 1
+                db 160,64
+                dw 0
+                db 1
+                db 0,72
+                dw cell_gfx+160
+                db 10
+                db 32,72
+                dw cell_gfx+168
+                db 10
+                db 128,72
+                dw cell_gfx+176
+                db 100
+                db 160,72
+                dw cell_gfx+184
+                db 100
+                db 0,0
+slL_18:
+                db 128,64
+                dw cell_gfx+56
+                db 1
+                db 160,64
+                dw cell_gfx+64
+                db 1
+                db 0,0
+slL_19:
+                db 128,64
+                dw cell_gfx+72
+                db 1
+                db 128,72
+                dw cell_gfx+120
+                db 95
+                db 160,72
+                dw cell_gfx+120
+                db 95
+                db 64,80
+                dw 0
+                db 25
+                db 96,80
+                dw 0
+                db 25
+                db 0,0
+slL_20:
+                db 128,64
+                dw cell_gfx+96
+                db 1
+                db 160,64
+                dw cell_gfx+80
+                db 1
+                db 0,0
+slL_21:
+                db 128,64
+                dw cell_gfx+104
+                db 1
+                db 160,64
+                dw cell_gfx+112
+                db 1
+                db 0,80
+                dw 0
+                db 25
+                db 32,80
+                dw 0
+                db 25
+                db 0,0
+slL_23:
+                db 0,80
+                dw cell_gfx+224
+                db 87
+                db 32,80
+                dw cell_gfx+232
+                db 87
+                db 64,80
+                dw cell_gfx+224
+                db 87
+                db 96,80
+                dw cell_gfx+232
+                db 87
+                db 0,0
+slL_25:
+                db 64,64
+                dw 0
+                db 1
+                db 96,64
+                dw 0
+                db 1
+                db 192,72
+                dw 0
+                db 17
+                db 224,72
+                dw 0
+                db 17
+                db 0,0
+slL_26:
+                db 64,64
+                dw cell_gfx+56
+                db 1
+                db 96,64
+                dw cell_gfx+64
+                db 1
+                db 0,0
+slL_27:
+                db 64,64
+                dw cell_gfx+72
+                db 1
+                db 64,80
+                dw 0
+                db 25
+                db 96,80
+                dw 0
+                db 25
+                db 0,0
+slL_28:
+                db 64,64
+                dw cell_gfx+96
+                db 1
+                db 96,64
+                dw cell_gfx+80
+                db 1
+                db 64,80
+                dw cell_gfx+240
+                db 118
+                db 96,80
+                dw cell_gfx+248
+                db 118
+                db 0,0
+slL_29:
+                db 64,64
+                dw cell_gfx+104
+                db 1
+                db 96,64
+                dw cell_gfx+112
+                db 1
+                db 192,72
+                dw cell_gfx+120
+                db 95
+                db 224,72
+                dw cell_gfx+120
+                db 95
+                db 64,80
+                dw cell_gfx+256
+                db 118
+                db 96,80
+                dw cell_gfx+264
+                db 118
+                db 0,0
+slL_39:
+                db 64,64
+                dw 0
+                db 1
+                db 96,64
+                dw 0
+                db 1
+                db 64,80
+                dw 0
+                db 25
+                db 96,80
+                dw 0
+                db 25
+                db 0,0
+slL_40:
+                db 64,64
+                dw cell_gfx+56
+                db 1
+                db 96,64
+                dw cell_gfx+64
+                db 1
+                db 64,80
+                dw cell_gfx+240
+                db 118
+                db 96,80
+                dw cell_gfx+248
+                db 118
+                db 0,0
+slL_41:
+                db 64,64
+                dw cell_gfx+72
+                db 1
+                db 64,80
+                dw cell_gfx+256
+                db 118
+                db 96,80
+                dw cell_gfx+264
+                db 118
+                db 0,0
+slL_42:
+                db 64,64
+                dw cell_gfx+96
+                db 1
+                db 96,64
+                dw cell_gfx+80
+                db 1
+                db 0,0
+slL_43:
+                db 64,64
+                dw cell_gfx+104
+                db 1
+                db 96,64
+                dw cell_gfx+112
+                db 1
+                db 0,0
+slL_48:
+                db 96,80
+                dw 0
+                db 25
+                db 0,0
+slL_49:
+                db 64,80
+                dw 0
+                db 25
+                db 0,0
+slL_51:
+                db 64,80
+                dw 0
+                db 33
+                db 0,0
+slL_52:
+                db 96,80
+                dw 0
+                db 33
+                db 0,0
+slL_55:
+                db 64,80
+                dw 0
+                db 25
+                db 96,80
+                dw 0
+                db 25
+                db 0,0
+slL_56:
+                db 64,80
+                dw cell_gfx+192
+                db 109
+                db 96,80
+                dw cell_gfx+200
+                db 109
+                db 0,0
+slL_57:
+                db 0,80
+                dw 0
+                db 25
+                db 32,80
+                dw 0
+                db 25
+                db 64,80
+                dw cell_gfx+208
+                db 109
+                db 96,80
+                dw cell_gfx+216
+                db 109
+                db 0,0
+slL_58:
+                db 0,80
+                dw cell_gfx+192
+                db 109
+                db 32,80
+                dw cell_gfx+200
+                db 109
+                db 64,80
+                dw cell_gfx+192
+                db 109
+                db 96,80
+                dw cell_gfx+200
+                db 109
+                db 0,0
+slL_59:
+                db 0,80
+                dw cell_gfx+208
+                db 109
+                db 32,80
+                dw cell_gfx+216
+                db 109
+                db 64,80
+                dw cell_gfx+208
+                db 109
+                db 96,80
+                dw cell_gfx+216
+                db 109
+                db 0,0
+slL_61:
+                db 128,64
+                dw 0
+                db 1
+                db 160,64
+                dw 0
+                db 1
+                db 0,0
+slL_62:
+                db 128,64
+                dw cell_gfx+56
+                db 1
+                db 160,64
+                dw cell_gfx+64
+                db 1
+                db 0,0
+slL_63:
+                db 128,64
+                dw cell_gfx+72
+                db 1
+                db 192,72
+                dw 0
+                db 17
+                db 224,72
+                dw 0
+                db 17
+                db 0,0
+slL_64:
+                db 128,64
+                dw cell_gfx+96
+                db 1
+                db 160,64
+                dw cell_gfx+80
+                db 1
+                db 0,0
+slL_65:
+                db 128,64
+                dw cell_gfx+104
+                db 1
+                db 160,64
+                dw cell_gfx+112
+                db 1
+                db 0,72
+                dw 0
+                db 9
+                db 32,72
+                dw 0
+                db 9
+                db 192,72
+                dw cell_gfx+120
+                db 95
+                db 224,72
+                dw cell_gfx+120
+                db 95
+                db 0,0
+slL_66:
+                db 0,72
+                dw cell_gfx+128
+                db 10
+                db 32,72
+                dw cell_gfx+136
+                db 10
+                db 192,72
+                dw cell_gfx+144
+                db 100
+                db 224,72
+                dw cell_gfx+152
+                db 100
+                db 0,0
+slL_67:
+                db 0,72
+                dw cell_gfx+160
+                db 10
+                db 32,72
+                dw cell_gfx+168
+                db 10
+                db 192,72
+                dw cell_gfx+176
+                db 100
+                db 224,72
+                dw cell_gfx+184
+                db 100
+                db 0,0
+slL_68:
+                db 0,72
+                dw cell_gfx+128
+                db 10
+                db 32,72
+                dw cell_gfx+136
+                db 10
+                db 0,0
+slL_69:
+                db 0,72
+                dw cell_gfx+160
+                db 10
+                db 32,72
+                dw cell_gfx+168
+                db 10
+                db 192,72
+                dw cell_gfx+120
+                db 95
+                db 224,72
+                dw cell_gfx+120
+                db 95
+                db 0,0
+slL_70:
+                db 0,72
+                dw cell_gfx+128
+                db 10
+                db 32,72
+                dw cell_gfx+136
+                db 10
+                db 0,0
+slL_71:
+                db 0,72
+                dw cell_gfx+160
+                db 10
+                db 32,72
+                dw cell_gfx+168
+                db 10
+                db 64,72
+                dw 0
+                db 9
+                db 96,72
+                dw 0
+                db 9
+                db 0,0
+slL_73:
+                db 64,72
+                dw cell_gfx+120
+                db 95
+                db 96,72
+                dw cell_gfx+120
+                db 95
+                db 0,0
+slL_74:
+                db 64,72
+                dw cell_gfx+144
+                db 100
+                db 96,72
+                dw cell_gfx+152
+                db 100
+                db 0,0
+slL_75:
+                db 64,64
+                dw 0
+                db 1
+                db 96,64
+                dw 0
+                db 1
+                db 192,64
+                dw 0
+                db 9
+                db 224,64
+                dw 0
+                db 9
+                db 64,72
+                dw cell_gfx+176
+                db 100
+                db 96,72
+                dw cell_gfx+184
+                db 100
+                db 0,0
+slL_76:
+                db 64,64
+                dw cell_gfx+56
+                db 1
+                db 96,64
+                dw cell_gfx+64
+                db 1
+                db 192,64
+                dw cell_gfx+128
+                db 10
+                db 224,64
+                dw cell_gfx+136
+                db 10
+                db 0,0
+slL_77:
+                db 64,64
+                dw cell_gfx+72
+                db 1
+                db 192,64
+                dw cell_gfx+160
+                db 10
+                db 224,64
+                dw cell_gfx+168
+                db 10
+                db 64,72
+                dw cell_gfx+120
+                db 95
+                db 96,72
+                dw cell_gfx+120
+                db 95
+                db 0,0
+slL_78:
+                db 64,64
+                dw cell_gfx+96
+                db 1
+                db 96,64
+                dw cell_gfx+80
+                db 1
+                db 192,64
+                dw cell_gfx+128
+                db 10
+                db 224,64
+                dw cell_gfx+136
+                db 10
+                db 64,72
+                dw cell_gfx+144
+                db 100
+                db 96,72
+                dw cell_gfx+152
+                db 100
+                db 0,0
+slL_79:
+                db 64,64
+                dw cell_gfx+104
+                db 1
+                db 96,64
+                dw cell_gfx+112
+                db 1
+                db 192,64
+                dw cell_gfx+160
+                db 10
+                db 224,64
+                dw cell_gfx+168
+                db 10
+                db 64,72
+                dw cell_gfx+176
+                db 100
+                db 96,72
+                dw cell_gfx+184
+                db 100
+                db 0,0
+slL_80:
+                db 192,64
+                dw cell_gfx+128
+                db 10
+                db 224,64
+                dw cell_gfx+136
+                db 10
+                db 96,80
+                dw 0
+                db 25
+                db 0,0
+slL_81:
+                db 192,64
+                dw cell_gfx+160
+                db 10
+                db 224,64
+                dw cell_gfx+168
+                db 10
+                db 64,72
+                dw cell_gfx+120
+                db 95
+                db 96,72
+                dw cell_gfx+120
+                db 95
+                db 64,80
+                dw 0
+                db 25
+                db 0,0
+slL_83:
+                db 64,80
+                dw 0
+                db 33
+                db 0,0
+slL_84:
+                db 96,80
+                dw 0
+                db 33
+                db 0,0
+slL_87:
+                db 64,80
+                dw 0
+                db 25
+                db 96,80
+                dw 0
+                db 25
+                db 0,0
+slL_89:
+                db 0,80
+                dw 0
+                db 25
+                db 32,80
+                dw 0
+                db 25
+                db 0,0
+slL_91:
+                db 0,80
+                dw cell_gfx+224
+                db 87
+                db 32,80
+                dw cell_gfx+232
+                db 87
+                db 64,80
+                dw cell_gfx+224
+                db 87
+                db 96,80
+                dw cell_gfx+232
+                db 87
+                db 0,0
+slL_93:
+                db 64,80
+                dw 0
+                db 25
+                db 96,80
+                dw 0
+                db 25
+                db 0,0
+slL_95:
+                db 0,80
+                dw 0
+                db 25
+                db 32,80
+                dw 0
+                db 25
+                db 0,0
+slL_97:
+                db 128,64
+                dw 0
+                db 1
+                db 160,64
+                dw 0
+                db 1
+                db 192,72
+                dw 0
+                db 17
+                db 224,72
+                dw 0
+                db 17
+                db 0,0
+slL_98:
+                db 128,64
+                dw cell_gfx+56
+                db 1
+                db 160,64
+                dw cell_gfx+64
+                db 1
+                db 0,0
+slL_99:
+                db 128,64
+                dw cell_gfx+72
+                db 1
+                db 0,0
+slL_100:
+                db 128,64
+                dw cell_gfx+96
+                db 1
+                db 160,64
+                dw cell_gfx+80
+                db 1
+                db 0,0
+slL_101:
+                db 128,64
+                dw cell_gfx+104
+                db 1
+                db 160,64
+                dw cell_gfx+112
+                db 1
+                db 192,72
+                dw cell_gfx+224
+                db 87
+                db 224,72
+                dw cell_gfx+232
+                db 87
+                db 0,0
+slL_103:
+                db 0,80
+                dw cell_gfx+224
+                db 87
+                db 32,80
+                dw cell_gfx+232
+                db 87
+                db 0,0
+slL_105:
+                db 64,80
+                dw cell_gfx+224
+                db 87
+                db 96,80
+                dw cell_gfx+232
+                db 87
+                db 0,0
+slL_107:
+                db 64,80
+                dw 0
+                db 25
+                db 96,80
+                dw 0
+                db 25
+                db 0,0
+slL_108:
+                db 64,80
+                dw cell_gfx+240
+                db 118
+                db 96,80
+                dw cell_gfx+248
+                db 118
+                db 0,0
+slL_109:
+                db 64,80
+                dw cell_gfx+256
+                db 118
+                db 96,80
+                dw cell_gfx+264
+                db 118
+                db 0,0
+slL_111:
+                db 0,80
+                dw 0
+                db 25
+                db 32,80
+                dw 0
+                db 25
+                db 64,80
+                dw 0
+                db 25
+                db 96,80
+                dw 0
+                db 25
+                db 0,0
+slL_112:
+                db 0,80
+                dw cell_gfx+192
+                db 109
+                db 32,80
+                dw cell_gfx+200
+                db 109
+                db 64,80
+                dw cell_gfx+192
+                db 109
+                db 96,80
+                dw cell_gfx+200
+                db 109
+                db 0,0
+slL_113:
+                db 64,64
+                dw 0
+                db 1
+                db 96,64
+                dw 0
+                db 1
+                db 0,80
+                dw cell_gfx+208
+                db 109
+                db 32,80
+                dw cell_gfx+216
+                db 109
+                db 64,80
+                dw cell_gfx+208
+                db 109
+                db 96,80
+                dw cell_gfx+216
+                db 109
+                db 0,0
+slL_114:
+                db 64,64
+                dw cell_gfx+56
+                db 1
+                db 96,64
+                dw cell_gfx+64
+                db 1
+                db 64,80
+                dw cell_gfx+192
+                db 109
+                db 96,80
+                dw cell_gfx+200
+                db 109
+                db 0,0
+slL_115:
+                db 64,64
+                dw cell_gfx+72
+                db 1
+                db 64,80
+                dw cell_gfx+208
+                db 109
+                db 96,80
+                dw cell_gfx+216
+                db 109
+                db 0,0
+slL_116:
+                db 64,64
+                dw cell_gfx+96
+                db 1
+                db 96,64
+                dw cell_gfx+80
+                db 1
+                db 0,0
+slL_117:
+                db 64,64
+                dw cell_gfx+104
+                db 1
+                db 96,64
+                dw cell_gfx+112
+                db 1
+                db 0,80
+                dw 0
+                db 25
+                db 32,80
+                dw 0
+                db 25
+                db 0,0
+slL_119:
+                db 192,72
+                dw 0
+                db 17
+                db 224,72
+                dw 0
+                db 17
+                db 0,0
+slL_121:
+                db 128,72
+                dw 0
+                db 17
+                db 160,72
+                dw 0
+                db 17
+                db 0,0
+slL_123:
+                db 64,72
+                dw 0
+                db 9
+                db 96,72
+                dw 0
+                db 9
+                db 0,0
+slL_125:
+                db 192,64
+                dw 0
+                db 9
+                db 224,64
+                dw 0
+                db 9
+                db 0,72
+                dw 0
+                db 9
+                db 32,72
+                dw 0
+                db 9
+                db 0,0
+scroll_idxR:
+                dw sl_none
+                dw sl_none
+                dw sl_none
+                dw slR_3
+                dw slR_4
+                dw slR_5
+                dw slR_6
+                dw slR_7
+                dw slR_8
+                dw slR_9
+                dw sl_none
+                dw slR_11
+                dw slR_12
+                dw slR_13
+                dw slR_14
+                dw slR_15
+                dw slR_16
+                dw slR_17
+                dw slR_18
+                dw slR_19
+                dw slR_20
+                dw slR_21
+                dw sl_none
+                dw slR_23
+                dw sl_none
+                dw slR_25
+                dw slR_26
+                dw slR_27
+                dw slR_28
+                dw slR_29
+                dw sl_none
+                dw sl_none
+                dw sl_none
+                dw sl_none
+                dw sl_none
+                dw sl_none
+                dw sl_none
+                dw sl_none
+                dw sl_none
+                dw slR_39
+                dw slR_40
+                dw slR_41
+                dw slR_42
+                dw slR_43
+                dw sl_none
+                dw sl_none
+                dw sl_none
+                dw sl_none
+                dw slR_48
+                dw slR_49
+                dw sl_none
+                dw slR_51
+                dw slR_52
+                dw sl_none
+                dw sl_none
+                dw slR_55
+                dw slR_56
+                dw slR_57
+                dw slR_58
+                dw slR_59
+                dw sl_none
+                dw slR_61
+                dw slR_62
+                dw slR_63
+                dw slR_64
+                dw slR_65
+                dw slR_66
+                dw slR_67
+                dw slR_68
+                dw slR_69
+                dw slR_70
+                dw slR_71
+                dw sl_none
+                dw slR_73
+                dw slR_74
+                dw slR_75
+                dw slR_76
+                dw slR_77
+                dw slR_78
+                dw slR_79
+                dw slR_80
+                dw slR_81
+                dw sl_none
+                dw slR_83
+                dw slR_84
+                dw sl_none
+                dw sl_none
+                dw slR_87
+                dw sl_none
+                dw slR_89
+                dw sl_none
+                dw slR_91
+                dw sl_none
+                dw slR_93
+                dw sl_none
+                dw slR_95
+                dw sl_none
+                dw slR_97
+                dw slR_98
+                dw slR_99
+                dw slR_100
+                dw slR_101
+                dw sl_none
+                dw slR_103
+                dw sl_none
+                dw slR_105
+                dw sl_none
+                dw slR_107
+                dw slR_108
+                dw slR_109
+                dw sl_none
+                dw slR_111
+                dw slR_112
+                dw slR_113
+                dw slR_114
+                dw slR_115
+                dw slR_116
+                dw slR_117
+                dw sl_none
+                dw slR_119
+                dw sl_none
+                dw slR_121
+                dw sl_none
+                dw slR_123
+                dw sl_none
+                dw slR_125
+                dw sl_none
+                dw sl_none
+scroll_idxL:
+                dw sl_none
+                dw sl_none
+                dw sl_none
+                dw slL_3
+                dw slL_4
+                dw slL_5
+                dw slL_6
+                dw slL_7
+                dw slL_8
+                dw slL_9
+                dw sl_none
+                dw slL_11
+                dw slL_12
+                dw slL_13
+                dw slL_14
+                dw slL_15
+                dw slL_16
+                dw slL_17
+                dw slL_18
+                dw slL_19
+                dw slL_20
+                dw slL_21
+                dw sl_none
+                dw slL_23
+                dw sl_none
+                dw slL_25
+                dw slL_26
+                dw slL_27
+                dw slL_28
+                dw slL_29
+                dw sl_none
+                dw sl_none
+                dw sl_none
+                dw sl_none
+                dw sl_none
+                dw sl_none
+                dw sl_none
+                dw sl_none
+                dw sl_none
+                dw slL_39
+                dw slL_40
+                dw slL_41
+                dw slL_42
+                dw slL_43
+                dw sl_none
+                dw sl_none
+                dw sl_none
+                dw sl_none
+                dw slL_48
+                dw slL_49
+                dw sl_none
+                dw slL_51
+                dw slL_52
+                dw sl_none
+                dw sl_none
+                dw slL_55
+                dw slL_56
+                dw slL_57
+                dw slL_58
+                dw slL_59
+                dw sl_none
+                dw slL_61
+                dw slL_62
+                dw slL_63
+                dw slL_64
+                dw slL_65
+                dw slL_66
+                dw slL_67
+                dw slL_68
+                dw slL_69
+                dw slL_70
+                dw slL_71
+                dw sl_none
+                dw slL_73
+                dw slL_74
+                dw slL_75
+                dw slL_76
+                dw slL_77
+                dw slL_78
+                dw slL_79
+                dw slL_80
+                dw slL_81
+                dw sl_none
+                dw slL_83
+                dw slL_84
+                dw sl_none
+                dw sl_none
+                dw slL_87
+                dw sl_none
+                dw slL_89
+                dw sl_none
+                dw slL_91
+                dw sl_none
+                dw slL_93
+                dw sl_none
+                dw slL_95
+                dw sl_none
+                dw slL_97
+                dw slL_98
+                dw slL_99
+                dw slL_100
+                dw slL_101
+                dw sl_none
+                dw slL_103
+                dw sl_none
+                dw slL_105
+                dw sl_none
+                dw slL_107
+                dw slL_108
+                dw slL_109
+                dw sl_none
+                dw slL_111
+                dw slL_112
+                dw slL_113
+                dw slL_114
+                dw slL_115
+                dw slL_116
+                dw slL_117
+                dw sl_none
+                dw slL_119
+                dw sl_none
+                dw slL_121
+                dw sl_none
+                dw slL_123
+                dw sl_none
+                dw slL_125
+                dw sl_none
+                dw sl_none
 
 BLK_SMALL       equ 98
 BLK_LARGE       equ 196

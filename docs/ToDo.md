@@ -108,7 +108,7 @@ Jede Stufe liefert: Code, `tools/test_stageN.py`, Screenshot oder GIF, `supermar
 - Sprunghilfen: Nachsprungzeit an Kanten und Sprungpuffer
 - Sprung- und Lande-Animation; Feinabstimmung von Sprunghöhe und Gravitation mit deinem Feedback
 
-- State: InProgress
+- State: Done
 
 ### Stufe 3: Scrolling in 8-Pixel-Schritten
 
@@ -118,7 +118,7 @@ Jede Stufe liefert: Code, `tools/test_stageN.py`, Screenshot oder GIF, `supermar
 - Levelgrenzen links und rechts
 - Messung: Frames pro Sekunde, Reserve für Gegner, Sound und zweiten Spieler (dieses Ergebnis entscheidet über Stufe 4 bis 6)
 
-- State: Open
+- State: InProgress
 
 ### Stufe 4: Zwei Spieler
 
