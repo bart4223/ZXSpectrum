@@ -2,146 +2,187 @@
 
 ## Eckdaten
 
+- Zielsystem: nur ZX Spectrum 128K (keine 48K-Fassung), nur eine Fassung mit erweiterter ULA (ULAplus, 64 Farben, immer an), Gerät "The Spectrum" (Erweiterte Farben an), Test im Headless-Emulator
+- Sprache/Assembler: Z80-Assembler, pasmo (`--tapbas --name supermario`)
+- Dateien: `supermario.asm` und `supermario.tap` (pro Stufe, dazu Screenshot/GIF)
 - Kacheln: 16x16 Pixel (2x2 Zeichenzellen), Bildschirm 16x12 Kacheln (256x192)
 - Figuren: klein 16x16, groß 16x32, beide von Anfang an
 - Scrolling: zuerst in 8-Pixel-Schritten (eine Zeichenzelle), später weich (Pixel)
-- Spieler: Ein- und Zwei-Spieler-Modus, gleichzeitig (Joy1 und Joy2, Sinclair IF2: Joy1 = Tasten 6-0, Joy2 = Tasten 1-5), Tastatur als Alternative
+- Spieler: Ein- und Zwei-Spieler-Modus, gleichzeitig (Joy1 = Tasten 6-0, Joy2 = Tasten 1-5, Sinclair IF2)
+- Grafik: eigene Figuren, eigene Gegner, eigene Level (keine Originalgrafiken, -level oder -musik von Nintendo)
+- Sound: nur über den AY-Chip, kein Beeper
 
-## Thema: Ritter
+## Thema: Feuerwehr
 
 | Element | Festlegung |
 |---|---|
-| Spieler 1 | Junger Ritter (rote Farbgebung); klein = ohne Rüstung, groß = mit Helm und Rüstung |
-| Spieler 2 | Zweiter Ritter in anderer Farbe (blau), gleiche Grafik, andere Farbattribute |
-| Gegner | Skelette (Läufer), Skelett-Schildträger (Panzer-Typ: Schild bleibt liegen, kann geschubst werden), Fledermäuse (fliegen in Wellen), später Geister |
-| Endgegner | Drache am Ende des Burg-Levels (mehrere Treffer, Feuerspucken) |
-| Kacheln | Himmel, Gras/Erde, Stein, Ziegel, Truhe (statt Fragezeichen-Block), leere Truhe, Fass/Säule (statt Röhre), Münze, Fackel, Zugbrücke, Fahne |
-| Power-up 1 | Rüstung (Ritter wird groß, Hitbox 16x32) |
-| Power-up 2 | Feuerball (Ritter wirft Feuerbälle, springen von Boden und Wänden ab) |
-| Power-up 3 | Stern (kurze Unverwundbarkeit, blinkende Farben) |
-| Welten | Wiese, Wald, Höhle, Burg, Drachenhöhle |
+| Spieler 1 | Feuerwehrmann, rote Jacke, gelber Helm; klein = ohne Ausrüstung, groß = mit Atemschutz |
+| Spieler 2 | Feuerwehrmann mit blauer Jacke, gleiche Grafik, andere Farbattribute |
+| Gegner | Flämmchen (Läufer), Glutkäfer (Panzer-Typ: nach dem Draufspringen bleibt die Glutkugel liegen und kann geschubst werden), Rauchwolken (fliegen in Wellen) |
+| Endgegner | Feuermonster am Ende der Fabrikhalle/Burg (mehrere Treffer, Funkenwurf) |
+| Kacheln | Himmel, Wiese, Erde, Stein, Ziegel, **Truhe** (bleibt Truhe), leere Truhe, Tonne, Hydrant, Münze, Wolken, Hügel |
+| Power-up 1 | Atemschutz-Ausrüstung (Feuerwehrmann wird groß, Hitbox 16x32) |
+| Power-up 2 | Wasserstrahl aus dem Schlauch (löscht Flämmchen, prallt vom Boden ab) |
+| Power-up 3 | Löschschaum-Anzug (kurze Unverwundbarkeit, wechselnde Farben) |
+| Welten | Wiese/Wohnhaus, Fabrikhalle, Hochhaus, brennende Burg |
+
+Zu bestätigen: Wasserstrahl, Schaum-Anzug, Feuermonster und die Welten sind Vorschläge, du hast bisher nur Feuerwehrmann und "Truhen bleiben Truhen" festgelegt.
+
+## Lehren aus den bisherigen Spielen (gelten ab Stufe 0)
+
+**Start und Bau**
+- Quelltext endet immer mit `end start`, sonst setzt pasmo kein `RANDOMIZE USR` in den Lader, BASIC meldet `0 OK, 30:1` und das Spiel startet nicht (so passiert bei Tron und beim ersten Mario-Build).
+- `--name supermario` setzt den Bandnamen; `tools/check_tap.py` liest den Lader aus (CLEAR, LOAD "" CODE, RANDOMIZE USR) und läuft bei jedem Build.
+- Der Headless-Emulator springt direkt auf die Startadresse und merkt einen kaputten Lader nicht, deshalb wird der Lader separat geprüft.
+- Abgabe immer über `tools/deliver.sh N`: baut das Standard-TAP frisch und prüft die Schalter. Nie `build/*.tap` nach den Tests kopieren, weil Tests es mit Testschaltern überschreiben.
+- Code lückenlos ab `0x6000` statt `org 0x8000` (spart ca. 2,7 KB); nach jedem Codewachstum "frei bis VARS" prüfen (Pacman: Code überschrieb Variablen).
+
+**Farben und Anzeige**
+- ULAplus ist fest eingeschaltet, es gibt keine Classic-Fassung und keinen Umschalter. Nie per Rücklesen erkennen (Schreiben von Modus 1 auf Port 0xFF3B lässt "The Spectrum" mit leerer Palette zurück): Palette und Modus blind schreiben. Palettenindex = (Flash*2+Bright)*16 + (ink | paper+8); Spritefarben müssen freie Attribute nutzen, Hintergrundfarben belegen eigene Slots.
+- Nur für die Diagnose bei Geräteproblemen gibt es einen Schalter `ULAPLUS equ 1/0` im Quelltext: `0` baut ein Test-TAP ohne Portzugriff, das nie ausgeliefert wird (bei Asteroids half genau das, den Fehler einzugrenzen).
+- Du hast am Gerät keinen Bildschirmrahmen eingestellt: keine Effekte über Rahmen oder Palettenpapier. Blitze und Treffer-Effekte über Attribute der Spielfläche lösen.
+- Doppelpuffer wie bei Pacman: Port 0x7FFD = 0x17, Anzeige Bank 5/7, statische Grafik in beide Puffer, Figuren nur in den Zeichenpuffer, Änderungen zwei Bilder lang zeichnen.
+
+**Rechenzeit**
+- Bildzeit ist das knappe Gut: 70.908 T-States bei 50 fps, sonst Rückfall auf 25 fps ("Ruckeln"). Spitzen sind das Problem, nicht der Durchschnitt.
+- Pro Stufe im Emulator Arbeit je Bild loggen und nach Funktionen auswerten; Messung über mehrere Tastenfolgen mitteln.
+- Sparmaßnahmen in dieser Reihenfolge: weniger gleichzeitige Objekte, zeilenbegrenzte Sprites, leere Zeilen beim Zeichnen/Löschen auslassen, weniger Hintergrunddetails.
+- Zwei-Spieler-Kontexttausch (`swap_ctx`) kostet ca. 1,9k T je Bild; Kontextblock je Spieler mit IX-Offsets, neue Felder am Blockende anhängen und Blockgröße vorher prüfen.
+
+**Bedienung und Ablauf**
+- Standard-Lautstärke 3, Taste T schaltet durch, Titelmenü per Joystick (links/hoch = 1, rechts/runter = 2 Spieler), Taste P = Pause (keine Taste C, da nur ULAplus).
+- Rekord nur pro Sitzung (Speichern auf dem Gerät klappt nicht).
+- Steuerungshilfen sind oft wichtiger als neue Features (Pacman-Eckenhilfe: "geht jetzt viel besser"). Für Mario heißt das: kurze Nachsprungzeit an Kanten ("Coyote-Time") und Sprungpuffer (Sprungtaste kurz vor der Landung merken).
+- Extras streichen, wenn sie die Steuerung überladen.
+
+**Tests**
+- Pro Stufe `tools/test_stageN.py` ("ALLES OK"), dazu Sammellauf `run_all_tests.sh` ("ALLE STUFEN OK", läuft im Hintergrund); vor jeder Abgabe alle alten Tests erneut laufen lassen.
+- Testschalter per Textersetzung im Quelltext (`TESTBUILD`, Level- und Seed-Konstanten) statt Sonderpfade im Spiel.
+- Zufall nur ziehen, wenn nötig, sonst verschieben sich Testläufe; bei Änderungen Szenarien verlängern statt Schwellen aufzuweichen.
+- Zwei-Spieler-Funktionen über ein komplettes zweites Spiel prüfen (Spielende, Titel, Neustart); Zustand pro Spiel in der Routine "neues Spiel" zurücksetzen.
+- Nach Zustandswechseln lange Zeichenroutinen (Titel, Abspann) erst einige Bilder später prüfen; Hilfsroutinen mit push/pop absichern, wenn sie Register zerstören.
 
 ## Technische Grundentscheidungen
 
 | Thema | Entscheidung |
 |---|---|
-| Bildspeicher | Doppelpuffer ab Stufe 1 (Port 0x7FFD = 0x17, Bank 5/7), wie bei Pacman |
 | Level-Format | Textkarten `levels/LevelNN.map` (ein Zeichen = eine 16x16-Kachel), Build-Skript wandelt sie in Bytes um |
-| Level-Größe | Höhe 12 Kacheln, Breite bis 200 Kacheln (Byte pro Kachel, ca. 2,4 KB pro Level) |
+| Level-Größe | Höhe 12 Kacheln, Breite bis 200 Kacheln (ca. 2,4 KB pro Level) |
 | Kollision | Kachelbasiert gegen die Level-Karte; Hitbox kleiner als Sprite, Höhe abhängig von klein/groß |
-| Physik | Festkomma 8.8 für Position und Geschwindigkeit, Gravitation pro Frame, variable Sprunghöhe (Taste gehalten = höher) |
-| Scrolling | Kamera-Position in Pixeln, Darstellung zunächst nur in 8er-Schritten; Kamera mit Totzone |
-| Zwei Spieler | Kontext-Tausch (swap_ctx: Zustandsblock tauschen) statt doppelter Routinen, wie bei Pacman; Kamera folgt dem vorderen Spieler, der hintere kann nicht links aus dem Bild laufen |
-| Speicher | Code gegen VARS prüfen (Erfahrung Pacman), Level-Daten und Sprites in eigenen 128K-Bänken, VARS bei Bedarf verschieben |
-| Farben | Attribut-Clash beachten: Himmel pro Zelle eine Farbe, Sprites mit freien Attributen; ULAplus automatisch, Fallback Classic |
-| Bauprozess | Template `src/mario.asm.in` + Python-Generator (Kacheln, Sprites, Tabellen, Level) -> `tools/build.sh` -> pasmo |
-| Test | Headless-Emulator mit Tasten-Skript, Frame-Dump als .scr -> PNG, Speicher-Dump zum Prüfen von Variablen |
+| Physik | Festkomma 8.8 für Position und Geschwindigkeit, Gravitation pro Frame, variable Sprunghöhe |
+| Scrolling | Kamera-Position in Pixeln, zuerst 8er-Schritte, Kamera mit Totzone |
+| Zwei Spieler | Kontext-Tausch statt doppelter Routinen; Kamera folgt dem vorderen Spieler, der hintere kann nicht links aus dem Bild |
+| Sound | AY-Chip, kleiner Effektplayer ab Stufe 5, volle Musik in Stufe 9 |
+| Farben | ULAplus immer an, Palette blind geschrieben; Himmel pro Zelle eine Farbe, Sprites mit freien Attributen; Palette pro Welt wechselbar (Wiese, Fabrik, Hochhaus, Burg) |
+| Bauprozess | Template `src/supermario.asm.in` + Python-Generator `tools/gen.py` (Kacheln, Sprites, Karte) -> `tools/build.sh` -> pasmo |
 
 ## Stufen
 
-### Stufe 0: Kacheln und statisches Level
+Jede Stufe liefert: Code, `tools/test_stageN.py`, Screenshot oder GIF, `supermario.tap` und `supermario.asm`, mit deiner Freigabe vor der nächsten.
 
-- Kachelsatz 16x16: Himmel, Gras, Stein, Ziegel, Truhe, Fass, Münze, Fackel
-- Figuren-Studien: Ritter klein (16x16) und groß (16x32), Skelett, Fledermaus, jeweils in zwei Bildern als Vorschau
-- Ein Bildschirm (16x12) mit Wiesenlandschaft, Wolken und Hügeln als Deko
+### Stufe 0: Kacheln und statisches Level (gebaut)
+
+- Kachelsatz 16x16: Himmel, Wiese, Erde, Stein, Ziegel, Truhe, Tonne, Hydrant, Münze, Wolken, Hügel
+- Figuren-Studien: Feuerwehrmann klein und groß, zweiter Feuerwehrmann, Flämmchen, Rauchwolke
+- Ein Bildschirm (16x12) mit Landschaft
+- Stand: gebaut mit normalen Spectrum-Farben, Lader mit `end start` korrigiert; Rückmeldung vom Gerät und Freigabe stehen aus
+- Nacharbeit: auf ULAplus umstellen (eigene 64-Farben-Palette für Himmel, Wiese, Erde, Feuerwehrmann, Flämmchen) und Grafik der Figuren verfeinern
 
 - State: InProgress
 
-### Stufe 1: Ritter läuft (klein und groß)
+### Stufe 1: Feuerwehrmann läuft (klein und groß)
 
-- Ritter mit Joystick und Tastatur nach links/rechts, Blickrichtung, Laufanimation (2 bis 3 Bilder)
-- Taste zum Umschalten klein/groß zum Testen (wird in Stufe 6 durch das Power-up ersetzt)
+- Laufen mit Joystick und Tastatur, Blickrichtung, Laufanimation (2 bis 3 Bilder)
+- Testtaste zum Umschalten klein/groß (wird in Stufe 7 durch die Ausrüstung ersetzt)
 - Doppelpuffer, Beschleunigung und Abbremsen
-- Noch ohne Schwerkraft, Figur steht auf dem Boden
-- Tempo bei dir abfragen, "ein wenig langsamer/schneller" ist bei dir Standard
+- Wechsel auf Code ab `0x6000` und Messung der Bildzeit als Grundlinie
+- Titelbild-Rohfassung mit Start per Joystick
 
 - State: Open
 
 ### Stufe 2: Schwerkraft, Sprung und Kollision
 
-- Gravitation, Fallen, Landen auf Boden, Ziegeln und Fässern
+- Gravitation, Fallen, Landen auf Boden, Ziegeln und Tonnen
 - Sprung mit Feuertaste, variable Sprunghöhe (kurz tippen = kleiner Sprung)
-- Kollision seitlich, oben (Kopf stößt an Ziegel, bei der großen Figur 32 Pixel höher) und unten
-- Sprung- und Lande-Animation
-- Feinabstimmung von Sprunghöhe und Gravitation mit deinem Feedback
+- Kollision seitlich, oben (große Figur 32 Pixel hoch) und unten
+- Sprunghilfen: Nachsprungzeit an Kanten und Sprungpuffer
+- Sprung- und Lande-Animation; Feinabstimmung von Sprunghöhe und Gravitation mit deinem Feedback
 
 - State: Open
 
 ### Stufe 3: Scrolling in 8-Pixel-Schritten
 
-- Level wird breiter als der Bildschirm, Kamera folgt dem Ritter
-- Scrollen um eine Zeichenzelle (8 Pixel), Figur bewegt sich in Pixeln
-- Kachelspalten am Rand nachzeichnen, Bildspeicher per LDIR verschieben
+- Level breiter als der Bildschirm, Kamera folgt dem Feuerwehrmann
+- Scrollen um eine Zeichenzelle, Figur bewegt sich in Pixeln
+- Kachelspalten am Rand nachzeichnen; ein volles Verschieben des Bildschirms mit LDIR kostet grob 145.000 T-States (zwei Bilder), deshalb Alternativen früh messen: neu aus der Karte in den Hintergrundpuffer zeichnen oder nur eine Spalte je Bild nachziehen
 - Levelgrenzen links und rechts
-- Messung: Frames pro Sekunde, Reserve für Gegner, Sound und zweiten Spieler prüfen
+- Messung: Frames pro Sekunde, Reserve für Gegner, Sound und zweiten Spieler (dieses Ergebnis entscheidet über Stufe 4 bis 6)
 
-- 1. Meilenstein
 - State: Open
 
 ### Stufe 4: Zwei Spieler
 
-- Zweiter Ritter mit Joy2, Kontext-Tausch statt doppelter Routinen
+- Zweiter Feuerwehrmann mit Joy2, Kontext-Tausch statt doppelter Routinen
 - Kamera folgt dem vorderen Spieler, der hintere kann nicht links aus dem Bild
-- Moduswahl (1 oder 2 Spieler) per Joystick im Titelbild (Spalte wie bei Pacman, links/hoch = 1, rechts/runter = 2)
-- Früh eingebaut, damit alle späteren Stufen von Anfang an für zwei Spieler getestet werden
+- Moduswahl (1 oder 2 Spieler) per Joystick im Titelbild
+- Früh eingebaut, damit alle späteren Stufen für zwei Spieler getestet werden; Test über ein komplettes zweites Spiel
 
 - State: Open
 
 ### Stufe 5: Truhen, Münzen, Punktestand
 
 - Truhe: von unten anspringen, Münze oder Power-up kommt heraus, Truhe wird leer
-- Ziegel: anspringen, bei der großen Figur zerbrechen sie
+- Ziegel: anspringen, die große Figur zerbricht sie
 - Münzen einsammeln, Münzzähler je Spieler
 - Kopfzeile: Punkte, Münzen, Welt/Level, Zeit, Leben (für beide Spieler)
-- Münz-Sound (Beeper, AY-Sound folgt in Stufe 9)
+- AY-Effektplayer mit erstem Effekt (Münze), Lautstärke 0-5, Standard 3, Taste T
 
 - State: Open
 
 ### Stufe 6: Gegner
 
-- Skelett: läuft auf der Kachelkarte, dreht an Wänden um, fällt von Kanten
-- Draufspringen besiegt es (Punkte), seitlicher Kontakt kostet Rüstung oder Leben
-- Skelett-Schildträger: beim Draufspringen bleibt der Schild liegen und kann geschubst werden
-- Fledermaus: fliegt in Wellenlinien
-- Gegnerlisten pro Level aus der Karte (Zeichen in der Textkarte), aktiv erst im Kamerabereich
-- Tod: Animation, Leben abziehen, Level neu starten (Zwei Spieler: der andere läuft weiter)
+- Flämmchen: läuft auf der Kachelkarte, dreht an Wänden um, fällt von Kanten
+- Draufspringen besiegt sie (Punkte), seitlicher Kontakt kostet Ausrüstung oder Leben
+- Glutkäfer: beim Draufspringen bleibt die Glutkugel liegen und kann geschubst werden
+- Rauchwolke: fliegt in Wellenlinien
+- Gegnerlisten pro Level aus der Karte, aktiv erst im Kamerabereich; Anzahl gleichzeitiger Gegner nach Bildzeit begrenzen
+- Tod: Animation (Blitz über die Attribute der Spielfläche, nicht über den Rahmen), Leben abziehen, Level neu starten, bei zwei Spielern läuft der andere weiter
 
 - State: Open
 
 ### Stufe 7: Power-ups
 
-- Rüstung: Ritter wird groß; Treffer als große Figur: schrumpfen statt sterben, kurze Unverwundbarkeit (Blinken)
-- Feuerball: Feuertaste wirft Feuerbälle, springen vom Boden ab, besiegen Gegner
-- Stern: kurze Unverwundbarkeit, wechselnde Farben, Gegner besiegt durch Berührung
+- Ausrüstung: Feuerwehrmann wird groß; Treffer als große Figur: schrumpfen statt sterben, kurze Unverwundbarkeit (Blinken)
+- Wasserstrahl: Feuertaste spritzt, Strahl prallt vom Boden ab und löscht Gegner
+- Schaum-Anzug: kurze Unverwundbarkeit, wechselnde Farben, Gegner besiegt durch Berührung
 - Power-ups kommen aus Truhen
+
+- State: Open
 
 ### Stufe 8: Endgegner
 
-- Drache am Ende des Burg-Levels: mehrere Treffer (Feuerball oder auf den Kopf springen), Feuerspucken, Bewegungsmuster
-- Zugbrücke oder Brücke über Lava als Arena
-- Sieg öffnet das Ende des Levels
+- Feuermonster am Ende des letzten Levels: mehrere Treffer (Wasserstrahl oder Draufspringen), Funkenwurf, Bewegungsmuster
+- Arena mit Brücke; Sieg öffnet das Ende des Levels
 
-- 2. Meilenstein
 - State: Open
 
-### Stufe 9: Sound und Musik (128K)
+### Stufe 9: Sound und Musik (AY)
 
-- AY-Musik für Titel, Level und Fanfaren, eigene Melodien (keine Originalmelodien)
-- Effekte: Sprung, Münze, Truhe, Gegner besiegt, Feuerball, Stern, Schrumpfen, Tod, Levelende, Drachenbrüllen
-- Lautstärke per Taste T durchschalten (5 Stufen plus Aus), wie bei XBlast
-- Musik im Spiel optional abschaltbar
+- Titelmusik, Levelmusik, Fanfaren, eigene Melodien (keine Originalmelodien)
+- Effekte: Sprung, Münze, Truhe, Gegner besiegt, Wasserstrahl, Schaum-Anzug, Schrumpfen, Tod, Levelende, Monster
+- Lautstärke per Taste T durchschalten (5 Stufen plus Aus), im Titelbild einstellbar
+- Musik im Spiel nur, wenn die Bildzeit reicht, sonst nur Effekte
 
 - State: Open
 
 ### Stufe 10: Spielablauf, Titelbild, Abspann
 
-- Titelbild mit Moduswahl, Titelmelodie
+- Titelbild mit Moduswahl und Titelmusik, Menü per Joystick
 - Levelende mit Fahne, Zeitbonus, Übergang zum nächsten Level
-- Leben, Game Over, Highscore pro Sitzung
-- Pause mit P, Farbraum automatisch erweitert (ULAplus), Fallback Classic, Umschalter C
+- Leben, Game Over, Rekord pro Sitzung
+- Pause mit P; Palette je Welt (ULAplus, blind geschrieben)
 - Abspann nach dem letzten Level
 
-- 3. Meilenstein
 - State: Open
 
 ### Stufe 11: Weiches Scrolling und Feintuning
@@ -149,28 +190,42 @@
 - Pixel-Scrolling mit vorverschobenen Kacheln (8 Versionen pro Kachel)
 - Sprite-Bewegung in 1-Pixel-Schritten (8 vorverschobene Kopien, auch für 16x32)
 - Tempo, Sprunghöhe und Gegner-Geschwindigkeit nach deinem Feedback
-- Speicherlayout und Codegröße prüfen
+- Speicherlayout, Codegröße und Bildzeit prüfen
 
 - State: Open
 
 ### Stufe 12: Level
 
-- Welt 1 Wiese: Level 1 als Einstieg, danach weitere Level im Retro-Stil
-- Welt 2 Wald, Welt 3 Höhle (dunkle Farben), Welt 4 Burg mit Drachen, optional Wasser-Level (andere Physik)
-- Bonusbereiche (Fass führt in einen Münzraum)
-- Alle Level in `levels/LevelNN.map` und `Level.md` mit Übersicht
-- Eigene Nachbauten nach deinen Screenshots von Vorlagen, wenn du sie schickst (als eigene Gestaltung)
+- Welt 1 Wiese/Wohnhaus: Level 1 als Einstieg, danach weitere Level im Retro-Stil, alle eigene Entwürfe
+- Welt 2 Fabrikhalle, Welt 3 Hochhaus, Welt 4 brennende Burg mit Feuermonster
+- Bonusbereiche (Tonne führt in einen Münzraum)
+- Alle Level in `levels/LevelNN.map` und `Level.md` mit Übersicht (PNG-Übersicht in Spectrum-Farben)
 
-- 4. Meilenstein
 - State: Open
+
+## Entscheidungen (getroffen)
+
+1. Figurenthema: Feuerwehrmann (ersetzt den Ritter), Truhen bleiben Truhen
+2. Große Figur (16x32) von Anfang an
+3. Ein- und Zwei-Spieler-Modus, gleichzeitig
+4. Zweites und drittes Power-up gewünscht (Feuerball und Stern, jetzt als Wasserstrahl und Schaum-Anzug umgesetzt)
+5. Endgegner gewünscht
+6. Nur 128K und nur mit erweiterter ULA (ULAplus), keine Classic-Fassung; 16x16-Kacheln, Scrolling zuerst in 8-Pixel-Schritten, später weich
+7. Dateien `supermario.asm` und `supermario.tap`
+
+## Offen
+
+- Bestätigung von Wasserstrahl, Schaum-Anzug, Feuermonster und den Welten
+- Rückmeldung vom Gerät zu Stufe 0 und Freigabe für Stufe 1
 
 ## Risiken
 
-- **Rechenzeit beim Scrollen:** Spalten nachzeichnen und Doppelpuffer kosten Frames, mit zwei Spielern und großen Figuren noch mehr. Deshalb früh messen (Stufe 3 und 4), bevor Gegner dazukommen.
-- **Attribut-Clash:** Zwei Ritter plus Gegner auf bunten Kacheln; Himmel und Sprite-Farben von Anfang an mit freien Attributen planen.
-- **Speicher:** Level, Sprites (klein, groß, Gegner, vorverschobene Kopien) und Code in 128K-Bänken verteilen, Code gegen Variablenbereich prüfen (Pacman-Erfahrung).
-- **Kamera bei zwei Spielern:** Der hintere Spieler darf nicht links aus dem Bild; Verhalten beim Tod und beim Wiedereinsteigen früh testen.
-- **pasmo:** `jr` nur +-127, Labels global eindeutig.
+- **Rechenzeit beim Scrollen:** Spalten nachzeichnen und Doppelpuffer kosten Frames, mit zwei Spielern und großen Figuren noch mehr. Deshalb früh messen (Stufe 3 und 4), bevor Gegner und Sound dazukommen.
+- **Attribut-Clash:** Zwei Feuerwehrmänner plus Gegner auf bunten Kacheln; Himmel und Sprite-Farben von Anfang an mit freien Attributen planen.
+- **Speicher:** Level, Sprites (klein, groß, Gegner, vorverschobene Kopien) und Code auf die 128K-Bänke verteilen; "frei bis VARS" nach jeder Stufe prüfen.
+- **ULAplus:** nie zurücklesen, sonst bleibt das Bild auf dem Gerät schwarz. Ohne Classic-Fallback bleibt das Spiel ohne "Erweiterte Farben" am Gerät unbrauchbar bunt, deshalb Hinweis im Titelbild und Diagnose-Schalter im Quelltext.
+- **Kamera bei zwei Spielern:** Der hintere Spieler darf nicht links aus dem Bild; Verhalten beim Tod und Wiedereinstieg früh testen.
+- **pasmo:** `jr` nur +-127, Labels global eindeutig, `end start` nicht vergessen.
 
 ---
 

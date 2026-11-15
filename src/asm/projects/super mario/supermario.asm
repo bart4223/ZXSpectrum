@@ -1,16 +1,40 @@
 ; ===========================================================
 ;  SUPERMARIO (Feuerwehr-Jump'n'Run)  -  ZX Spectrum 128K
-;  Stufe 0: Kacheln, Figuren-Studien, statischer Wiesenbildschirm
+;  Stufe 0 (ULAplus): Kacheln, Figuren-Studien, statischer Wiesenbildschirm
 ;  Assembler: pasmo   (pasmo --tapbas supermario.asm supermario.tap)
 ;  Diese Datei wird aus src/supermario.asm.in + tools/gen.py erzeugt.
 ; ===========================================================
 
-SKYATTR         equ 68h                 ; Paper cyan hell, Ink schwarz
+ULAPLUS         equ 1                   ; 1 = ULAplus (Auslieferung), 0 = nur Diagnose-Build ohne Portzugriff
+
 
                 org 8000h
 
-start:          ld a,5                  ; Rand cyan
+start:          xor a                   ; Rand schwarz
                 out (0FEh),a
+
+                if ULAPLUS
+; ---- ULAplus: Palette blind schreiben (nie zuruecklesen!) ----
+                ld hl,palette
+                ld e,0                  ; Palettenindex 0..63
+                ld d,64
+pal_loop:       ld bc,0BF3Bh            ; Registerport
+                ld a,e
+                out (c),a
+                ld b,0FFh               ; Datenport 0FF3Bh
+                ld a,(hl)
+                out (c),a
+                inc hl
+                inc e
+                dec d
+                jr nz,pal_loop
+                ld bc,0BF3Bh            ; Register 64 = Modusgruppe
+                ld a,40h
+                out (c),a
+                ld b,0FFh
+                ld a,1                  ; Palettenmodus an
+                out (c),a
+                endif
 
                 ld hl,4000h             ; Bildschirm loeschen
                 ld de,4001h
@@ -18,10 +42,10 @@ start:          ld a,5                  ; Rand cyan
                 ld (hl),0
                 ldir
 
-                ld hl,5800h             ; Attribute: Himmel
+                ld hl,5800h             ; Attribute loeschen (Kacheln setzen sie)
                 ld de,5801h
                 ld bc,02FFh
-                ld (hl),SKYATTR
+                ld (hl),0
                 ldir
 
 ; ---- Karte zeichnen (16x12 Kacheln) ----
@@ -31,8 +55,7 @@ map_row:        ld c,0                  ; tx
 map_col:        push hl
                 push bc
                 ld a,(hl)
-                or a                    ; 0 = Himmel, schon gezeichnet
-                call nz,draw_tile
+                call draw_tile
                 pop bc
                 pop hl
                 inc hl
@@ -131,14 +154,14 @@ put_attr:       push af
                 ld (de),a
                 ret
 
-; put_sattr: A=Ink (0FFh = nichts), B=cy, C=cx; behaelt Paper/Bright
+; put_sattr: A=Ink (0FFh = nichts), B=cy, C=cx; behaelt Paper und Palettenbits (7-3)
 put_sattr:      cp 0FFh
                 ret z
                 ld (v_ink),a
                 push bc
                 call attr_addr
                 ld a,(de)
-                and 78h
+                and 0F8h
                 ld b,a
                 ld a,(v_ink)
                 or b
@@ -269,108 +292,136 @@ v_ink:          db 0
 ; ---------------------------------------------------------
 ; Daten (vom Generator erzeugt)
 ; ---------------------------------------------------------
+; ---- ULAplus-Palette: 4 Paletten x (8 Ink + 8 Paper), Byte = GGGRRRBB ----
+palette:
+                db 025h,0FFh,0DCh,038h,0BDh,046h,07Ch,0A9h,06Bh,08Fh,0D3h,0D7h,045h,029h,02Ch,024h
+                db 024h,0FFh,064h,0CDh,0DCh,028h,038h,0B6h,089h,070h,069h,054h,04Ch,074h,0D7h,025h
+                db 025h,0FFh,0DCh,038h,0BDh,046h,07Ch,0A9h,06Bh,08Fh,0D3h,0D7h,045h,029h,02Ch,024h
+                db 024h,0FFh,064h,0CDh,0DCh,028h,038h,0B6h,089h,070h,069h,054h,04Ch,074h,0D7h,025h
+
 ; ---- Kachel-Zeiger ----
 tile_ptr:
-                dw tile_sky
-                dw tile_cloud_l
-                dw tile_cloud_r
-                dw tile_hill_l
-                dw tile_hill_m
-                dw tile_hill_r
-                dw tile_grass
-                dw tile_dirt
-                dw tile_stone
+                dw tile_sky_0
+                dw tile_cloud_l_0
+                dw tile_cloud_r_0
+                dw tile_sky_1
+                dw tile_coin_1
+                dw tile_sky_2
                 dw tile_brick
                 dw tile_chest
+                dw tile_sky_3
                 dw tile_barrel
-                dw tile_coin
+                dw tile_stone
+                dw tile_hill_l_3
+                dw tile_hill_m_3
+                dw tile_hill_r_3
                 dw tile_hydrant
+                dw tile_grass
+                dw tile_dirt
 
 ; ---- Kacheln: TL,TR,BL,BR je 8 Byte, dann 4 Attribute ----
-tile_sky:
+tile_sky_0:
                 db 0,0,0,0,0,0,0,0
                 db 0,0,0,0,0,0,0,0
                 db 0,0,0,0,0,0,0,0
                 db 0,0,0,0,0,0,0,0
-                db 068h,068h,068h,068h
-tile_cloud_l:
+                db 1,1,1,1
+tile_cloud_l_0:
                 db 0,0,0,3,7,00Fh,03Fh,07Fh
                 db 0,0,0,0E0h,0F0h,0F8h,0F8h,0FFh
                 db 0FFh,0FFh,0FFh,07Fh,03Fh,0,0,0
                 db 0FFh,0FFh,0FFh,0FFh,0FFh,0,0,0
-                db 06Fh,06Fh,06Fh,06Fh
-tile_cloud_r:
+                db 1,1,1,1
+tile_cloud_r_0:
                 db 0,0,0,7,00Fh,01Fh,01Fh,0FFh
                 db 0,0,0,0C0h,0E0h,0F0h,0FCh,0FEh
                 db 0FFh,0FFh,0FFh,0FFh,0FFh,0,0,0
                 db 0FFh,0FFh,0FFh,0FEh,0FCh,0,0,0
-                db 06Fh,06Fh,06Fh,06Fh
-tile_hill_l:
+                db 1,1,1,1
+tile_sky_1:
                 db 0,0,0,0,0,0,0,0
-                db 1,3,7,00Fh,01Fh,03Fh,07Fh,0FFh
-                db 1,3,7,00Fh,01Fh,03Fh,07Fh,0FFh
-                db 0FFh,0FFh,0FFh,0FFh,0FFh,0FFh,0FFh,0FFh
-                db 06Ch,06Ch,06Ch,06Ch
-tile_hill_m:
-                db 0FFh,0FFh,0FFh,0FFh,0FFh,0FFh,0FFh,0FFh
-                db 0FFh,0FFh,0FFh,0FFh,0FFh,0FFh,0FFh,0FFh
-                db 0FFh,0FFh,0FFh,0FFh,0FFh,0FFh,0FFh,0FFh
-                db 0FFh,0FFh,0FFh,0FFh,0FFh,0FFh,0FFh,0FFh
-                db 06Ch,06Ch,06Ch,06Ch
-tile_hill_r:
-                db 080h,0C0h,0E0h,0F0h,0F8h,0FCh,0FEh,0FFh
                 db 0,0,0,0,0,0,0,0
-                db 0FFh,0FFh,0FFh,0FFh,0FFh,0FFh,0FFh,0FFh
-                db 080h,0C0h,0E0h,0F0h,0F8h,0FCh,0FEh,0FFh
-                db 06Ch,06Ch,06Ch,06Ch
-tile_grass:
-                db 0,0,020h,0,2,0ADh,089h,0
-                db 0,0,084h,0,010h,06Bh,024h,0
-                db 044h,2,082h,010h,021h,2,040h,8
-                db 022h,8,020h,010h,0,022h,8,040h
-                db 020h,020h,016h,016h
-tile_dirt:
-                db 0,0,0,2,011h,038h,040h,081h
-                db 010h,2,040h,0DAh,0,2,0,0
-                db 090h,031h,010h,044h,050h,0,0,080h
-                db 019h,8,040h,0,010h,080h,040h,8
-                db 016h,016h,016h,016h
-tile_stone:
-                db 0FFh,080h,080h,080h,080h,080h,080h,080h
-                db 0FFh,0,0,0,0,0,0,0
-                db 0FFh,0,0,0,0,0,0,0
-                db 0FFh,080h,080h,080h,080h,080h,080h,080h
-                db 00Fh,00Fh,00Fh,00Fh
+                db 0,0,0,0,0,0,0,0
+                db 0,0,0,0,0,0,0,0
+                db 9,9,9,9
+tile_coin_1:
+                db 0,0,3,7,00Fh,00Eh,00Eh,00Eh
+                db 0,0,0C0h,0E0h,0F0h,070h,070h,070h
+                db 00Eh,00Eh,00Eh,00Fh,7,3,0,0
+                db 070h,070h,070h,0F0h,0E0h,0C0h,0,0
+                db 00Ah,00Ah,00Ah,00Ah
+tile_sky_2:
+                db 0,0,0,0,0,0,0,0
+                db 0,0,0,0,0,0,0,0
+                db 0,0,0,0,0,0,0,0
+                db 0,0,0,0,0,0,0,0
+                db 011h,011h,011h,011h
 tile_brick:
                 db 0FFh,080h,080h,080h,0FFh,8,8,8
                 db 0FFh,080h,080h,080h,0FFh,8,8,8
                 db 0FFh,080h,080h,080h,0FFh,8,8,8
                 db 0FFh,080h,080h,080h,0FFh,8,8,8
-                db 017h,017h,017h,017h
+                db 05Fh,05Fh,05Fh,05Fh
 tile_chest:
                 db 0FFh,080h,080h,080h,080h,0FFh,080h,081h
                 db 0FFh,1,1,1,1,0FFh,1,081h
                 db 083h,083h,081h,080h,080h,080h,080h,0FFh
                 db 0C1h,0C1h,081h,1,1,1,1,0FFh
-                db 070h,070h,070h,070h
+                db 064h,064h,064h,064h
+tile_sky_3:
+                db 0,0,0,0,0,0,0,0
+                db 0,0,0,0,0,0,0,0
+                db 0,0,0,0,0,0,0,0
+                db 0,0,0,0,0,0,0,0
+                db 019h,019h,019h,019h
 tile_barrel:
                 db 07Fh,092h,0FFh,0FFh,092h,092h,092h,092h
                 db 0FEh,049h,0FFh,0FFh,049h,049h,049h,049h
                 db 092h,092h,092h,092h,0FFh,0FFh,092h,07Fh
                 db 049h,049h,049h,049h,0FFh,0FFh,049h,0FEh
-                db 016h,016h,016h,016h
-tile_coin:
-                db 0,0,3,7,00Fh,00Eh,00Eh,00Eh
-                db 0,0,0C0h,0E0h,0F0h,070h,070h,070h
-                db 00Eh,00Eh,00Eh,00Fh,7,3,0,0
-                db 070h,070h,070h,0F0h,0E0h,0C0h,0,0
-                db 06Eh,06Eh,06Eh,06Eh
+                db 06Dh,06Dh,06Dh,06Dh
+tile_stone:
+                db 0FFh,080h,080h,080h,080h,080h,080h,080h
+                db 0FFh,0,0,0,0,0,0,0
+                db 0FFh,0,0,0,0,0,0,0
+                db 0FFh,080h,080h,080h,080h,080h,080h,080h
+                db 057h,057h,057h,057h
+tile_hill_l_3:
+                db 0,0,0,0,0,0,0,0
+                db 1,3,7,00Fh,01Fh,03Fh,07Fh,0FFh
+                db 1,3,7,00Fh,01Fh,03Fh,07Fh,0FFh
+                db 0FFh,0FFh,0FFh,0FFh,0FFh,0FFh,0FFh,0FFh
+                db 01Fh,01Fh,01Fh,01Fh
+tile_hill_m_3:
+                db 0FFh,0FFh,0FFh,0FFh,0FFh,0FFh,0FFh,0FFh
+                db 0FFh,0FFh,0FFh,0FFh,0FFh,0FFh,0FFh,0FFh
+                db 0FFh,0FFh,0FFh,0FFh,0FFh,0FFh,0FFh,0FFh
+                db 0FFh,0FFh,0FFh,0FFh,0FFh,0FFh,0FFh,0FFh
+                db 01Fh,01Fh,01Fh,01Fh
+tile_hill_r_3:
+                db 080h,0C0h,0E0h,0F0h,0F8h,0FCh,0FEh,0FFh
+                db 0,0,0,0,0,0,0,0
+                db 0FFh,0FFh,0FFh,0FFh,0FFh,0FFh,0FFh,0FFh
+                db 080h,0C0h,0E0h,0F0h,0F8h,0FCh,0FEh,0FFh
+                db 01Fh,01Fh,01Fh,01Fh
 tile_hydrant:
                 db 0,0,7,00Fh,00Fh,7,00Fh,03Fh
                 db 0,0,0E0h,0F0h,0F0h,0E0h,0F0h,0FCh
                 db 03Fh,0EFh,0EFh,03Fh,00Fh,00Fh,03Fh,03Fh
                 db 0FCh,0F7h,0F7h,0FCh,0F0h,0F0h,0FCh,0FCh
-                db 06Ah,06Ah,06Ah,06Ah
+                db 076h,076h,076h,076h
+tile_grass:
+                db 0,0,020h,0,2,0ADh,089h,0
+                db 0,0,084h,0,010h,06Bh,024h,0
+                db 044h,2,082h,010h,021h,2,040h,8
+                db 022h,8,020h,010h,0,022h,8,040h
+                db 042h,042h,04Dh,04Dh
+tile_dirt:
+                db 0,0,0,2,011h,038h,040h,081h
+                db 010h,2,040h,0DAh,0,2,0,0
+                db 090h,031h,010h,044h,050h,0,0,080h
+                db 019h,8,040h,0,010h,080h,040h,8
+                db 04Dh,04Dh,04Dh,04Dh
 
 ; ---- Sprite-Zeiger ----
 spr_ptr:
@@ -392,82 +443,82 @@ spr_ff_a:
                 db 01Fh,0E0h,00Fh,0F0h,7,0F8h,1,0FEh,00Fh,0F0h,08Fh,070h,00Fh,0F0h,01Fh,0E0h
                 db 0E0h,01Fh,0C0h,03Fh,0C8h,037h,0C8h,037h,0F0h,00Fh,0F9h,6,0F9h,6,0F1h,00Eh
                 db 7,0F8h,2,0FDh,012h,0EDh,012h,0EDh,00Fh,0F0h,09Fh,060h,09Fh,060h,08Fh,070h
-                db 6,6,2,2
+                db 2,2,3,3
 spr_ff_b:
                 db 0F8h,7,0F0h,00Fh,0E0h,01Fh,080h,07Fh,0F0h,00Fh,0F0h,00Fh,0F0h,00Fh,0F8h,7
                 db 01Fh,0E0h,00Fh,0F0h,7,0F8h,1,0FEh,00Fh,0F0h,08Fh,070h,00Fh,0F0h,01Fh,0E0h
                 db 0E0h,01Fh,0C0h,03Fh,0C8h,037h,0C8h,037h,0F0h,00Fh,0FCh,3,0F9h,6,0F1h,00Eh
                 db 7,0F8h,2,0FDh,012h,0EDh,012h,0EDh,00Fh,0F0h,03Fh,0C0h,08Fh,070h,0E3h,01Ch
-                db 6,6,2,2
+                db 2,2,3,3
 spr_ff2_a:
                 db 0F8h,7,0F0h,00Fh,0E0h,01Fh,080h,07Fh,0F0h,00Fh,0F0h,00Fh,0F0h,00Fh,0F8h,7
                 db 01Fh,0E0h,00Fh,0F0h,7,0F8h,1,0FEh,00Fh,0F0h,08Fh,070h,00Fh,0F0h,01Fh,0E0h
                 db 0E0h,01Fh,0C0h,03Fh,0C8h,037h,0C8h,037h,0F0h,00Fh,0F9h,6,0F9h,6,0F1h,00Eh
                 db 7,0F8h,2,0FDh,012h,0EDh,012h,0EDh,00Fh,0F0h,09Fh,060h,09Fh,060h,08Fh,070h
-                db 6,6,1,1
+                db 2,2,5,5
 spr_ff2_b:
                 db 0F8h,7,0F0h,00Fh,0E0h,01Fh,080h,07Fh,0F0h,00Fh,0F0h,00Fh,0F0h,00Fh,0F8h,7
                 db 01Fh,0E0h,00Fh,0F0h,7,0F8h,1,0FEh,00Fh,0F0h,08Fh,070h,00Fh,0F0h,01Fh,0E0h
                 db 0E0h,01Fh,0C0h,03Fh,0C8h,037h,0C8h,037h,0F0h,00Fh,0FCh,3,0F9h,6,0F1h,00Eh
                 db 7,0F8h,2,0FDh,012h,0EDh,012h,0EDh,00Fh,0F0h,03Fh,0C0h,08Fh,070h,0E3h,01Ch
-                db 6,6,1,1
+                db 2,2,5,5
 spr_ffl_head:
-                db 0F8h,7,0F0h,00Fh,0E0h,01Fh,0C0h,03Fh,080h,07Fh,0F0h,00Fh,0F0h,00Fh,0F0h,00Fh
-                db 01Fh,0E0h,00Fh,0F0h,7,0F8h,3,0FCh,1,0FEh,00Fh,0F0h,08Fh,070h,00Fh,0F0h
-                db 0F8h,7,0E0h,01Fh,0C0h,03Fh,080h,07Fh,088h,077h,088h,077h,088h,077h,088h,077h
-                db 01Fh,0E0h,7,0F8h,3,0FCh,1,0FEh,011h,0EEh,011h,0EEh,011h,0EEh,011h,0EEh
-                db 6,6,2,2
+                db 0FEh,1,0F8h,7,0F0h,00Fh,0E0h,01Fh,0E0h,01Fh,080h,07Fh,080h,07Fh,0FFh,0
+                db 07Fh,080h,01Fh,0E0h,00Fh,0F0h,7,0F8h,7,0F8h,1,0FEh,1,0FEh,0FFh,0
+                db 0F0h,00Fh,0F4h,00Bh,0F0h,00Fh,0F0h,00Fh,0F8h,7,0FCh,3,0FCh,3,0F0h,00Fh
+                db 00Fh,0F0h,02Fh,0D0h,00Fh,0F0h,00Fh,0F0h,01Fh,0E0h,03Fh,0C0h,03Fh,0C0h,00Fh,0F0h
+                db 2,2,4,4
 spr_ffl_body_a:
-                db 088h,077h,088h,077h,088h,077h,0C8h,037h,0F0h,00Fh,0F5h,00Ah,0F0h,00Fh,0F0h,00Fh
-                db 011h,0EEh,011h,0EEh,011h,0EEh,013h,0ECh,00Fh,0F0h,0AFh,050h,00Fh,0F0h,00Fh,0F0h
+                db 0C0h,03Fh,080h,07Fh,010h,0EFh,011h,0EEh,010h,0EFh,010h,0EFh,0F0h,00Fh,0F8h,7
+                db 3,0FCh,1,0FEh,8,0F7h,088h,077h,8,0F7h,8,0F7h,00Fh,0F0h,01Fh,0E0h
                 db 0F1h,00Eh,0F1h,00Eh,0F1h,00Eh,0F1h,00Eh,0F1h,00Eh,0E1h,01Eh,0C1h,03Eh,0C3h,03Ch
                 db 08Fh,070h,08Fh,070h,08Fh,070h,08Fh,070h,08Fh,070h,087h,078h,083h,07Ch,0C3h,03Ch
-                db 2,2,1,1
+                db 3,3,0,0
 spr_ffl_body_b:
-                db 088h,077h,088h,077h,088h,077h,0C8h,037h,0F0h,00Fh,0F5h,00Ah,0F0h,00Fh,0F0h,00Fh
-                db 011h,0EEh,011h,0EEh,011h,0EEh,013h,0ECh,00Fh,0F0h,0AFh,050h,00Fh,0F0h,00Fh,0F0h
+                db 0C0h,03Fh,080h,07Fh,010h,0EFh,011h,0EEh,010h,0EFh,010h,0EFh,0F0h,00Fh,0F8h,7
+                db 3,0FCh,1,0FEh,8,0F7h,088h,077h,8,0F7h,8,0F7h,00Fh,0F0h,01Fh,0E0h
                 db 0F0h,00Fh,0F8h,7,0F9h,6,0F1h,00Eh,0F3h,00Ch,0E3h,01Ch,0C7h,038h,0CFh,030h
                 db 01Fh,0E0h,03Fh,0C0h,01Fh,0E0h,08Fh,070h,0CFh,030h,0C7h,038h,0E3h,01Ch,0F3h,00Ch
-                db 2,2,1,1
+                db 3,3,0,0
 spr_flame_a:
                 db 0FFh,0,0FEh,1,0FEh,1,0FCh,3,0FCh,3,0F8h,7,0F8h,7,0F0h,00Fh
                 db 0FFh,0,0FFh,0,07Fh,080h,07Fh,080h,03Fh,0C0h,02Fh,0D0h,017h,0E8h,00Bh,0F4h
                 db 0F0h,00Fh,0E3h,01Ch,0E3h,01Ch,0C0h,03Fh,0C0h,03Fh,0C0h,03Fh,0E0h,01Fh,0F0h,00Fh
                 db 7,0F8h,013h,0ECh,011h,0EEh,0,0FFh,0,0FFh,0,0FFh,1,0FEh,00Fh,0F0h
-                db 2,2,6,6
+                db 6,6,2,2
 spr_flame_b:
                 db 0FFh,0,0FFh,0,0FEh,1,0FEh,1,0FCh,3,0B8h,047h,0B0h,04Fh,0F0h,00Fh
                 db 0FFh,0,07Fh,080h,03Fh,0C0h,03Fh,0C0h,01Fh,0E0h,01Fh,0E0h,01Fh,0E0h,00Bh,0F4h
                 db 0F0h,00Fh,0E3h,01Ch,0E3h,01Ch,0C0h,03Fh,0C0h,03Fh,0C0h,03Fh,0E0h,01Fh,0F0h,00Fh
                 db 7,0F8h,013h,0ECh,011h,0EEh,0,0FFh,0,0FFh,0,0FFh,1,0FEh,00Fh,0F0h
-                db 2,2,6,6
+                db 6,6,2,2
 spr_smoke_a:
-                db 0FFh,0,0FFh,0,0FFh,0,0F8h,7,0E0h,01Fh,0C0h,03Fh,080h,07Fh,08Ch,073h
-                db 0FFh,0,0FFh,0,0FFh,0,01Fh,0E0h,7,0F8h,3,0FCh,1,0FEh,031h,0CEh
-                db 08Ch,073h,080h,07Fh,0C0h,03Fh,0E0h,01Fh,0F9h,6,0FDh,2,0FFh,0,0FFh,0
-                db 031h,0CEh,1,0FEh,3,0FCh,7,0F8h,09Fh,060h,0BFh,040h,0FFh,0,0FFh,0
-                db 0,0,0,0
-spr_smoke_b:
-                db 0FFh,0,0FFh,0,0FFh,0,0F0h,00Fh,0E0h,01Fh,0C0h,03Fh,080h,07Fh,08Ch,073h
-                db 0FFh,0,0FFh,0,0FFh,0,03Fh,0C0h,7,0F8h,3,0FCh,1,0FEh,031h,0CEh
+                db 0FFh,0,0FFh,0,0FFh,0,0FCh,3,0F0h,00Fh,0C0h,03Fh,080h,07Fh,08Ch,073h
+                db 0FFh,0,0FFh,0,0FFh,0,03Fh,0C0h,00Fh,0F0h,3,0FCh,1,0FEh,031h,0CEh
                 db 08Ch,073h,080h,07Fh,0C0h,03Fh,0E0h,01Fh,0F3h,00Ch,0FBh,4,0FFh,0,0FFh,0
                 db 031h,0CEh,1,0FEh,3,0FCh,7,0F8h,0CFh,030h,0DFh,020h,0FFh,0,0FFh,0
                 db 0,0,0,0
+spr_smoke_b:
+                db 0FFh,0,0FFh,0,0FFh,0,0FCh,3,0F0h,00Fh,0C0h,03Fh,080h,07Fh,08Ch,073h
+                db 0FFh,0,0FFh,0,0FFh,0,03Fh,0C0h,00Fh,0F0h,3,0FCh,1,0FEh,031h,0CEh
+                db 08Ch,073h,080h,07Fh,0C0h,03Fh,0E0h,01Fh,0E7h,018h,0DFh,020h,0FFh,0,0FFh,0
+                db 031h,0CEh,1,0FEh,3,0FCh,7,0F8h,0E7h,018h,0FBh,4,0FFh,0,0FFh,0
+                db 0,0,0,0
 
-; ---- Karte 16x12 ----
+; ---- Karte 16x12 (Kachel-Instanz-Nummern) ----
 level_map:
                 db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
                 db 0,0,1,2,0,0,0,0,0,0,0,0,0,1,2,0
                 db 0,0,0,0,0,0,0,0,0,1,2,0,0,0,0,0
-                db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-                db 0,0,0,0,0,0,00Ch,00Ch,00Ch,0,0,0,0,0,0,0
-                db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-                db 0,0,0,0,0,9,00Ah,9,00Ah,9,0,0,0,0,0,0
-                db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-                db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,00Bh,8
-                db 0,0,0,0,0,0,0,0,0,0,3,4,5,00Dh,00Bh,8
-                db 6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6
-                db 7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7
+                db 3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3
+                db 3,3,3,3,3,3,4,4,4,3,3,3,3,3,3,3
+                db 3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3
+                db 5,5,5,5,5,6,7,6,7,6,5,5,5,5,5,5
+                db 5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5
+                db 8,8,8,8,8,8,8,8,8,8,8,8,8,8,9,00Ah
+                db 8,8,8,8,8,8,8,8,8,8,00Bh,00Ch,00Dh,00Eh,9,00Ah
+                db 00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh,00Fh
+                db 010h,010h,010h,010h,010h,010h,010h,010h,010h,010h,010h,010h,010h,010h,010h,010h
 
 ; ---- Objekte: Sprite, cx, cy (Zeichenzellen), Ende = 0FFh ----
 objects:
