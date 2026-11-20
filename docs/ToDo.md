@@ -41,13 +41,13 @@ Abprallwinkel nach Trefferstelle (5-7 Zonen), Mindest-Vertikalgeschwindigkeit (k
 **Stufe 4 – Steine zerstören**
 Treffer per Raster, Eckfälle (Ball trifft zwei Steine gleichzeitig), Stein löschen in beide Puffer, Reflexion je nach Seite, Punkte je Reihe. Test: Ball-Simulation mit festem Seed gegen Erwartungswerte.
 
-- State: InProgress
+- State: Done
 
 **Stufe 5 – Spielablauf**
 3 Leben, Punkte/Rekord im HUD, Level geschafft -> nächstes Level, Spielende, Pause (P), Neustart. Tempo steigt nach X Treffern und beim Erreichen der oberen Reihen, Schläger schrumpft optional beim Durchbruch oben.
 
 - 1.Meilenstein
-- State: Open
+- State: InProgress
 
 **Stufe 6 – Titelbild und Menü**
 Titel mit Demo (Ball spielt "von allein"), Menü per Joystick: 1/2 Spieler, Tempo, Ton (Lautstärke). Tasten wie bisher: T Ton, P Pause, C Farbraum.

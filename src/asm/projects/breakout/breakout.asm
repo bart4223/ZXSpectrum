@@ -1,10 +1,12 @@
 ; ===========================================================================
-; BREAKOUT fuer den ZX Spectrum 128K - Stufe 4
+; BREAKOUT fuer den ZX Spectrum 128K - Stufe 5
 ; Geruest: ULAplus (blind), Doppelpuffer, HUD, Waende, 14x8 Steine (16x8 px)
 ; Stufe 1: Schlaeger (32 px, pixelgenau) mit Joystick 1 (Sinclair IF2: 6=links, 7=rechts)
 ; Stufe 2: Ball 4x4 (1-Pixel-Bewegung, 8.8-Festkomma), klebt am Schlaeger, Feuer (0) startet,
 ;          Abprall an Waenden und Decke, unten raus = zurueck auf den Schlaeger
 ; Stufe 3: Schlaegerabprall, 8 Zonen (je 4 px) bestimmen Winkel, Mindest-Vertikaltempo 1,0
+; Stufe 5: Spielablauf: 3 Leben, Rekord (je Sitzung), Level geschafft -> Steine neu, Spielende
+;          (Feuer = neues Spiel), Pause (P), Ballbeschleunigung (4./12. Treffer, rote/orange Reihe)
 ; Stufe 4: Steine zerstoeren (Achsen getrennt: erst X, dann Y; Treffer macht den Schritt rueckgaengig
 ;          und kehrt diese Achse um), Punkte je Reihe 7/7/5/5/3/3/1/1, HUD-Punktestand
 ; Assembler: pasmo --tapbas
@@ -73,12 +75,25 @@ bh_r        equ VARS+0xB0
 bh_c        equ VARS+0xB1
 numbuf      equ VARS+0xB2   ; 5 Bytes
 bm_ptr      equ VARS+0xB8   ; Wort
+lives       equ VARS+0xBA
+hil         equ VARS+0xBB   ; Rekord BCD (niederwertig, dann hoeherwertig)
+hih         equ VARS+0xBC
+gstate      equ VARS+0xBD   ; 0 = Spiel, 1 = Spielende, 2 = Pause
+evt         equ VARS+0xBE   ; Ereignis fuer die Hauptschleife
+spd         equ VARS+0xC0   ; Tempostufe 0..3
+balhits     equ VARS+0xC1   ; Schlaegertreffer mit diesem Ball (bis 12)
+pprev       equ VARS+0xC3   ; Taste P vorher
+hidirty     equ VARS+0xC5   ; Rekord neu zeichnen
 
 BRICK_Y0    equ 40          ; BRICK_ROW0 * 8
 BRICK_Y1    equ 103         ; letzte Pixelzeile der Steine
 
 AUTOPLAY    equ 0           ; 1 = Testbau: Schlaeger folgt dem Ball, Auto-Start
 NOBRICKS    equ 0           ; 1 = Testbau: Ball fliegt durch die Steine
+SPEEDUP     equ 1           ; 0 = Testbau: Balltempo bleibt konstant
+LIVES_START equ 3
+EVT_LEVEL   equ 1
+EVT_OVER    equ 2
 
 BALL_XMIN   equ 16
 BALL_XMAX   equ 236         ; 240 - 4
@@ -143,6 +158,16 @@ start:
         xor a
         ld (scorel),a
         ld (scoreh),a
+        ld (hil),a
+        ld (hih),a
+        ld (gstate),a
+        ld (evt),a
+        ld (spd),a
+        ld (balhits),a
+        ld (pprev),a
+        ld (hidirty),a
+        ld a,LIVES_START
+        ld (lives),a
         ld a,BRICK_ROWS*BRICK_COLS
         ld (bricks_left),a
         call apply_mode
@@ -155,9 +180,20 @@ mwait:  halt
         ld a,(frame)
         cp b
         jr z,mwait
+        ld a,(gstate)
+        or a
+        jr nz,m_frozen
         call flip
         call keys
+        ld a,(gstate)
+        or a
+        jr nz,main              ; gerade pausiert
         call frame_logic
+        call events
+        jr main
+m_frozen:                       ; Pause / Spielende: Bild bleibt stehen (kein Umschalten)
+        call keys
+        call frozen_logic
         jr main
 
 ; ---- Interrupt: nur Bildzaehler ----
@@ -179,8 +215,12 @@ flip:
         out (c),a
         ret
 
-; ---- Taste C: Farbraum umschalten ----
+; ---- Tasten: C = Farbraum, P = Pause ----
 keys:
+        call key_c
+        jp key_p
+
+key_c:
         ld a,0xFE
         in a,(0xFE)
         cpl
@@ -200,6 +240,38 @@ keys:
         ld (mode_plus),a
         call apply_mode
         jp draw_all
+
+
+key_p:
+        ld a,0xDF
+        in a,(0xFE)
+        cpl
+        and 1
+        ld b,a
+        ld a,(pprev)
+        ld c,a
+        ld a,b
+        ld (pprev),a
+        or a
+        ret z
+        ld a,c
+        or a
+        ret nz
+        ld a,(gstate)
+        or a
+        jr z,kp_pause
+        cp 2
+        ret nz                  ; Spielende: P ohne Wirkung
+        xor a                   ; Pause beenden: alles neu zeichnen (loescht den Text)
+        ld (gstate),a
+        jp draw_all
+kp_pause:
+        ld a,2
+        ld (gstate),a
+        ld hl,s_pause
+        ld b,14
+        ld c,13
+        jp text_both
 
 ; ---- Farbraum anwenden: Attributtabelle, Palette/Modus blind schreiben ----
 apply_mode:
@@ -253,17 +325,39 @@ draw_all:
         ld a,0xFF
         ld (oby0),a
         ld (oby1),a
-        ld a,0x40
+        ld a,(pagebits)
+        and 8
+        jr z,da_7first          ; Bank 5 angezeigt -> zuerst Bank 7 (verdeckt)
+        call da_5
+        call flip
+        jp da_7
+da_7first:
+        call da_7
+        call flip
+        jp da_5
+da_5:   ld a,0x40
         ld (dbase),a
         ld a,0x58
         ld (abase),a
         call draw_screen
-        ld a,0xC0
+        ld hl,oldx0
+        jr pad_draw_cur
+da_7:   ld a,0xC0
         ld (dbase),a
         ld a,0xD8
         ld (abase),a
         call draw_screen
-        jp pad_redraw
+        ld hl,oldx1
+pad_draw_cur:
+        push hl
+        ld a,1
+        ld (p_flag),a
+        ld a,(padx)
+        call put_pad
+        pop hl
+        ld a,(padx)
+        ld (hl),a
+        ret
 
 draw_screen:
         ld a,(dbase)
@@ -301,6 +395,8 @@ draw_screen:
         ld a,(at_cur+11)
         call fill
         call print_score
+        call print_hi
+        call print_lives
         call draw_walls
         jp draw_bricks
 
@@ -534,23 +630,6 @@ fl_noball:
         ld b,a
         ld a,(bx_h)
         jp ball_xor
-
-; beide Puffer neu zeichnen (nach Farbraumwechsel)
-pad_redraw:
-        ld a,0x40
-        ld (dbase),a
-        ld a,1
-        ld (p_flag),a
-        ld a,(padx)
-        call put_pad
-        ld a,0xC0
-        ld (dbase),a
-        ld a,(padx)
-        call put_pad
-        ld a,(padx)
-        ld (oldx0),a
-        ld (oldx1),a
-        ret
 
 ; Sinclair IF2 Joystick 1: Taste 6 = links (Bit 4), 7 = rechts (Bit 3) an Port 0xEFFE
 read_input:
@@ -796,25 +875,25 @@ bu_ypad:
 bu_yb:  ld b,a                  ; B = by_h
         ld a,(vy_h)
         bit 7,a
-        jr nz,bu_nopad          ; Ball steigt
+        jp nz,bu_nopad          ; Ball steigt
         ld a,b
         cp BALL_Y0              ; Ballunterkante erreicht Schlaegeroberkante
-        jr c,bu_nopad
+        jp c,bu_nopad
         cp BALL_Y0+6            ; tiefer als die Schlaegerdicke: vorbei
-        jr nc,bu_nopad
+        jp nc,bu_nopad
         ld a,(padx)
         ld c,a
         ld a,(bx_h)
         add a,4
         cp c
-        jr c,bu_nopad           ; Ball rechts von ... links vom Schlaeger
-        jr z,bu_nopad
+        jp c,bu_nopad           ; Ball rechts von ... links vom Schlaeger
+        jp z,bu_nopad
         ld a,c
         add a,32
         ld c,a
         ld a,(bx_h)
         cp c
-        jr nc,bu_nopad          ; Ball rechts vom Schlaeger
+        jp nc,bu_nopad          ; Ball rechts vom Schlaeger
         ld a,(bx_h)             ; Treffer: Zone = (Ballmitte - Schlaeger links) / 4
         add a,2
         ld hl,padx
@@ -829,7 +908,36 @@ bu_zok: srl a
         srl a
         add a,a
         add a,a                 ; * 4 Bytes je Zone
+        ld b,a
+        if SPEEDUP
+        ld a,(balhits)          ; 4. und 12. Treffer: schneller
+        cp 12
+        jr nc,bu_spdn
+        inc a
+        ld (balhits),a
+        ld c,1
+        cp 4
+        jr z,bu_spd
+        ld c,2
+        cp 12
+        jr nz,bu_spdn
+bu_spd: ld a,(spd)
+        cp c
+        jr nc,bu_spdn
+        ld a,c
+        ld (spd),a
+bu_spdn:
+        ld a,(spd)              ; Tabelle je Stufe: 32 Bytes
+        add a,a
+        add a,a
+        add a,a
+        add a,a
+        add a,a
+        add a,b
         ld e,a
+        else
+        ld e,b
+        endif
         ld d,0
         ld hl,zone_tab
         add hl,de
@@ -856,8 +964,9 @@ bu_nopad:
         ld a,(by_h)
         cp BALL_LOST
         ret c
-        xor a                   ; unten raus: zurueck auf den Schlaeger
+        xor a                   ; unten raus: Leben verloren, Ball zurueck auf den Schlaeger
         ld (bstate),a
+        call lose_life
         jp bu_follow
 
 neg_vx:
@@ -952,6 +1061,8 @@ autoplay:
         and 31
         ld b,a                  ; gewuenschte Trefferstelle
         ld a,(bx_h)
+        ld hl,vx_h
+        add a,(hl)              ; Vorhalt: Ball bewegt sich noch um vx
         add a,2
         sub b
         jr c,ap_min
@@ -965,16 +1076,9 @@ ap_2:   ld (padx),a
         ret
         endif
 
-; vx, vy je Zone (8.8, vorzeichenbehaftet): flach an den Raendern, steil in der Mitte
+; vx, vy je Zone (8.8, vorzeichenbehaftet): flach an den Raendern, steil in der Mitte; 4 Tempostufen
 zone_tab:
-        dw 65536-512, 65536-256         ; Zone 0: links aussen
-        dw 65536-384, 65536-435
-        dw 65536-256, 65536-512
-        dw 65536-128, 65536-563
-        dw 128, 65536-563
-        dw 256, 65536-512
-        dw 384, 65536-435
-        dw 512, 65536-256               ; Zone 7: rechts aussen
+        include "zones.inc"
 
 ball_spr:
         include "ball.inc"
@@ -1063,6 +1167,14 @@ bh_col:
         call add_score
         ld hl,bricks_left
         dec (hl)
+        if SPEEDUP
+        ld a,(bh_r)             ; oberste zwei Reihen: hoechstes Tempo
+        cp 2
+        jr nc,bh_nospd
+        ld a,3
+        ld (spd),a
+bh_nospd:
+        endif
         ld a,1
         ld (bh_any),a
         call erase_brick
@@ -1089,6 +1201,12 @@ bh_done:
         or a
         ret z
         call score_both
+        ld a,(bricks_left)
+        or a
+        jr nz,bh_ret1
+        ld a,EVT_LEVEL
+        ld (evt),a
+bh_ret1:
         ld a,1
         ret
 bh_none:
@@ -1133,24 +1251,53 @@ add_score:
         adc a,0
         daa
         ld (scoreh),a
+        ld b,a                  ; neuer Rekord?
+        ld a,(hih)
+        cp b
+        jr c,as_new
+        ret nz
+        ld a,(scorel)
+        ld b,a
+        ld a,(hil)
+        cp b
+        ret nc
+as_new: ld a,(scorel)
+        ld (hil),a
+        ld a,(scoreh)
+        ld (hih),a
+        ld a,1
+        ld (hidirty),a
         ret
 
-; Punktestand in beide Puffer zeichnen
+; Punktestand (und neuer Rekord) in beide Puffer zeichnen
 score_both:
         ld a,0x40
         ld (dbase),a
         ld a,0x58
         ld (abase),a
-        call print_score
+        call sb_one
         ld a,0xC0
         ld (dbase),a
         ld a,0xD8
         ld (abase),a
-        jp print_score
+        call sb_one
+        xor a
+        ld (hidirty),a
+        ret
+sb_one: call print_score
+        ld a,(hidirty)
+        or a
+        ret z
+        jp print_hi
 
-; Punktestand (4 Ziffern) bei Zeile 0, Spalte 7 in den Puffer aus dbase/abase
-print_score:
-        ld a,(scoreh)
+; HL = Adresse des niederwertigen BCD-Bytes (hoeherwertiges folgt), BC = Zeile/Spalte;
+; 4 Ziffern in den Puffer aus dbase/abase
+print_bcd:
+        push bc
+        ld e,(hl)
+        inc hl
+        ld d,(hl)
+        ld a,d
         rrca
         rrca
         rrca
@@ -1158,11 +1305,11 @@ print_score:
         and 15
         add a,'0'
         ld (numbuf),a
-        ld a,(scoreh)
+        ld a,d
         and 15
         add a,'0'
         ld (numbuf+1),a
-        ld a,(scorel)
+        ld a,e
         rrca
         rrca
         rrca
@@ -1170,22 +1317,168 @@ print_score:
         and 15
         add a,'0'
         ld (numbuf+2),a
-        ld a,(scorel)
+        ld a,e
         and 15
         add a,'0'
         ld (numbuf+3),a
         xor a
         ld (numbuf+4),a
+        pop bc
         ld hl,numbuf
-        ld b,0
-        ld c,7
         ld a,(at_cur+1)
         jp print_str
 
+print_score:
+        ld hl,scorel
+        ld bc,7                 ; Zeile 0, Spalte 7
+        jp print_bcd
+print_hi:
+        ld hl,hil
+        ld bc,27
+        jp print_bcd
+print_lives:
+        ld a,(lives)
+        add a,'0'
+        ld (numbuf),a
+        xor a
+        ld (numbuf+1),a
+        ld hl,numbuf
+        ld bc,18
+        ld a,(at_cur+1)
+        jp print_str
+
+; Leben in beide Puffer zeichnen
+lives_both:
+        ld a,0x40
+        ld (dbase),a
+        ld a,0x58
+        ld (abase),a
+        call print_lives
+        ld a,0xC0
+        ld (dbase),a
+        ld a,0xD8
+        ld (abase),a
+        jp print_lives
+
+; Text HL bei B/C in beide Puffer
+text_both:
+        push hl
+        push bc
+        ld a,0x40
+        ld (dbase),a
+        ld a,0x58
+        ld (abase),a
+        ld a,(at_cur+1)
+        call print_str
+        pop bc
+        pop hl
+        ld a,0xC0
+        ld (dbase),a
+        ld a,0xD8
+        ld (abase),a
+        ld a,(at_cur+1)
+        jp print_str
+
+; ===========================================================================
+; Stufe 5: Spielablauf
+; ===========================================================================
+; Ball unten raus: ein Leben weniger, Tempo zuruecksetzen
+lose_life:
+        ld a,(lives)
+        dec a
+        ld (lives),a
+        xor a
+        ld (spd),a
+        ld (balhits),a
+        call lives_both
+        ld a,(lives)
+        or a
+        ret nz
+        ld a,EVT_OVER
+        ld (evt),a
+        ret
+
+; Ereignisse nach dem Bild
+events:
+        ld a,(evt)
+        or a
+        ret z
+        ld b,a
+        xor a
+        ld (evt),a
+        ld a,b
+        cp EVT_LEVEL
+        jr z,ev_level
+        ld a,1                  ; Spielende
+        ld (gstate),a
+        ld hl,s_over
+        ld b,14
+        ld c,11
+        call text_both
+        ld hl,s_again
+        ld b,16
+        ld c,5
+        jp text_both
+ev_level:                       ; alle Steine weg: neues Brett, Ball wieder auf den Schlaeger
+        call refill_bricks
+        xor a
+        ld (bstate),a
+        ld (spd),a
+        ld (balhits),a
+        jp draw_all
+
+refill_bricks:
+        ld hl,brickmap
+        ld de,brickmap+1
+        ld bc,BRICK_ROWS*BRICK_COLS-1
+        ld (hl),1
+        ldir
+        ld a,BRICK_ROWS*BRICK_COLS
+        ld (bricks_left),a
+        ret
+
+; Pause: nur P (in keys). Spielende: Feuer (Flanke) startet ein neues Spiel
+frozen_logic:
+        ld a,(gstate)
+        cp 2
+        ret z
+        ld a,0xEF
+        in a,(0xFE)
+        cpl
+        and 1
+        ld b,a
+        ld a,(firprev)
+        ld c,a
+        ld a,b
+        ld (firprev),a
+        or a
+        ret z
+        ld a,c
+        or a
+        ret nz
+new_game:
+        ld a,LIVES_START
+        ld (lives),a
+        xor a
+        ld (scorel),a
+        ld (scoreh),a
+        ld (bstate),a
+        ld (spd),a
+        ld (balhits),a
+        ld (gstate),a
+        ld (evt),a
+        inc a
+        ld (firprev),a          ; das Feuer dieses Drucks startet den Ball nicht
+        call refill_bricks
+        jp draw_all
+
 ; ---- Daten ----
 s_punkte:   db "PUNKTE 0000",0
-s_leben:    db "LEBEN 3",0
-s_rekord:   db "REKORD 0000",0
+s_leben:    db "LEBEN ",0
+s_rekord:   db "REKORD ",0
+s_pause:    db "PAUSE",0
+s_over:     db "SPIELENDE",0
+s_again:    db "FEUER FUER NEUES SPIEL",0
 
 tile_solid: db 255,255,255,255,255,255,255,255
 tile_blank: db 0,0,0,0,0,0,0,0
