@@ -26,12 +26,12 @@ Startcode, `end start`, ULAplus-Palette blind schreiben, Taste C Classic/Erweite
 **Stufe 1 – Schläger**
 Joystick 1 bewegt den Schläger pixelweise, Begrenzung an den Wänden, flackerfrei im Doppelpuffer, Beschleunigung/Tempo gut fühlbar.
 
-- State: InProgress
+- State: Done
 
 **Stufe 2 – Ball und Wände**
 Ball klebt am Schläger, Feuer startet ihn; 1-Pixel-Bewegung mit Festkomma, Reflexion an Wand/Decke. Ball unten raus = Ball verloren (zunächst nur Neustart).
 
-- State: Open
+- State: InProgress
 
 **Stufe 3 – Schlägerabprall**
 Abprallwinkel nach Trefferstelle (5-7 Zonen), Mindest-Vertikalgeschwindigkeit (kein Ball, der flach ewig läuft), Ball am Schlägerrand/seitlich korrekt behandeln, Tests mit Tastenskript und Speicher-Dump der Ballvariablen.

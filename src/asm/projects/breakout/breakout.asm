@@ -1,7 +1,9 @@
 ; ===========================================================================
-; BREAKOUT fuer den ZX Spectrum 128K - Stufe 1
+; BREAKOUT fuer den ZX Spectrum 128K - Stufe 2
 ; Geruest: ULAplus (blind), Doppelpuffer, HUD, Waende, 14x8 Steine (16x8 px)
 ; Stufe 1: Schlaeger (32 px, pixelgenau) mit Joystick 1 (Sinclair IF2: 6=links, 7=rechts)
+; Stufe 2: Ball 4x4 (1-Pixel-Bewegung, 8.8-Festkomma), klebt am Schlaeger, Feuer (0) startet,
+;          Abprall an Waenden und Decke, unten raus = zurueck auf den Schlaeger
 ; Assembler: pasmo --tapbas
 ; ===========================================================================
         org 0x8000
@@ -38,6 +40,30 @@ p_flag      equ VARS+0x90   ; 1 = zeichnen, 0 = loeschen
 p_k         equ VARS+0x91
 p_mask      equ VARS+0x92
 
+bx_l        equ VARS+0x94   ; Ball-Position 8.8 (Pixel in *_h)
+bx_h        equ VARS+0x95
+by_l        equ VARS+0x96
+by_h        equ VARS+0x97
+vx_l        equ VARS+0x98   ; Geschwindigkeit 8.8, vorzeichenbehaftet
+vx_h        equ VARS+0x99
+vy_l        equ VARS+0x9A
+vy_h        equ VARS+0x9B
+bstate      equ VARS+0x9C   ; 0 = klebt am Schlaeger, 1 = fliegt
+firprev     equ VARS+0x9D
+launchdir   equ VARS+0x9E   ; Startrichtung wechselt je Start
+obx0        equ VARS+0x9F   ; alte Ballposition im Puffer Bank 5 (y=0xFF: keine)
+oby0        equ VARS+0xA0
+obx1        equ VARS+0xA1   ; ... im Puffer Bank 7
+oby1        equ VARS+0xA2
+
+BALL_XMIN   equ 16
+BALL_XMAX   equ 236         ; 240 - 4
+BALL_YMIN   equ 16
+BALL_LOST   equ 189         ; ab hier unten raus
+BALL_Y0     equ 173         ; Ball sitzt auf dem Schlaeger
+BALL_VX     equ 0x0100      ; 1,0 Pixel/Bild
+BALL_VY     equ 0x0200      ; 2,0 Pixel/Bild
+
 PAD_ROW     equ 22
 PAD_MIN     equ 16
 PAD_MAX     equ 208
@@ -73,6 +99,9 @@ start:
         ld (keyprev),a
         ld (hold),a
         ld (hdir),a
+        ld (bstate),a
+        ld (firprev),a
+        ld (launchdir),a
         inc a
         ld (mode_plus),a        ; Standard: erweiterte Farben (ULAplus)
         ld hl,brickmap
@@ -187,6 +216,9 @@ sp_loop:
 
 ; ---- statische Grafik in beide Puffer ----
 draw_all:
+        ld a,0xFF
+        ld (oby0),a
+        ld (oby1),a
         ld a,0x40
         ld (dbase),a
         ld a,0x58
@@ -414,19 +446,31 @@ db_col:
 ; Puffer zeichnen (alte Position dieses Puffers loeschen)
 frame_logic:
         call read_input
+        call ball_update
         ld a,(pagebits)
         and 8
         ld hl,oldx0
+        ld ix,obx0
         ld b,0x40               ; Bild zeigt Bank 7 -> zeichnen in Bank 5
         jr nz,fl_have
         ld hl,oldx1
+        ld ix,obx1
         ld b,0xC0
 fl_have:
         ld a,b
         ld (dbase),a
         push hl
+        ld a,(ix+1)             ; alten Ball per XOR entfernen
+        cp 0xFF
+        jr z,fl_noball
+        ld b,a
+        ld a,(ix+0)
+        call ball_xor
+fl_noball:
         xor a
         ld (p_flag),a
+        pop hl
+        push hl
         ld a,(hl)
         call put_pad
         ld a,1
@@ -436,7 +480,13 @@ fl_have:
         pop hl
         ld a,(padx)
         ld (hl),a
-        ret
+        ld a,(bx_h)             ; neuen Ball per XOR zeichnen
+        ld (ix+0),a
+        ld a,(by_h)
+        ld (ix+1),a
+        ld b,a
+        ld a,(bx_h)
+        jp ball_xor
 
 ; beide Puffer neu zeichnen (nach Farbraumwechsel)
 pad_redraw:
@@ -582,6 +632,175 @@ pp_l:   ld (hl),a
 mask_left:  db 0xFF,0x7F,0x3F,0x1F,0x0F,0x07,0x03,0x01
 mask_right: db 0x00,0x80,0xC0,0xE0,0xF0,0xF8,0xFC,0xFE
 
+; ===========================================================================
+; Stufe 2: Ball
+; ===========================================================================
+ball_update:
+        ld a,(bstate)
+        or a
+        jr nz,bu_fly
+        call bu_follow
+        ld a,0xEF               ; Feuer = Taste 0 (Bit 0), Flanke
+        in a,(0xFE)
+        cpl
+        and 1
+        ld b,a
+        ld a,(firprev)
+        ld c,a
+        ld a,b
+        ld (firprev),a
+        or a
+        ret z
+        ld a,c
+        or a
+        ret nz
+        ld a,1                  ; Start
+        ld (bstate),a
+        ld a,(launchdir)
+        xor 1
+        ld (launchdir),a
+        ld hl,BALL_VX
+        jr nz,bu_vx
+        ld hl,0x10000-BALL_VX
+bu_vx:  ld (vx_l),hl
+        ld hl,0x10000-BALL_VY
+        ld (vy_l),hl
+        ret
+
+bu_follow:
+        ld a,(padx)
+        add a,14
+        ld (bx_h),a
+        ld a,BALL_Y0
+        ld (by_h),a
+        xor a
+        ld (bx_l),a
+        ld (by_l),a
+        ret
+
+bu_fly:
+        ld a,0xEF
+        in a,(0xFE)
+        cpl
+        and 1
+        ld (firprev),a
+        ld hl,(bx_l)
+        ld de,(vx_l)
+        add hl,de
+        ld (bx_l),hl
+        ld hl,(by_l)
+        ld de,(vy_l)
+        add hl,de
+        ld (by_l),hl
+        ld a,(bx_h)
+        cp BALL_XMIN
+        jr nc,bu_xr
+        ld a,BALL_XMIN
+        ld (bx_h),a
+        xor a
+        ld (bx_l),a
+        call neg_vx
+        jr bu_y
+bu_xr:  cp BALL_XMAX+1
+        jr c,bu_y
+        ld a,BALL_XMAX
+        ld (bx_h),a
+        xor a
+        ld (bx_l),a
+        call neg_vx
+bu_y:   ld a,(by_h)
+        cp BALL_YMIN
+        jr nc,bu_yb
+        ld a,BALL_YMIN
+        ld (by_h),a
+        xor a
+        ld (by_l),a
+        jp neg_vy
+bu_yb:  cp BALL_LOST
+        ret c
+        xor a                   ; unten raus: zurueck auf den Schlaeger
+        ld (bstate),a
+        jp bu_follow
+
+neg_vx:
+        ld hl,(vx_l)
+        xor a
+        sub l
+        ld l,a
+        ld a,0
+        sbc a,h
+        ld h,a
+        ld (vx_l),hl
+        ret
+neg_vy:
+        ld hl,(vy_l)
+        xor a
+        sub l
+        ld l,a
+        ld a,0
+        sbc a,h
+        ld h,a
+        ld (vy_l),hl
+        ret
+
+; Ball per XOR zeichnen/loeschen: A = x, B = y (Pixel), Puffer aus dbase
+ball_xor:
+        ld c,a
+        and 7
+        add a,a
+        add a,a
+        add a,a                 ; Verschiebung * 8
+        ld e,a
+        ld d,0
+        ld hl,ball_spr
+        add hl,de
+        ex de,hl                ; DE = Sprite
+        ld a,c
+        rrca
+        rrca
+        rrca
+        and 0x1F
+        ld c,a                  ; C = Spalte
+        ld a,4
+        ld (p_k),a
+bxo_loop: ld a,b
+        and 0xC0
+        rrca
+        rrca
+        rrca
+        ld h,a
+        ld a,b
+        and 7
+        or h
+        ld h,a
+        ld a,(dbase)
+        or h
+        ld h,a
+        ld a,b
+        and 0x38
+        add a,a
+        add a,a
+        or c
+        ld l,a
+        ld a,(de)
+        xor (hl)
+        ld (hl),a
+        inc de
+        inc hl
+        ld a,(de)
+        xor (hl)
+        ld (hl),a
+        inc de
+        inc b
+        ld a,(p_k)
+        dec a
+        ld (p_k),a
+        jr nz,bxo_loop
+        ret
+
+ball_spr:
+        include "ball.inc"
+
 ; ---- Daten ----
 s_punkte:   db "PUNKTE 0000",0
 s_leben:    db "LEBEN 3",0
@@ -592,8 +811,8 @@ tile_bl:    db 255,255,255,255,255,255,255,0
 tile_br:    db 254,254,254,254,254,254,254,0
 
 ; bg, hud, wand, 8 Steinreihen, Schlaeger
-at_plus:    db 0x00,0x07,0x80, 0x40,0x41,0x42,0x43,0x44,0x45,0x46,0x47, 0x07
-at_cls:     db 0x00,0x47,0x47, 0x42,0x02,0x46,0x06,0x44,0x45,0x41,0x43, 0x47
+at_plus:    db 0x07,0x07,0x80, 0x40,0x41,0x42,0x43,0x44,0x45,0x46,0x47, 0x07
+at_cls:     db 0x47,0x47,0x47, 0x42,0x02,0x46,0x06,0x44,0x45,0x41,0x43, 0x47
 
 ; ULAplus-Palette GGGRRRBB: CLUT0 Standard, CLUT1 Regenbogen, CLUT2 Wand
 pal_plus:
