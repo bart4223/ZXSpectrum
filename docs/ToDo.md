@@ -1,3 +1,91 @@
+# Breakout
+
+## Allgemein
+
+| Thema | Vorschlag |
+|---|---|
+| Spielfeld | 256x192 Pixel; HUD oben (1 Zeile), Spielfläche ca. 240x176 mit Seiten- und Oberkante als Wand |
+| Steine | 16x8 Pixel (2x1 Zellen), 14 Spalten x 8 Reihen, je Reihe eine Farbe (Regenbogen, ULAplus-Farbverlauf) |
+| Ball | 4x4 Pixel, 1-Pixel-Bewegung, 8 vorverschobene Sprite-Kopien, Tempo als 8.8-Festkomma (Vx, Vy) |
+| Schläger | 32 Pixel breit (später verbreiterbar), 2-Pixel-Schritte, vorverschobene Endstücke, Position wird pixelgenau gezeichnet |
+| Doppelpuffer | Port 0x7FFD = 0x17, Bank 5/7, Schattenbildschirm = Adresse OR 0x8000; statische Grafik (Wände, Steine) in beide Puffer, Ball/Schläger/Effekte nur in den Zeichenpuffer, Änderungen 2 Frames lang (dirty=2) |
+| Steuerung | Sinclair IF2: Joystick 1 (Tasten 6-0, Port 0xEFFE), Joystick 2 (Tasten 1-5, Port 0xF7FE); links/rechts = Schläger, Feuer = Ball starten; Menü komplett per Joystick |
+| Kollision | Steinraster als Byte-Array im RAM (Zelle -> Stein-ID/Treffer), nicht vom Bildschirm; Ball gegen Wände/Schläger per Koordinaten. (Bildschirm-Pixeltest wie bei Tron wäre nur für Hindernis-Extras nötig) |
+| Speicher | Code lückenlos ab 0x6000, VARS früh festlegen, "frei bis VARS" bei jedem Build prüfen (128K: ab 0xC000 Bank 7 – Doppelpuffer!) |
+| Sound | AY: Treffer je Reihe andere Tonhöhe, Wand/Schläger-Klick, Verlust-Jingle, Titelmusik; Lautstärke 0-5, Standard 3, Menü per Joystick |
+| Rekord | nur pro Sitzung (kein Speichern auf dem Gerät möglich) |
+| Effekte | Blitze/Flashes nur über Attribute der Spielfläche, nie über Rahmen oder Palettenpapier (am Gerät kein Rahmen eingestellt) |
+
+## Stufen
+
+**Stufe 0 – Gerüst und Spielfeld**
+Startcode, `end start`, ULAplus-Palette blind schreiben, Taste C Classic/Erweitert, Doppelpuffer-Grundgerüst, HUD-Rahmen, Wände, 8 Reihen Steine (statisch, beide Puffer). Test: Loader-Zeile (RANDOMIZE USR) prüfen, Screenshot-Vergleich.
+
+- State: InProgress
+
+**Stufe 1 – Schläger**
+Joystick 1 bewegt den Schläger pixelweise, Begrenzung an den Wänden, flackerfrei im Doppelpuffer, Beschleunigung/Tempo gut fühlbar.
+
+- State: Open
+
+**Stufe 2 – Ball und Wände**
+Ball klebt am Schläger, Feuer startet ihn; 1-Pixel-Bewegung mit Festkomma, Reflexion an Wand/Decke. Ball unten raus = Ball verloren (zunächst nur Neustart).
+
+- State: Open
+
+**Stufe 3 – Schlägerabprall**
+Abprallwinkel nach Trefferstelle (5-7 Zonen), Mindest-Vertikalgeschwindigkeit (kein Ball, der flach ewig läuft), Ball am Schlägerrand/seitlich korrekt behandeln, Tests mit Tastenskript und Speicher-Dump der Ballvariablen.
+
+- State: Open
+
+**Stufe 4 – Steine zerstören**
+Treffer per Raster, Eckfälle (Ball trifft zwei Steine gleichzeitig), Stein löschen in beide Puffer, Reflexion je nach Seite, Punkte je Reihe. Test: Ball-Simulation mit festem Seed gegen Erwartungswerte.
+
+- State: Open
+
+**Stufe 5 – Spielablauf**
+3 Leben, Punkte/Rekord im HUD, Level geschafft -> nächstes Level, Spielende, Pause (P), Neustart. Tempo steigt nach X Treffern und beim Erreichen der oberen Reihen, Schläger schrumpft optional beim Durchbruch oben.
+
+- 1.Meilenstein
+- State: Open
+
+**Stufe 6 – Titelbild und Menü**
+Titel mit Demo (Ball spielt "von allein"), Menü per Joystick: 1/2 Spieler, Tempo, Ton (Lautstärke). Tasten wie bisher: T Ton, P Pause, C Farbraum.
+
+- State: Open
+
+**Stufe 7 – AY-Sound**
+Reihenabhängige Trefferklänge, Wand/Schläger, Verlust- und Level-Jingle, Titelmusik. Keine Dauermusik im Spiel.
+
+- State: Open
+
+**Stufe 8 – Level-Design**
+Level nach Originalvorgabe nachgebaut, bis zu 12-18 Level als Textkarten (`levels/*.level`, Build-Skript erzeugt Tabellen): Formen, Lücken, unzerstörbare Steine (Metall), 2-Treffer-Steine. Level-Name im Kopf anzeigen.
+
+- 2.Meilenstein
+- State: Open
+
+**Stufe 9 – Extras (Power-Ups)** *(Auswahl später, vor dem Bau klären)*
+Fallende Kapseln: breiter Schläger, Mehrfachball, Ball langsam, Laser, Extraleben, Klebeschläger. Nur so viele, wie die Steuerung (nur Feuer) verträgt – Überladenes streichen.
+
+- State: Open
+
+**Stufe 10 – Feinschliff (Zwei-Spieler-Modus später/optional)**
+ULAplus-Farbverläufe, Todesblitz über die Spielfläche, Abspann, Zeitmessung (Bildbudget je Frame prüfen, Profil nach Funktionen), Intro-GIF.
+
+- 3.Meilenstein
+- State: Open
+
+## Technische Risiken
+
+- **Ruckeln**: Bildzeit 70.908 T-States; Mehrfachball + Partikel + Laser sind die Spitzen – Messung per Emulator-Log je Bild.
+- **Attributkollision**: Ball (andere Farbe) über farbigem Stein – Randzellen-Attribute nur setzen, wenn der Ball dort Pixel hat; Steine in Zellgrenzen halten, damit Ball in der Stein-Zelle seine Farbe behält.
+- **Mehrdeutige Treffer**: Ball trifft Ecke zwischen zwei Steinen – eindeutige Regel (Achse mit größerer Eindringtiefe) und Tests dafür.
+- **Zufall**: RNG nur ziehen, wenn nötig, sonst verschieben sich Testläufe.
+- **ULAplus auf "The Spectrum"**: nie per Rücklesen erkennen (siehe Asteroids), Palette/Modus blind schreiben (`ULA_DETECT equ 0`).
+
+---
+
 # Super Mario
 
 ## Eckdaten
