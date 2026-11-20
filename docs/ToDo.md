@@ -31,12 +31,12 @@ Joystick 1 bewegt den Schläger pixelweise, Begrenzung an den Wänden, flackerfr
 **Stufe 2 – Ball und Wände**
 Ball klebt am Schläger, Feuer startet ihn; 1-Pixel-Bewegung mit Festkomma, Reflexion an Wand/Decke. Ball unten raus = Ball verloren (zunächst nur Neustart).
 
-- State: InProgress
+- State: Done
 
 **Stufe 3 – Schlägerabprall**
 Abprallwinkel nach Trefferstelle (5-7 Zonen), Mindest-Vertikalgeschwindigkeit (kein Ball, der flach ewig läuft), Ball am Schlägerrand/seitlich korrekt behandeln, Tests mit Tastenskript und Speicher-Dump der Ballvariablen.
 
-- State: Open
+- State: InProgress
 
 **Stufe 4 – Steine zerstören**
 Treffer per Raster, Eckfälle (Ball trifft zwei Steine gleichzeitig), Stein löschen in beide Puffer, Reflexion je nach Seite, Punkte je Reihe. Test: Ball-Simulation mit festem Seed gegen Erwartungswerte.

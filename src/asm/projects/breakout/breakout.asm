@@ -1,9 +1,10 @@
 ; ===========================================================================
-; BREAKOUT fuer den ZX Spectrum 128K - Stufe 2
+; BREAKOUT fuer den ZX Spectrum 128K - Stufe 3
 ; Geruest: ULAplus (blind), Doppelpuffer, HUD, Waende, 14x8 Steine (16x8 px)
 ; Stufe 1: Schlaeger (32 px, pixelgenau) mit Joystick 1 (Sinclair IF2: 6=links, 7=rechts)
 ; Stufe 2: Ball 4x4 (1-Pixel-Bewegung, 8.8-Festkomma), klebt am Schlaeger, Feuer (0) startet,
 ;          Abprall an Waenden und Decke, unten raus = zurueck auf den Schlaeger
+; Stufe 3: Schlaegerabprall, 8 Zonen (je 4 px) bestimmen Winkel, Mindest-Vertikaltempo 1,0
 ; Assembler: pasmo --tapbas
 ; ===========================================================================
         org 0x8000
@@ -55,6 +56,10 @@ obx0        equ VARS+0x9F   ; alte Ballposition im Puffer Bank 5 (y=0xFF: keine)
 oby0        equ VARS+0xA0
 obx1        equ VARS+0xA1   ; ... im Puffer Bank 7
 oby1        equ VARS+0xA2
+autocnt     equ VARS+0xA3   ; nur Testbau
+hitcnt      equ VARS+0xA4   ; nur Testbau: Anzahl Schlaegertreffer
+
+AUTOPLAY    equ 0           ; 1 = Testbau: Schlaeger folgt dem Ball, Auto-Start
 
 BALL_XMIN   equ 16
 BALL_XMAX   equ 236         ; 240 - 4
@@ -109,6 +114,11 @@ start:
         ld bc,BRICK_ROWS*BRICK_COLS-1
         ld (hl),1
         ldir
+        if AUTOPLAY
+        xor a
+        ld (autocnt),a
+        ld (hitcnt),a
+        endif
         ld a,PAD_START
         ld (padx),a
         call apply_mode
@@ -446,6 +456,9 @@ db_col:
 ; Puffer zeichnen (alte Position dieses Puffers loeschen)
 frame_logic:
         call read_input
+        if AUTOPLAY
+        call autoplay
+        endif
         call ball_update
         ld a,(pagebits)
         and 8
@@ -640,6 +653,16 @@ ball_update:
         or a
         jr nz,bu_fly
         call bu_follow
+        if AUTOPLAY
+        ld a,(autocnt)
+        inc a
+        ld (autocnt),a
+        cp 10
+        ret c
+        xor a
+        ld (autocnt),a
+        jr bu_launch
+        endif
         ld a,0xEF               ; Feuer = Taste 0 (Bit 0), Flanke
         in a,(0xFE)
         cpl
@@ -654,6 +677,7 @@ ball_update:
         ld a,c
         or a
         ret nz
+bu_launch:
         ld a,1                  ; Start
         ld (bstate),a
         ld a,(launchdir)
@@ -716,7 +740,68 @@ bu_y:   ld a,(by_h)
         xor a
         ld (by_l),a
         jp neg_vy
-bu_yb:  cp BALL_LOST
+bu_yb:  ld b,a                  ; B = by_h
+        ld a,(vy_h)
+        bit 7,a
+        jr nz,bu_nopad          ; Ball steigt
+        ld a,b
+        cp BALL_Y0              ; Ballunterkante erreicht Schlaegeroberkante
+        jr c,bu_nopad
+        cp BALL_Y0+6            ; tiefer als die Schlaegerdicke: vorbei
+        jr nc,bu_nopad
+        ld a,(padx)
+        ld c,a
+        ld a,(bx_h)
+        add a,4
+        cp c
+        jr c,bu_nopad           ; Ball rechts von ... links vom Schlaeger
+        jr z,bu_nopad
+        ld a,c
+        add a,32
+        ld c,a
+        ld a,(bx_h)
+        cp c
+        jr nc,bu_nopad          ; Ball rechts vom Schlaeger
+        ld a,(bx_h)             ; Treffer: Zone = (Ballmitte - Schlaeger links) / 4
+        add a,2
+        ld hl,padx
+        sub (hl)
+        jr c,bu_z0
+        cp 32
+        jr c,bu_zok
+        ld a,31
+        jr bu_zok
+bu_z0:  xor a
+bu_zok: srl a
+        srl a
+        add a,a
+        add a,a                 ; * 4 Bytes je Zone
+        ld e,a
+        ld d,0
+        ld hl,zone_tab
+        add hl,de
+        ld e,(hl)
+        inc hl
+        ld d,(hl)
+        inc hl
+        ld (vx_l),de
+        ld e,(hl)
+        inc hl
+        ld d,(hl)
+        ld (vy_l),de
+        ld a,BALL_Y0            ; Ball auf den Schlaeger setzen
+        ld (by_h),a
+        xor a
+        ld (by_l),a
+        if AUTOPLAY
+        ld a,(hitcnt)
+        inc a
+        ld (hitcnt),a
+        endif
+        ret
+bu_nopad:
+        ld a,(by_h)
+        cp BALL_LOST
         ret c
         xor a                   ; unten raus: zurueck auf den Schlaeger
         ld (bstate),a
@@ -797,6 +882,46 @@ bxo_loop: ld a,b
         ld (p_k),a
         jr nz,bxo_loop
         ret
+
+
+; Testbau: Schlaeger folgt dem fliegenden Ball, Trefferstelle wandert ueber alle Zonen
+        if AUTOPLAY
+autoplay:
+        ld a,(bstate)
+        or a
+        ret z
+        ld a,(hitcnt)
+        ld b,a
+        add a,a
+        add a,a
+        add a,b                 ; *5
+        add a,3
+        and 31
+        ld b,a                  ; gewuenschte Trefferstelle
+        ld a,(bx_h)
+        add a,2
+        sub b
+        jr c,ap_min
+        cp PAD_MIN
+        jr nc,ap_1
+ap_min: ld a,PAD_MIN
+ap_1:   cp PAD_MAX+1
+        jr c,ap_2
+        ld a,PAD_MAX
+ap_2:   ld (padx),a
+        ret
+        endif
+
+; vx, vy je Zone (8.8, vorzeichenbehaftet): flach an den Raendern, steil in der Mitte
+zone_tab:
+        dw 65536-512, 65536-256         ; Zone 0: links aussen
+        dw 65536-384, 65536-435
+        dw 65536-256, 65536-512
+        dw 65536-128, 65536-563
+        dw 128, 65536-563
+        dw 256, 65536-512
+        dw 384, 65536-435
+        dw 512, 65536-256               ; Zone 7: rechts aussen
 
 ball_spr:
         include "ball.inc"
