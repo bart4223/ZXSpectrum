@@ -21,12 +21,12 @@
 **Stufe 0 – Gerüst und Spielfeld**
 Startcode, `end start`, ULAplus-Palette blind schreiben, Taste C Classic/Erweitert, Doppelpuffer-Grundgerüst, HUD-Rahmen, Wände, 8 Reihen Steine (statisch, beide Puffer). Test: Loader-Zeile (RANDOMIZE USR) prüfen, Screenshot-Vergleich.
 
-- State: InProgress
+- State: Done
 
 **Stufe 1 – Schläger**
 Joystick 1 bewegt den Schläger pixelweise, Begrenzung an den Wänden, flackerfrei im Doppelpuffer, Beschleunigung/Tempo gut fühlbar.
 
-- State: Open
+- State: InProgress
 
 **Stufe 2 – Ball und Wände**
 Ball klebt am Schläger, Feuer startet ihn; 1-Pixel-Bewegung mit Festkomma, Reflexion an Wand/Decke. Ball unten raus = Ball verloren (zunächst nur Neustart).

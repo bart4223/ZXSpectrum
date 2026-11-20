@@ -1,6 +1,7 @@
 ; ===========================================================================
-; BREAKOUT fuer den ZX Spectrum 128K - Stufe 0
+; BREAKOUT fuer den ZX Spectrum 128K - Stufe 1
 ; Geruest: ULAplus (blind), Doppelpuffer, HUD, Waende, 14x8 Steine (16x8 px)
+; Stufe 1: Schlaeger (32 px, pixelgenau) mit Joystick 1 (Sinclair IF2: 6=links, 7=rechts)
 ; Assembler: pasmo --tapbas
 ; ===========================================================================
         org 0x8000
@@ -26,8 +27,26 @@ v_row       equ VARS+7
 v_col       equ VARS+8
 v_n         equ VARS+9
 v_m         equ VARS+10
-at_cur      equ VARS+16     ; 11 Bytes: bg, hud, wand, 8x stein
+padx        equ VARS+11     ; Schlaeger links, Pixel 16..208
+hold        equ VARS+12     ; Frames gleiche Richtung gehalten
+hdir        equ VARS+13
+oldx0       equ VARS+14     ; alte Position im Puffer Bank 5
+oldx1       equ VARS+15     ; alte Position im Puffer Bank 7
+at_cur      equ VARS+16     ; 12 Bytes: bg, hud, wand, 8x stein, schlaeger
 brickmap    equ VARS+32     ; 8x14 Bytes (1 = Stein da)
+p_flag      equ VARS+0x90   ; 1 = zeichnen, 0 = loeschen
+p_k         equ VARS+0x91
+p_mask      equ VARS+0x92
+
+PAD_ROW     equ 22
+PAD_MIN     equ 16
+PAD_MAX     equ 208
+PAD_START   equ 112
+PAD_SPD1    equ 2           ; Schlaegertempo (Pixel/Bild) - Anfang
+PAD_SPD2    equ 3           ; nach PAD_T2 Bildern
+PAD_SPD3    equ 4           ; nach PAD_T3 Bildern
+PAD_T2      equ 8
+PAD_T3      equ 24
 
 start:
         di
@@ -52,6 +71,8 @@ start:
         xor a
         ld (frame),a
         ld (keyprev),a
+        ld (hold),a
+        ld (hdir),a
         inc a
         ld (mode_plus),a        ; Standard: erweiterte Farben (ULAplus)
         ld hl,brickmap
@@ -59,6 +80,8 @@ start:
         ld bc,BRICK_ROWS*BRICK_COLS-1
         ld (hl),1
         ldir
+        ld a,PAD_START
+        ld (padx),a
         call apply_mode
         call draw_all
         ei
@@ -71,6 +94,7 @@ mwait:  halt
         jr z,mwait
         call flip
         call keys
+        call frame_logic
         jr main
 
 ; ---- Interrupt: nur Bildzaehler ----
@@ -121,7 +145,7 @@ apply_mode:
         jr z,am_classic
         ld hl,at_plus
         ld de,at_cur
-        ld bc,11
+        ld bc,12
         ldir
         call set_palette
         ld bc,0xBF3B
@@ -134,7 +158,7 @@ apply_mode:
 am_classic:
         ld hl,at_cls
         ld de,at_cur
-        ld bc,11
+        ld bc,12
         ldir
         ld bc,0xBF3B
         ld a,0x40
@@ -172,7 +196,8 @@ draw_all:
         ld (dbase),a
         ld a,0xD8
         ld (abase),a
-        jp draw_screen
+        call draw_screen
+        jp pad_redraw
 
 draw_screen:
         ld a,(dbase)
@@ -202,6 +227,13 @@ draw_screen:
         ld c,20
         ld a,(at_cur+1)
         call print_str
+        ld a,(abase)
+        add a,2
+        ld h,a
+        ld l,0xC2               ; Zeile 22, Spalte 2
+        ld bc,28
+        ld a,(at_cur+11)
+        call fill
         call draw_walls
         jp draw_bricks
 
@@ -375,6 +407,181 @@ db_col:
         jr nz,db_row
         ret
 
+; ===========================================================================
+; Stufe 1: Schlaeger
+; ===========================================================================
+; Joystick 1 lesen, Position mit Beschleunigung aendern, in den verdeckten
+; Puffer zeichnen (alte Position dieses Puffers loeschen)
+frame_logic:
+        call read_input
+        ld a,(pagebits)
+        and 8
+        ld hl,oldx0
+        ld b,0x40               ; Bild zeigt Bank 7 -> zeichnen in Bank 5
+        jr nz,fl_have
+        ld hl,oldx1
+        ld b,0xC0
+fl_have:
+        ld a,b
+        ld (dbase),a
+        push hl
+        xor a
+        ld (p_flag),a
+        ld a,(hl)
+        call put_pad
+        ld a,1
+        ld (p_flag),a
+        ld a,(padx)
+        call put_pad
+        pop hl
+        ld a,(padx)
+        ld (hl),a
+        ret
+
+; beide Puffer neu zeichnen (nach Farbraumwechsel)
+pad_redraw:
+        ld a,0x40
+        ld (dbase),a
+        ld a,1
+        ld (p_flag),a
+        ld a,(padx)
+        call put_pad
+        ld a,0xC0
+        ld (dbase),a
+        ld a,(padx)
+        call put_pad
+        ld a,(padx)
+        ld (oldx0),a
+        ld (oldx1),a
+        ret
+
+; Sinclair IF2 Joystick 1: Taste 6 = links (Bit 4), 7 = rechts (Bit 3) an Port 0xEFFE
+read_input:
+        ld a,0xEF
+        in a,(0xFE)
+        cpl
+        ld b,a
+        bit 4,b
+        jr z,ri_noleft
+        ld c,0xFF
+        jr ri_dir
+ri_noleft:
+        bit 3,b
+        jr z,ri_none
+        ld c,1
+        jr ri_dir
+ri_none:
+        xor a
+        ld (hold),a
+        ld (hdir),a
+        ret
+ri_dir:
+        ld a,(hdir)
+        cp c
+        jr z,ri_same
+        ld a,c
+        ld (hdir),a
+        xor a
+        ld (hold),a
+        jr ri_speed
+ri_same:
+        ld a,(hold)
+        cp 255
+        jr z,ri_speed
+        inc a
+        ld (hold),a
+ri_speed:
+        ld a,(hold)
+        ld b,PAD_SPD1
+        cp PAD_T2
+        jr c,ri_move
+        ld b,PAD_SPD2
+        cp PAD_T3
+        jr c,ri_move
+        ld b,PAD_SPD3
+ri_move:
+        ld a,(padx)
+        bit 7,c
+        jr nz,ri_left
+        add a,b
+        cp PAD_MAX+1
+        jr c,ri_store
+        ld a,PAD_MAX
+        jr ri_store
+ri_left:
+        sub b
+        jr c,ri_min
+        cp PAD_MIN
+        jr nc,ri_store
+ri_min:
+        ld a,PAD_MIN
+ri_store:
+        ld (padx),a
+        ret
+
+; A = x (Pixel), p_flag: 1 = Schlaeger zeichnen, 0 = loeschen; Puffer aus dbase
+; Schlaeger 32 px breit, Zeilen 1..6 der Zellzeile PAD_ROW
+put_pad:
+        ld c,a
+        and 7
+        ld e,a                  ; E = Verschiebung
+        ld a,c
+        rrca
+        rrca
+        rrca
+        and 0x1F
+        ld c,a                  ; C = erste Spalte
+        ld d,5
+        ld a,e
+        or a
+        jr nz,pp_go
+        dec d                   ; Verschiebung 0 -> nur 4 Zellen
+pp_go:
+        xor a
+        ld (p_k),a
+pp_cell:
+        ld a,(p_flag)
+        or a
+        jr z,pp_have            ; loeschen: Maske 0
+        ld a,(p_k)
+        or a
+        jr z,pp_first
+        cp 4
+        ld a,0xFF
+        jr nz,pp_have
+        ld hl,mask_right
+        jr pp_idx
+pp_first:
+        ld hl,mask_left
+pp_idx:
+        ld a,e
+        add a,l
+        ld l,a
+        ld a,0
+        adc a,h
+        ld h,a
+        ld a,(hl)
+pp_have:
+        ld (p_mask),a
+        ld b,PAD_ROW
+        call cell_pix
+        ld a,(p_mask)
+        inc h
+        ld b,6
+pp_l:   ld (hl),a
+        inc h
+        djnz pp_l
+        ld a,(p_k)
+        inc a
+        ld (p_k),a
+        inc c
+        dec d
+        jr nz,pp_cell
+        ret
+
+mask_left:  db 0xFF,0x7F,0x3F,0x1F,0x0F,0x07,0x03,0x01
+mask_right: db 0x00,0x80,0xC0,0xE0,0xF0,0xF8,0xFC,0xFE
+
 ; ---- Daten ----
 s_punkte:   db "PUNKTE 0000",0
 s_leben:    db "LEBEN 3",0
@@ -384,9 +591,9 @@ tile_solid: db 255,255,255,255,255,255,255,255
 tile_bl:    db 255,255,255,255,255,255,255,0
 tile_br:    db 254,254,254,254,254,254,254,0
 
-; bg, hud, wand, 8 Steinreihen
-at_plus:    db 0x00,0x07,0x80, 0x40,0x41,0x42,0x43,0x44,0x45,0x46,0x47
-at_cls:     db 0x00,0x47,0x47, 0x42,0x02,0x46,0x06,0x44,0x45,0x41,0x43
+; bg, hud, wand, 8 Steinreihen, Schlaeger
+at_plus:    db 0x00,0x07,0x80, 0x40,0x41,0x42,0x43,0x44,0x45,0x46,0x47, 0x07
+at_cls:     db 0x00,0x47,0x47, 0x42,0x02,0x46,0x06,0x44,0x45,0x41,0x43, 0x47
 
 ; ULAplus-Palette GGGRRRBB: CLUT0 Standard, CLUT1 Regenbogen, CLUT2 Wand
 pal_plus:
