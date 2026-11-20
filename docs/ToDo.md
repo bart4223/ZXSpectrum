@@ -36,12 +36,12 @@ Ball klebt am Schläger, Feuer startet ihn; 1-Pixel-Bewegung mit Festkomma, Refl
 **Stufe 3 – Schlägerabprall**
 Abprallwinkel nach Trefferstelle (5-7 Zonen), Mindest-Vertikalgeschwindigkeit (kein Ball, der flach ewig läuft), Ball am Schlägerrand/seitlich korrekt behandeln, Tests mit Tastenskript und Speicher-Dump der Ballvariablen.
 
-- State: InProgress
+- State: Done
 
 **Stufe 4 – Steine zerstören**
 Treffer per Raster, Eckfälle (Ball trifft zwei Steine gleichzeitig), Stein löschen in beide Puffer, Reflexion je nach Seite, Punkte je Reihe. Test: Ball-Simulation mit festem Seed gegen Erwartungswerte.
 
-- State: Open
+- State: InProgress
 
 **Stufe 5 – Spielablauf**
 3 Leben, Punkte/Rekord im HUD, Level geschafft -> nächstes Level, Spielende, Pause (P), Neustart. Tempo steigt nach X Treffern und beim Erreichen der oberen Reihen, Schläger schrumpft optional beim Durchbruch oben.

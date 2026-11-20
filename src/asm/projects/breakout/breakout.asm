@@ -1,10 +1,12 @@
 ; ===========================================================================
-; BREAKOUT fuer den ZX Spectrum 128K - Stufe 3
+; BREAKOUT fuer den ZX Spectrum 128K - Stufe 4
 ; Geruest: ULAplus (blind), Doppelpuffer, HUD, Waende, 14x8 Steine (16x8 px)
 ; Stufe 1: Schlaeger (32 px, pixelgenau) mit Joystick 1 (Sinclair IF2: 6=links, 7=rechts)
 ; Stufe 2: Ball 4x4 (1-Pixel-Bewegung, 8.8-Festkomma), klebt am Schlaeger, Feuer (0) startet,
 ;          Abprall an Waenden und Decke, unten raus = zurueck auf den Schlaeger
 ; Stufe 3: Schlaegerabprall, 8 Zonen (je 4 px) bestimmen Winkel, Mindest-Vertikaltempo 1,0
+; Stufe 4: Steine zerstoeren (Achsen getrennt: erst X, dann Y; Treffer macht den Schritt rueckgaengig
+;          und kehrt diese Achse um), Punkte je Reihe 7/7/5/5/3/3/1/1, HUD-Punktestand
 ; Assembler: pasmo --tapbas
 ; ===========================================================================
         org 0x8000
@@ -58,8 +60,25 @@ obx1        equ VARS+0xA1   ; ... im Puffer Bank 7
 oby1        equ VARS+0xA2
 autocnt     equ VARS+0xA3   ; nur Testbau
 hitcnt      equ VARS+0xA4   ; nur Testbau: Anzahl Schlaegertreffer
+scorel      equ VARS+0xA5   ; Punkte BCD (niederwertig)
+scoreh      equ VARS+0xA6   ; Punkte BCD (hoeherwertig)
+bricks_left equ VARS+0xA7
+sv_bx       equ VARS+0xA8   ; Ball vor dem Schritt (Wort)
+sv_by       equ VARS+0xAA
+bh_any      equ VARS+0xAC
+bh_c0       equ VARS+0xAD
+bh_c1       equ VARS+0xAE
+bh_r1       equ VARS+0xAF
+bh_r        equ VARS+0xB0
+bh_c        equ VARS+0xB1
+numbuf      equ VARS+0xB2   ; 5 Bytes
+bm_ptr      equ VARS+0xB8   ; Wort
+
+BRICK_Y0    equ 40          ; BRICK_ROW0 * 8
+BRICK_Y1    equ 103         ; letzte Pixelzeile der Steine
 
 AUTOPLAY    equ 0           ; 1 = Testbau: Schlaeger folgt dem Ball, Auto-Start
+NOBRICKS    equ 0           ; 1 = Testbau: Ball fliegt durch die Steine
 
 BALL_XMIN   equ 16
 BALL_XMAX   equ 236         ; 240 - 4
@@ -121,6 +140,11 @@ start:
         endif
         ld a,PAD_START
         ld (padx),a
+        xor a
+        ld (scorel),a
+        ld (scoreh),a
+        ld a,BRICK_ROWS*BRICK_COLS
+        ld (bricks_left),a
         call apply_mode
         call draw_all
         ei
@@ -276,6 +300,7 @@ draw_screen:
         ld bc,28
         ld a,(at_cur+11)
         call fill
+        call print_score
         call draw_walls
         jp draw_bricks
 
@@ -410,6 +435,8 @@ dw_cell:
         jp put_tile
 
 draw_bricks:
+        ld hl,brickmap
+        ld (bm_ptr),hl
         ld ix,at_cur+3
         ld a,BRICK_ROW0
         ld (v_row),a
@@ -421,6 +448,12 @@ db_row:
         ld a,BRICK_COLS
         ld (v_m),a
 db_col:
+        ld hl,(bm_ptr)
+        ld a,(hl)
+        inc hl
+        ld (bm_ptr),hl
+        or a
+        jr z,db_skip
         ld a,(v_row)
         ld b,a
         ld a,(v_col)
@@ -432,6 +465,7 @@ db_col:
         ld de,tile_br
         ld a,(ix+0)
         call put_tile
+db_skip:
         ld a,(v_col)
         add a,2
         ld (v_col),a
@@ -708,14 +742,12 @@ bu_fly:
         cpl
         and 1
         ld (firprev),a
+        ; --- X-Schritt ---
         ld hl,(bx_l)
+        ld (sv_bx),hl
         ld de,(vx_l)
         add hl,de
         ld (bx_l),hl
-        ld hl,(by_l)
-        ld de,(vy_l)
-        add hl,de
-        ld (by_l),hl
         ld a,(bx_h)
         cp BALL_XMIN
         jr nc,bu_xr
@@ -724,22 +756,43 @@ bu_fly:
         xor a
         ld (bx_l),a
         call neg_vx
-        jr bu_y
+        jr bu_xb
 bu_xr:  cp BALL_XMAX+1
-        jr c,bu_y
+        jr c,bu_xb
         ld a,BALL_XMAX
         ld (bx_h),a
         xor a
         ld (bx_l),a
         call neg_vx
-bu_y:   ld a,(by_h)
+bu_xb:  call brick_hit
+        or a
+        jr z,bu_ystep
+        ld hl,(sv_bx)           ; Stein getroffen: X-Schritt zurueck, X umkehren
+        ld (bx_l),hl
+        call neg_vx
+        ; --- Y-Schritt ---
+bu_ystep:
+        ld hl,(by_l)
+        ld (sv_by),hl
+        ld de,(vy_l)
+        add hl,de
+        ld (by_l),hl
+        ld a,(by_h)
         cp BALL_YMIN
-        jr nc,bu_yb
+        jr nc,bu_ynb
         ld a,BALL_YMIN
         ld (by_h),a
         xor a
         ld (by_l),a
         jp neg_vy
+bu_ynb: call brick_hit
+        or a
+        jr z,bu_ypad
+        ld hl,(sv_by)           ; Stein getroffen: Y-Schritt zurueck, Y umkehren
+        ld (by_l),hl
+        jp neg_vy
+bu_ypad:
+        ld a,(by_h)
 bu_yb:  ld b,a                  ; B = by_h
         ld a,(vy_h)
         bit 7,a
@@ -926,12 +979,217 @@ zone_tab:
 ball_spr:
         include "ball.inc"
 
+; ===========================================================================
+; Stufe 4: Steine
+; ===========================================================================
+; Ball-Box (bx_h, by_h, 4x4) gegen das Steinraster. A=0: kein Stein, A=1: Steine
+; entfernt (Karte, beide Puffer, Punkte, HUD)
+brick_hit:
+        if NOBRICKS
+        xor a
+        ret
+        endif
+        xor a
+        ld (bh_any),a
+        ld a,(by_h)
+        cp BRICK_Y1+1
+        jp nc,bh_none           ; Oberkante unterhalb der Steine
+        add a,3                 ; Unterkante
+        cp BRICK_Y0
+        jp c,bh_none            ; Unterkante oberhalb der Steine
+        sub BRICK_Y0
+        srl a
+        srl a
+        srl a
+        cp BRICK_ROWS
+        jr c,bh_r1ok
+        ld a,BRICK_ROWS-1
+bh_r1ok:
+        ld (bh_r1),a
+        ld a,(by_h)
+        sub BRICK_Y0
+        jr nc,bh_r0ok
+        xor a
+        jr bh_r0st
+bh_r0ok:
+        srl a
+        srl a
+        srl a
+bh_r0st:
+        ld (bh_r),a
+        ld a,(bx_h)
+        sub 16
+        srl a
+        srl a
+        srl a
+        srl a
+        ld (bh_c0),a
+        ld a,(bx_h)
+        add a,3
+        sub 16
+        srl a
+        srl a
+        srl a
+        srl a
+        ld (bh_c1),a
+bh_row:
+        ld a,(bh_c0)
+        ld (bh_c),a
+bh_col:
+        ld a,(bh_r)             ; Index = Reihe*14 + Spalte
+        ld e,a
+        add a,a
+        add a,a
+        add a,a
+        sub e
+        add a,a
+        ld b,a
+        ld a,(bh_c)
+        add a,b
+        ld e,a
+        ld d,0
+        ld hl,brickmap
+        add hl,de
+        ld a,(hl)
+        or a
+        jr z,bh_next
+        ld (hl),0
+        ld a,(bh_r)
+        ld e,a
+        ld d,0
+        ld hl,pts_row
+        add hl,de
+        ld a,(hl)
+        call add_score
+        ld hl,bricks_left
+        dec (hl)
+        ld a,1
+        ld (bh_any),a
+        call erase_brick
+bh_next:
+        ld a,(bh_c1)
+        ld b,a
+        ld a,(bh_c)
+        cp b
+        jr nc,bh_nextrow
+        inc a
+        ld (bh_c),a
+        jr bh_col
+bh_nextrow:
+        ld a,(bh_r1)
+        ld b,a
+        ld a,(bh_r)
+        cp b
+        jr nc,bh_done
+        inc a
+        ld (bh_r),a
+        jr bh_row
+bh_done:
+        ld a,(bh_any)
+        or a
+        ret z
+        call score_both
+        ld a,1
+        ret
+bh_none:
+        xor a
+        ret
+
+; Stein (bh_r, bh_c) aus beiden Puffern loeschen (Bitmap leer, Attribut = Hintergrund)
+erase_brick:
+        ld a,0x40
+        ld (dbase),a
+        ld a,0x58
+        ld (abase),a
+        call eb_one
+        ld a,0xC0
+        ld (dbase),a
+        ld a,0xD8
+        ld (abase),a
+eb_one:
+        ld a,(bh_r)
+        add a,BRICK_ROW0
+        ld b,a
+        ld a,(bh_c)
+        add a,a
+        add a,BRICK_COL0
+        ld c,a
+        ld de,tile_blank
+        ld a,(at_cur)
+        call put_tile
+        inc c
+        ld de,tile_blank
+        ld a,(at_cur)
+        jp put_tile
+
+; A = Punkte (BCD) addieren
+add_score:
+        ld b,a
+        ld a,(scorel)
+        add a,b
+        daa
+        ld (scorel),a
+        ld a,(scoreh)
+        adc a,0
+        daa
+        ld (scoreh),a
+        ret
+
+; Punktestand in beide Puffer zeichnen
+score_both:
+        ld a,0x40
+        ld (dbase),a
+        ld a,0x58
+        ld (abase),a
+        call print_score
+        ld a,0xC0
+        ld (dbase),a
+        ld a,0xD8
+        ld (abase),a
+        jp print_score
+
+; Punktestand (4 Ziffern) bei Zeile 0, Spalte 7 in den Puffer aus dbase/abase
+print_score:
+        ld a,(scoreh)
+        rrca
+        rrca
+        rrca
+        rrca
+        and 15
+        add a,'0'
+        ld (numbuf),a
+        ld a,(scoreh)
+        and 15
+        add a,'0'
+        ld (numbuf+1),a
+        ld a,(scorel)
+        rrca
+        rrca
+        rrca
+        rrca
+        and 15
+        add a,'0'
+        ld (numbuf+2),a
+        ld a,(scorel)
+        and 15
+        add a,'0'
+        ld (numbuf+3),a
+        xor a
+        ld (numbuf+4),a
+        ld hl,numbuf
+        ld b,0
+        ld c,7
+        ld a,(at_cur+1)
+        jp print_str
+
 ; ---- Daten ----
 s_punkte:   db "PUNKTE 0000",0
 s_leben:    db "LEBEN 3",0
 s_rekord:   db "REKORD 0000",0
 
 tile_solid: db 255,255,255,255,255,255,255,255
+tile_blank: db 0,0,0,0,0,0,0,0
+pts_row:    db 7,7,5,5,3,3,1,1      ; Punkte je Steinreihe (BCD, oben nach unten)
 tile_bl:    db 255,255,255,255,255,255,255,0
 tile_br:    db 254,254,254,254,254,254,254,0
 
